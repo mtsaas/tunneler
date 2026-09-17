@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/mtsaas/tunneler/internal/api"
@@ -51,6 +52,9 @@ type ServiceConfig struct {
 type backend interface {
 	// Addr is the service's address, for logs.
 	Addr() string
+	// Ping checks that the service is reachable with the administrative
+	// credentials.
+	Ping(ctx context.Context) error
 	// Database is the single database sessions are confined to, if the kind
 	// has such a notion.
 	Database() string
@@ -98,8 +102,14 @@ type Agent struct {
 	Token   TokenFunc // nil sends no credentials, which only a coordinator in insecure_exit_auth mode accepts
 	Log     *slog.Logger
 
-	services map[string]*service
+	services  atomic.Pointer[map[string]*service]
+	connected atomic.Bool // a control stream is up
+	control   atomic.Pointer[net.Conn]
 }
+
+// Healthy reports whether the agent is connected to the coordinator, for
+// readiness probes.
+func (a *Agent) Healthy() bool { return a.connected.Load() }
 
 // LoadConfig reads the services the agent offers from the file at path.
 //
@@ -121,21 +131,77 @@ func (a *Agent) LoadConfig(path string) error {
 		return fmt.Errorf("%s: no services defined", path)
 	}
 
-	a.services = make(map[string]*service)
+	services := make(map[string]*service)
 	for i, sc := range cfg.Services {
 		svc, err := newService(sc)
-		if err == nil && a.services[sc.Name] != nil {
+		if err == nil && services[sc.Name] != nil {
 			err = errors.New("duplicate name")
 		}
 		if err != nil {
 			return fmt.Errorf("%s: services[%d] (%q): %w", path, i, sc.Name, err)
 		}
-		a.services[sc.Name] = svc
+		services[sc.Name] = svc
 		// Never the DSN: it holds the administrative password.
 		a.Log.Info("service loaded", "service", sc.Name, "kind", sc.Kind, "addr", svc.backend.Addr(),
 			"database", svc.advert.Database, "labels", sc.Labels, "grantable_roles", sc.Roles)
 	}
+	a.services.Store(&services)
 	return nil
+}
+
+// CheckServices tries the administrative credentials of every service and
+// logs the outcome, so that a bad password or address shows up at startup
+// rather than at the first user's session. It does not fail: the database
+// may simply not be up yet.
+func (a *Agent) CheckServices(ctx context.Context) {
+	for name, svc := range *a.services.Load() {
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		err := svc.backend.Ping(ctx)
+		cancel()
+		if err != nil {
+			a.Log.Warn("service is not reachable with its administrative credentials; sessions on it will fail until it is",
+				"service", name, "addr", svc.backend.Addr(), "err", err)
+			continue
+		}
+		a.Log.Info("service reachable", "service", name, "addr", svc.backend.Addr())
+	}
+}
+
+// WatchConfig reloads the configuration file whenever it changes, until ctx
+// is done. On a change the control stream is dropped so that reconnecting
+// advertises the new services; connections in flight are unaffected. A file
+// that fails to load is logged and ignored.
+//
+// ponytail: polls the modification time. Kubernetes updates a mounted
+// ConfigMap within about a minute anyway.
+func (a *Agent) WatchConfig(ctx context.Context, path string) {
+	mtime := func() time.Time {
+		fi, err := os.Stat(path)
+		if err != nil {
+			return time.Time{}
+		}
+		return fi.ModTime()
+	}
+	last := mtime()
+	for {
+		select {
+		case <-time.After(15 * time.Second):
+		case <-ctx.Done():
+			return
+		}
+		if now := mtime(); !now.IsZero() && !now.Equal(last) {
+			last = now
+			a.Log.Info("configuration file changed; reloading", "file", path)
+			if err := a.LoadConfig(path); err != nil {
+				a.Log.Error("configuration reload failed; keeping the previous services", "err", err)
+				continue
+			}
+			a.CheckServices(ctx)
+			if conn := a.control.Load(); conn != nil {
+				(*conn).Close() // Run reconnects and advertises the new set
+			}
+		}
+	}
 }
 
 func newService(sc ServiceConfig) (*service, error) {
@@ -205,7 +271,7 @@ const reapInterval = time.Hour
 // crashed or lost its state, no account outlives its expiry by much.
 func (a *Agent) reapLoop(ctx context.Context) {
 	for {
-		for _, svc := range a.services {
+		for _, svc := range *a.services.Load() {
 			svc.reap(ctx, a.Log)
 		}
 		select {
@@ -253,16 +319,20 @@ func (a *Agent) serve(ctx context.Context) error {
 	}
 	defer conn.Close()
 	defer context.AfterFunc(ctx, func() { conn.Close() })()
+	a.control.Store(&conn)
 
+	services := *a.services.Load()
 	var hello api.Hello
-	for _, svc := range a.services {
+	for _, svc := range services {
 		hello.Services = append(hello.Services, svc.advert)
 	}
 	if err := json.NewEncoder(conn).Encode(hello); err != nil {
 		return err
 	}
+	a.connected.Store(true)
+	defer a.connected.Store(false)
 	a.Log.Info("connected to coordinator; advertised services and awaiting requests",
-		"server", a.Server, "cluster", a.Cluster, "services", slices.Sorted(maps.Keys(a.services)))
+		"server", a.Server, "cluster", a.Cluster, "services", slices.Sorted(maps.Keys(services)))
 
 	dec := json.NewDecoder(conn)
 	for {
@@ -312,7 +382,7 @@ func (a *Agent) handle(ctx context.Context, req api.ExitRequest) {
 }
 
 func (a *Agent) do(ctx context.Context, req api.ExitRequest, log *slog.Logger) error {
-	svc := a.services[req.Service]
+	svc := (*a.services.Load())[req.Service]
 	if svc == nil {
 		return fmt.Errorf("no such service %q", req.Service)
 	}

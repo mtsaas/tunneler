@@ -39,6 +39,15 @@ func (s *Server) Addr() string {
 	return net.JoinHostPort(s.cfg.Host, strconv.Itoa(int(s.cfg.Port)))
 }
 
+// Ping connects with the administrative credentials and disconnects.
+func (s *Server) Ping(ctx context.Context) error {
+	conn, err := pgx.ConnectConfig(ctx, s.cfg)
+	if err != nil {
+		return err
+	}
+	return conn.Close(ctx)
+}
+
 // Database returns the database that sessions are confined to.
 func (s *Server) Database() string { return s.cfg.Database }
 

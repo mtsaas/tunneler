@@ -92,6 +92,7 @@ func TestEndToEnd(t *testing.T) {
 	if err := agent.LoadConfig(exitConfig); err != nil {
 		t.Fatal(err)
 	}
+	agent.CheckServices(ctx)
 	agentCtx, stopAgent := context.WithCancel(ctx)
 	go agent.Run(agentCtx)
 

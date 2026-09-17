@@ -55,14 +55,21 @@ spec:
       containers:
         - name: exit
           image: ghcr.io/mtsaas/tunneler:latest
-          args: ["start", "exit", "--cluster=prod"]
+          args: ["start", "exit"]
           env:
             - {name: TUNNELER_SERVER, value: "https://tunneler.example.com"}
+            - {name: TUNNELER_CLUSTER, value: "prod"}
             # Credentials stay in whatever Secret already holds them, such
             # as the one a Postgres operator generates.
             - name: ORDERS_DB_PASSWORD
               valueFrom:
                 secretKeyRef: {name: orders-db-admin, key: password}
+          ports:
+            - {name: health, containerPort: 8081}
+          livenessProbe:
+            httpGet: {path: /healthz, port: health}
+          readinessProbe:
+            httpGet: {path: /readyz, port: health}
           volumeMounts:
             - {name: config, mountPath: /etc/tunneler, readOnly: true}
       volumes:
