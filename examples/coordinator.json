@@ -1,0 +1,17 @@
+{
+  "listen": ":8443",
+  "database": "/var/lib/tunneler/tunneler.db",
+  "tls": {"cert_file": "/etc/tunneler/tls/tls.crt", "key_file": "/etc/tunneler/tls/tls.key"},
+  "session_ttl": "8h",
+  "oidc": {
+    "issuer": "https://login.microsoftonline.com/<tenant-id>/v2.0",
+    "client_id": "<app-registration-client-id>"
+  },
+  "admins": ["<entra-group-object-id: platform team>"],
+  "grants": [
+    {"group": "<entra-group-object-id: platform team>", "labels": {"cluster": "prod"}, "roles": ["readwrite"]},
+    {"group": "<entra-group-object-id: shop developers>", "labels": {"cluster": "prod", "kind": "postgres", "team": "shop"}, "roles": ["readonly"]},
+    {"group": "<entra-group-object-id: all engineers>", "labels": {"cluster": "dev"}, "roles": ["readwrite"]},
+    {"user": "<entra-user-object-id, or UPN like alice@example.com>", "labels": {"cluster": "prod", "name": "orders-db"}, "roles": ["readonly"]}
+  ]
+}

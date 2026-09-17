@@ -1,0 +1,1 @@
+{"kind":"postgres","dsn":"postgres://postgres:pw@localhost:5432/postgres?sslmode=disable","roles":["pg_read_all_data"]}

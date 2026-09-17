@@ -1,0 +1,70 @@
+# An exit node for the cluster "prod" on AKS, authenticating with Azure
+# Workload Identity. Nothing here is known to the coordinator in advance: the
+# identity's app role proves the cluster name, and the services below are
+# advertised when the node connects. No token is stored anywhere.
+#
+# Per cluster, provisioning automation must:
+#   1. create a user-assigned managed identity;
+#   2. add a federated credential to it for this service account
+#      (issuer: the AKS cluster's OIDC issuer URL,
+#       subject: system:serviceaccount:<namespace>:tunneler-exit);
+#   3. assign it the app role "exit:prod" on the tunneler app registration.
+#
+# For local development instead, run the coordinator with
+# "insecure_exit_auth": true and the exit node needs no identity at all.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tunneler-exit
+  annotations:
+    azure.workload.identity/client-id: "<managed identity client ID>"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tunneler-exit
+data:
+  exit.json: |
+    {
+      "services": [
+        {
+          "name": "orders-db",
+          "kind": "postgres",
+          "dsn": "postgres://tunneler:$ORDERS_DB_PASSWORD@orders-db.shop.svc.cluster.local:5432/orders?sslmode=require",
+          "labels": {"team": "shop"},
+          "roles": ["readonly", "readwrite"]
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tunneler-exit
+spec:
+  replicas: 2 # the coordinator uses whichever is connected
+  selector:
+    matchLabels: {app: tunneler-exit}
+  template:
+    metadata:
+      labels:
+        app: tunneler-exit
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: tunneler-exit
+      containers:
+        - name: exit
+          image: ghcr.io/mtsaas/tunneler:latest
+          args: ["start", "exit", "--cluster=prod"]
+          env:
+            - {name: TUNNELER_SERVER, value: "https://tunneler.example.com"}
+            # Credentials stay in whatever Secret already holds them, such
+            # as the one a Postgres operator generates.
+            - name: ORDERS_DB_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: orders-db-admin, key: password}
+          volumeMounts:
+            - {name: config, mountPath: /etc/tunneler, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: tunneler-exit}

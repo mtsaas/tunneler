@@ -1,0 +1,98 @@
+package coordinator
+
+import (
+	"database/sql"
+	"encoding/json"
+	"net"
+	"time"
+
+	_ "modernc.org/sqlite" // pure Go, so the binary stays free of cgo
+)
+
+// store persists sessions in SQLite so that a coordinator restart neither
+// forgets which accounts it must still revoke nor forces users to reconnect
+// with new credentials. Passwords are never stored.
+type store struct {
+	db *sql.DB
+}
+
+func openStore(path string) (*store, error) {
+	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS sessions (
+		id         TEXT PRIMARY KEY,
+		subject    TEXT NOT NULL,
+		owner      TEXT NOT NULL,
+		cluster    TEXT NOT NULL,
+		service    TEXT NOT NULL,
+		kind       TEXT NOT NULL,
+		database   TEXT NOT NULL,
+		username   TEXT NOT NULL,
+		labels     TEXT NOT NULL, -- JSON object
+		expires_at INTEGER NOT NULL, -- Unix seconds
+		revoked    INTEGER NOT NULL DEFAULT 0 -- ended, but its account is not yet known to be dropped
+	) STRICT`)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	return &store{db}, nil
+}
+
+func (st *store) insert(s *session) error {
+	labels, err := json.Marshal(s.labels)
+	if err != nil {
+		return err
+	}
+	_, err = st.db.Exec(`INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+		s.info.ID, s.subject, s.info.Owner, s.info.Cluster, s.info.Service, s.info.Kind,
+		s.info.Database, s.info.Username, string(labels), s.info.ExpiresAt.Unix())
+	return err
+}
+
+func (st *store) delete(id string) error {
+	_, err := st.db.Exec(`DELETE FROM sessions WHERE id = ?`, id)
+	return err
+}
+
+// markRevoked records that a session has ended while its account may live on.
+func (st *store) markRevoked(id string) error {
+	_, err := st.db.Exec(`UPDATE sessions SET revoked = 1 WHERE id = ?`, id)
+	return err
+}
+
+// pruneRevoked forgets revoked sessions whose accounts have expired. Such an
+// account can no longer log in, and the exit node's reaper drops it unaided.
+func (st *store) pruneRevoked(now time.Time) error {
+	_, err := st.db.Exec(`DELETE FROM sessions WHERE revoked = 1 AND expires_at < ?`, now.Unix())
+	return err
+}
+
+func (st *store) load() ([]*session, error) {
+	rows, err := st.db.Query(`SELECT id, subject, owner, cluster, service, kind, database, username, labels, expires_at, revoked FROM sessions`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sessions []*session
+	for rows.Next() {
+		s := &session{conns: make(map[net.Conn]struct{})}
+		var labels string
+		var expires int64
+		err := rows.Scan(&s.info.ID, &s.subject, &s.info.Owner, &s.info.Cluster, &s.info.Service,
+			&s.info.Kind, &s.info.Database, &s.info.Username, &labels, &expires, &s.revoked)
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(labels), &s.labels); err != nil {
+			return nil, err
+		}
+		s.info.ExpiresAt = time.Unix(expires, 0)
+		sessions = append(sessions, s)
+	}
+	return sessions, rows.Err()
+}

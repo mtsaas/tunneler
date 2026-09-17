@@ -1,0 +1,12 @@
+{
+  "listen": "127.0.0.1:8443",
+  "database": "tunneler.db",
+  "insecure_exit_auth": true,
+  "oidc": {
+    "issuer": "https://login.microsoftonline.com/529b1af7-137b-4622-9d7d-3a68b6abbf33/v2.0",
+    "client_id": "a4558453-962b-4261-8322-ccf72537ff5c"
+  },
+  "grants": [
+    {"group": "04ad72cd-9f34-4b4b-afb4-bcc742e4956c", "labels": {"cluster": "dev"}, "roles": ["pg_read_all_data"]}
+  ]
+}
