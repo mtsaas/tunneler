@@ -232,3 +232,70 @@ func TestEndToEnd(t *testing.T) {
 		t.Errorf("role %s was never dropped after the exit node returned", s.Username)
 	}
 }
+
+// TestUnreadyService checks that a service whose exit node cannot reach it is
+// listed, marked, and refused.
+func TestUnreadyService(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := &coordinator.Config{
+		Database:         filepath.Join(t.TempDir(), "t.db"),
+		SessionTTL:       coordinator.Duration(time.Hour),
+		InsecureExitAuth: true,
+		Grants:           []coordinator.Grant{{Group: "dba", Labels: map[string]string{"cluster": "prod"}}},
+	}
+	auth := func(context.Context, string) (*coordinator.Identity, error) {
+		return &coordinator.Identity{Subject: "1", Username: "alice@example.com", Groups: []string{"dba"}}, nil
+	}
+	c, err := coordinator.New(cfg, auth, log, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	srv := httptest.NewServer(c.Handler())
+	defer srv.Close()
+
+	exitConfig := filepath.Join(t.TempDir(), "exit.json")
+	data, _ := json.Marshal(exit.Config{Services: []exit.ServiceConfig{
+		{Name: "orders", Kind: "postgres", DSN: "postgres://nobody:nothing@127.0.0.1:1/orders?sslmode=disable"},
+	}})
+	os.WriteFile(exitConfig, data, 0o600)
+	agent := &exit.Agent{Server: srv.URL, Cluster: "prod", Log: log}
+	if err := agent.LoadConfig(exitConfig); err != nil {
+		t.Fatal(err)
+	}
+	go agent.Run(ctx)
+
+	call := func(method, path string, in, out any) int {
+		t.Helper()
+		body, _ := json.Marshal(in)
+		req, _ := http.NewRequestWithContext(ctx, method, srv.URL+path, bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer alice")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if out != nil {
+			json.NewDecoder(resp.Body).Decode(out)
+		}
+		return resp.StatusCode
+	}
+	var clusters []api.Cluster
+	for len(clusters) == 0 && ctx.Err() == nil {
+		time.Sleep(50 * time.Millisecond)
+		call("GET", "/v1/clusters", nil, &clusters)
+	}
+	svc := clusters[0].Services[0]
+	if svc.Ready || svc.Status == "" {
+		t.Errorf("service advertised as %+v; want not ready with a reason", svc)
+	}
+	var e api.Error
+	if code := call("POST", "/v1/sessions", api.SessionRequest{Selector: map[string]string{"name": "orders"}}, &e); code != http.StatusServiceUnavailable {
+		t.Errorf("session on unready service: status %d (%s), want 503", code, e.Message)
+	}
+	if !strings.Contains(e.Message, "cannot reach it") {
+		t.Errorf("refusal does not say why: %q", e.Message)
+	}
+}

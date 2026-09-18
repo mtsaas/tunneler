@@ -1,0 +1,105 @@
+# TunnelService registers a service with the cluster's tunneler exit node.
+# Create one per database in the namespace that owns it; the exit node
+# discovers it, checks its credentials, and advertises it to the coordinator
+# as <namespace>-<name>. Deleting it withdraws the service.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: tunnelservices.tunneler.marconet.com
+spec:
+  group: tunneler.marconet.com
+  scope: Namespaced
+  names:
+    plural: tunnelservices
+    singular: tunnelservice
+    kind: TunnelService
+    shortNames: [ts]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Kind
+          type: string
+          jsonPath: .spec.kind
+        - name: Ready
+          type: string
+          jsonPath: .status.conditions[?(@.type=="Ready")].status
+        - name: Reason
+          type: string
+          jsonPath: .status.conditions[?(@.type=="Ready")].reason
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [kind, credentials]
+              properties:
+                kind:
+                  type: string
+                  enum: [postgres]
+                credentials:
+                  type: object
+                  required: [dsnRef]
+                  properties:
+                    dsnRef:
+                      description: >-
+                        Where the complete administrative connection string is
+                        kept. Exactly one of kubernetesSecret and azureKeyVault.
+                      type: object
+                      oneOf:
+                        - required: [kubernetesSecret]
+                        - required: [azureKeyVault]
+                      properties:
+                        kubernetesSecret:
+                          description: A key of a Secret in this namespace.
+                          type: object
+                          required: [name, key]
+                          properties:
+                            name: {type: string}
+                            key: {type: string}
+                        azureKeyVault:
+                          description: >-
+                            A Key Vault secret the exit node's workload
+                            identity may read.
+                          type: object
+                          required: [vaultUri, secretName]
+                          properties:
+                            vaultUri: {type: string, format: uri}
+                            secretName: {type: string}
+                grantableRoles:
+                  description: >-
+                    Database roles the coordinator may grant to the accounts it
+                    provisions here.
+                  type: array
+                  items: {type: string}
+                labels:
+                  description: >-
+                    Labels that grants and users select the service by. The
+                    labels cluster, kind, name and namespace are attached
+                    automatically and cannot be set here.
+                  type: object
+                  additionalProperties: {type: string}
+            status:
+              type: object
+              properties:
+                observedGeneration: {type: integer}
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: [type, status]
+                    properties:
+                      type: {type: string}
+                      status: {type: string}
+                      reason: {type: string}
+                      message: {type: string}
+                      observedGeneration: {type: integer}
+                      lastTransitionTime: {type: string, format: date-time}

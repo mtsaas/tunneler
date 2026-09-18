@@ -1,3 +1,7 @@
 .git
-dist
+deploy
+docs
+e2e
+hack
 *.db*
+*.md

@@ -66,10 +66,14 @@ you cannot reach something, the first section that looks wrong says why.`,
 			}
 
 			fmt.Println("\n4. Services those grants reach right now")
-			fmt.Fprintln(w, "   CLUSTER\tSERVICE\tKIND\tLABELS")
+			fmt.Fprintln(w, "   CLUSTER\tSERVICE\tKIND\tSTATUS\tLABELS")
 			for _, cl := range st.Clusters {
 				for _, svc := range cl.Services {
-					fmt.Fprintf(w, "   %s\t%s\t%s\t%s\n", cl.Name, svc.Name, svc.Kind, formatLabels(svc.Labels))
+					status := "ready"
+					if !svc.Ready {
+						status = "unreachable: " + svc.Status
+					}
+					fmt.Fprintf(w, "   %s\t%s\t%s\t%s\t%s\n", cl.Name, svc.Name, svc.Kind, status, formatLabels(svc.Labels))
 				}
 			}
 			w.Flush()

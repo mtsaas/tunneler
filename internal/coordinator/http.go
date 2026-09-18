@@ -241,6 +241,11 @@ func (c *Coordinator) handleCreateSession(w http.ResponseWriter, r *http.Request
 		return
 	}
 	cluster, svc := matches[0].Name, matches[0].Services[0]
+	if !svc.Ready {
+		writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("%s/%s is registered but its exit node cannot reach it: %s",
+			cluster, svc.Name, svc.Status))
+		return
+	}
 	roles, _ := c.cfg.access(id, svc.Labels)
 
 	s, err := c.createSession(r.Context(), id, cluster, svc, roles)

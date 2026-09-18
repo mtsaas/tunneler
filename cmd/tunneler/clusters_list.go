@@ -45,10 +45,14 @@ coordinator, and a service only if your groups grant you access to it.`,
 // printServices writes a table of services and the labels to select them by.
 func printServices(clusters []api.Cluster) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "CLUSTER\tSERVICE\tKIND\tLABELS")
+	fmt.Fprintln(w, "CLUSTER\tSERVICE\tKIND\tSTATUS\tLABELS")
 	for _, cl := range clusters {
 		for _, svc := range cl.Services {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", cl.Name, svc.Name, svc.Kind, formatLabels(svc.Labels))
+			status := "ready"
+			if !svc.Ready {
+				status = "unreachable: " + svc.Status
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", cl.Name, svc.Name, svc.Kind, status, formatLabels(svc.Labels))
 		}
 	}
 	w.Flush()

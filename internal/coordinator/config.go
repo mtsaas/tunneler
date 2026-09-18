@@ -40,6 +40,10 @@ type Config struct {
 	ExitIssuers []string `json:"exit_issuers"`
 	// ExitAudience is the audience such tokens must carry; default "tunneler".
 	ExitAudience string `json:"exit_audience"`
+	// ExitIssuerCAFile, if set, is a PEM bundle trusted when fetching those
+	// issuers' keys, for issuers with private certificates such as a kind
+	// cluster's own API server. Public issuers like AKS need nothing.
+	ExitIssuerCAFile string `json:"exit_issuer_ca_file"`
 	// ExitSubject, if set, is the only token subject accepted from those
 	// issuers, such as system:serviceaccount:tunneler:tunneler-exit.
 	ExitSubject string `json:"exit_subject"`

@@ -50,6 +50,11 @@ type Service struct {
 	Kind     string            `json:"kind"`
 	Database string            `json:"database,omitempty"` // Postgres: the one database sessions may use
 	Labels   map[string]string `json:"labels"`
+	// Ready reports whether the exit node can reach the service with its
+	// credentials; Status says why not. Sessions are refused on a service
+	// that is not ready.
+	Ready  bool   `json:"ready"`
+	Status string `json:"status,omitempty"`
 }
 
 // SessionRequest asks the coordinator to provision access to the one service,

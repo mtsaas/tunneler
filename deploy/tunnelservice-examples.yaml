@@ -1,0 +1,38 @@
+# A preview environment: the DSN already rendered by the platform chart into
+# a Secret in the same namespace. Advertised as preview-pr-123-postgres.
+apiVersion: tunneler.marconet.com/v1alpha1
+kind: TunnelService
+metadata:
+  name: postgres
+  namespace: preview-pr-123
+spec:
+  kind: postgres
+  credentials:
+    dsnRef:
+      kubernetesSecret:
+        name: preview-pr-123-agent-server-secrets
+        key: database_uri
+  grantableRoles: [vantage_readonly, vantage_readwrite]
+  labels:
+    environment: preview-pr-123
+    lifecycle: preview
+---
+# A persistent platform: a dedicated tunneler_admin DSN that Terraform keeps
+# in the platform's Key Vault. The exit node reads only this secret, through
+# its workload identity. Advertised as platform-acme-postgres.
+apiVersion: tunneler.marconet.com/v1alpha1
+kind: TunnelService
+metadata:
+  name: postgres
+  namespace: platform-acme
+spec:
+  kind: postgres
+  credentials:
+    dsnRef:
+      azureKeyVault:
+        vaultUri: https://kv-platform-acme.vault.azure.net
+        secretName: vantage-tunneler-db-uri
+  grantableRoles: [vantage_readonly, vantage_readwrite]
+  labels:
+    environment: acme
+    lifecycle: persistent

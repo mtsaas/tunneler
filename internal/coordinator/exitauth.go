@@ -2,10 +2,14 @@ package coordinator
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"os"
 	"path"
 	"strings"
 	"sync"
@@ -19,6 +23,7 @@ import (
 type kubeVerifier struct {
 	patterns []string // path.Match patterns for the issuer URL
 	audience string
+	client   *http.Client // nil for the default; set to trust private issuer certificates
 
 	mu        sync.Mutex
 	providers map[string]*oidc.Provider // by issuer
@@ -53,6 +58,9 @@ func (v *kubeVerifier) trusts(token string) (issuer string, ok bool) {
 // verify checks the token against its issuer's keys and returns the issuer
 // and subject, such as system:serviceaccount:tunneler:tunneler-exit.
 func (v *kubeVerifier) verify(ctx context.Context, issuer, token string) (subject string, err error) {
+	if v.client != nil {
+		ctx = oidc.ClientContext(ctx, v.client)
+	}
 	v.mu.Lock()
 	provider := v.providers[issuer]
 	v.mu.Unlock()
@@ -73,4 +81,25 @@ func (v *kubeVerifier) verify(ctx context.Context, issuer, token string) (subjec
 		return "", errors.New("token has no subject")
 	}
 	return idToken.Subject, nil
+}
+
+// newKubeVerifier builds the verifier for cfg, loading the CA bundle if one
+// is configured.
+func newKubeVerifier(cfg *Config) (*kubeVerifier, error) {
+	v := &kubeVerifier{patterns: cfg.ExitIssuers, audience: cfg.ExitAudience, providers: make(map[string]*oidc.Provider)}
+	if cfg.ExitIssuerCAFile == "" {
+		return v, nil
+	}
+	pem, err := os.ReadFile(cfg.ExitIssuerCAFile)
+	if err != nil {
+		return nil, fmt.Errorf("exit_issuer_ca_file: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("exit_issuer_ca_file: %s holds no certificates", cfg.ExitIssuerCAFile)
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{RootCAs: pool}
+	v.client = &http.Client{Transport: transport}
+	return v, nil
 }

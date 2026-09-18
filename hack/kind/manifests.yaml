@@ -1,0 +1,224 @@
+# Everything for an end-to-end run of the exit node path in a kind cluster:
+# a Postgres, a coordinator inside the cluster that trusts the cluster's own
+# OIDC issuer, the exit node authenticating with its projected token, and a
+# TunnelService the exit node discovers. See hack/kind-e2e.sh.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tunneler
+---
+# The kind API server issues service account tokens as
+# https://kubernetes.default.svc.cluster.local and serves that issuer's
+# discovery document itself. Let the coordinator fetch it without a token.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tunneler-issuer-discovery
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:service-account-issuer-discovery
+subjects:
+  - kind: Group
+    name: system:unauthenticated
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tunneler-coordinator
+  namespace: tunneler
+data:
+  config.json: |
+    {
+      "listen": ":8443",
+      "database": "/data/tunneler.db",
+      "exit_issuers": ["https://kubernetes.default.svc.cluster.local"],
+      "exit_subject": "system:serviceaccount:tunneler:tunneler-exit",
+      "exit_issuer_ca_file": "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+      "oidc": {"issuer": "https://accounts.google.com", "client_id": "unused-no-users-in-this-test"},
+      "grants": []
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tunneler-coordinator
+  namespace: tunneler
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: tunneler-coordinator}
+  template:
+    metadata:
+      labels: {app: tunneler-coordinator}
+    spec:
+      containers:
+        - name: coordinator
+          image: tunneler:e2e
+          imagePullPolicy: Never
+          args: ["start", "coordinator", "--config", "/etc/tunneler/config.json"]
+          ports:
+            - {name: http, containerPort: 8443}
+          volumeMounts:
+            - {name: config, mountPath: /etc/tunneler, readOnly: true}
+            - {name: data, mountPath: /data}
+      volumes:
+        - name: config
+          configMap: {name: tunneler-coordinator}
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tunneler-coordinator
+  namespace: tunneler
+spec:
+  selector: {app: tunneler-coordinator}
+  ports:
+    - {port: 8443, targetPort: http}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pg-admin
+  namespace: tunneler
+stringData:
+  database_uri: postgres://postgres:pw@postgres.tunneler.svc.cluster.local:5432/postgres?sslmode=disable
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: tunneler
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: postgres}
+  template:
+    metadata:
+      labels: {app: postgres}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17
+          env:
+            - {name: POSTGRES_PASSWORD, value: pw}
+          ports:
+            - {containerPort: 5432}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: tunneler
+spec:
+  selector: {app: postgres}
+  ports:
+    - {port: 5432}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tunneler-exit
+  namespace: tunneler
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tunneler-exit
+rules:
+  - apiGroups: [tunneler.marconet.com]
+    resources: [tunnelservices]
+    verbs: [get, list, watch]
+  - apiGroups: [tunneler.marconet.com]
+    resources: [tunnelservices/status]
+    verbs: [patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tunneler-exit
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tunneler-exit
+subjects:
+  - kind: ServiceAccount
+    name: tunneler-exit
+    namespace: tunneler
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tunneler-read-dsn
+  namespace: tunneler
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [pg-admin]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tunneler-read-dsn
+  namespace: tunneler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: tunneler-read-dsn
+subjects:
+  - kind: ServiceAccount
+    name: tunneler-exit
+    namespace: tunneler
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tunneler-exit
+  namespace: tunneler
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: tunneler-exit}
+  template:
+    metadata:
+      labels: {app: tunneler-exit}
+    spec:
+      serviceAccountName: tunneler-exit
+      containers:
+        - name: exit
+          image: tunneler:e2e
+          imagePullPolicy: Never
+          args: ["start", "exit", "--kubernetes", "-v"]
+          env:
+            - {name: TUNNELER_SERVER, value: "http://tunneler-coordinator.tunneler.svc.cluster.local:8443"}
+            - {name: TUNNELER_CLUSTER, value: kind}
+          ports:
+            - {name: health, containerPort: 8081}
+          readinessProbe:
+            httpGet: {path: /readyz, port: health}
+          volumeMounts:
+            - {name: token, mountPath: /var/run/secrets/tunneler, readOnly: true}
+      volumes:
+        - name: token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: tunneler
+                  expirationSeconds: 3600
+                  path: token
+---
+apiVersion: tunneler.marconet.com/v1alpha1
+kind: TunnelService
+metadata:
+  name: postgres
+  namespace: tunneler
+spec:
+  kind: postgres
+  credentials:
+    dsnRef:
+      kubernetesSecret: {name: pg-admin, key: database_uri}
+  grantableRoles: [pg_read_all_data]
+  labels: {environment: e2e}

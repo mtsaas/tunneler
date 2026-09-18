@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -108,10 +109,11 @@ type Agent struct {
 
 	mu      sync.Mutex
 	sources map[string]map[string]*service // desired services, by the source that defined them
-	ready   map[*service]bool              // desired services already proven reachable
+	health  map[*service]string            // last check of each desired service: "" if reachable, else why not
 	kick    chan struct{}                  // wakes reconcile early
 
-	advertised atomic.Pointer[map[string]*service] // desired and reachable: what the coordinator is told
+	advertised atomic.Pointer[map[string]*service] // desired services, by name
+	adverts    atomic.Pointer[[]api.Service]       // what the coordinator was last told, sorted by name
 	connected  atomic.Bool                         // a control stream is up
 	control    atomic.Pointer[net.Conn]
 }
@@ -128,7 +130,7 @@ func (a *Agent) SetServices(source string, services map[string]*service) {
 	a.mu.Lock()
 	if a.sources == nil {
 		a.sources = make(map[string]map[string]*service)
-		a.ready = make(map[*service]bool)
+		a.health = make(map[*service]string)
 		a.kick = make(chan struct{}, 1)
 	}
 	a.sources[source] = services
@@ -156,7 +158,7 @@ func (a *Agent) desired() map[string]*service {
 	return out
 }
 
-// reconcileInterval is how often unreachable services are tried again.
+// reconcileInterval is how often every service's reachability is checked.
 const reconcileInterval = 30 * time.Second
 
 // reconcileLoop keeps the advertised set equal to the desired services that
@@ -173,86 +175,78 @@ func (a *Agent) reconcileLoop(ctx context.Context) {
 	}
 }
 
-// reconcile tries every desired service not yet known to be reachable, then
-// advertises the reachable ones. A service is never advertised before its
-// credentials have worked: a session on it could only fail. If the advertised
-// set changed, the control stream is dropped so that reconnecting publishes
-// it; connections in flight are unaffected.
+// reconcile checks that every desired service is reachable with its
+// credentials, then advertises them all, each marked ready or not and why.
+// The coordinator refuses sessions on a service that is not ready, so a
+// broken credential shows up as a clear message rather than a failed login.
+// If what would be advertised changed, the control stream is dropped so
+// that reconnecting publishes it; connections in flight are unaffected.
 func (a *Agent) reconcile(ctx context.Context) {
 	desired := a.desired()
 
 	var wg sync.WaitGroup
-	results := make(map[*service]error)
 	var mu sync.Mutex
+	results := make(map[*service]string, len(desired))
 	for _, svc := range desired {
-		a.mu.Lock()
-		known := a.ready[svc]
-		a.mu.Unlock()
-		if known {
-			continue
-		}
 		wg.Go(func() {
 			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
-			err := svc.backend.Ping(ctx)
+			var status string
+			if err := svc.backend.Ping(ctx); err != nil {
+				status = err.Error()
+			}
 			mu.Lock()
-			results[svc] = err
+			results[svc] = status
 			mu.Unlock()
 		})
 	}
 	wg.Wait()
-	for svc, err := range results {
-		log := a.Log.With("service", svc.advert.Name, "addr", svc.backend.Addr())
-		if err != nil {
-			log.Warn("service is not reachable with its credentials; not advertising it until it is", "err", err)
-			if svc.report != nil {
-				svc.report(ctx, false, "Unreachable", err.Error())
-			}
-			continue
-		}
-		log.Info("service reachable; advertising it")
-		if svc.report != nil {
-			svc.report(ctx, true, "Connected", "reachable with its credentials; advertised to the coordinator")
-		}
-		a.mu.Lock()
-		a.ready[svc] = true
-		a.mu.Unlock()
-	}
 
-	advertised := make(map[string]*service)
 	a.mu.Lock()
-	for name, svc := range desired {
-		if a.ready[svc] {
-			advertised[name] = svc
+	changed := make([]*service, 0)
+	for svc, status := range results {
+		if prev, seen := a.health[svc]; !seen || prev != status {
+			changed = append(changed, svc)
 		}
+		a.health[svc] = status
 	}
-	for svc := range a.ready { // forget services no longer desired
+	for svc := range a.health { // forget services no longer desired
 		if s, ok := desired[svc.advert.Name]; !ok || s != svc {
-			delete(a.ready, svc)
+			delete(a.health, svc)
 		}
 	}
 	a.mu.Unlock()
 
-	if prev := a.advertised.Swap(&advertised); prev != nil && !sameAdverts(*prev, advertised) {
-		a.Log.Info("advertised services changed; republishing to the coordinator",
-			"services", slices.Sorted(maps.Keys(advertised)))
+	for _, svc := range changed {
+		log := a.Log.With("service", svc.advert.Name, "addr", svc.backend.Addr())
+		if status := results[svc]; status != "" {
+			log.Warn("service is not reachable with its credentials; advertised as not ready", "err", status)
+			if svc.report != nil {
+				svc.report(ctx, false, "Unreachable", status)
+			}
+			continue
+		}
+		log.Info("service reachable; advertised as ready")
+		if svc.report != nil {
+			svc.report(ctx, true, "Connected", "reachable with its credentials; advertised to the coordinator")
+		}
+	}
+
+	adverts := make([]api.Service, 0, len(desired))
+	for _, name := range slices.Sorted(maps.Keys(desired)) {
+		svc := desired[name]
+		advert := svc.advert
+		advert.Status = results[svc]
+		advert.Ready = advert.Status == ""
+		adverts = append(adverts, advert)
+	}
+	a.advertised.Store(&desired)
+	if prev := a.adverts.Swap(&adverts); prev != nil && !reflect.DeepEqual(*prev, adverts) {
+		a.Log.Info("advertised services changed; republishing to the coordinator", "services", slices.Sorted(maps.Keys(desired)))
 		if conn := a.control.Load(); conn != nil {
 			(*conn).Close() // Run reconnects with the new set
 		}
 	}
-}
-
-func sameAdverts(a, b map[string]*service) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for name, svc := range a {
-		other, ok := b[name]
-		if !ok || other != svc {
-			return false
-		}
-	}
-	return true
 }
 
 // LoadConfig defines the services in the file at path as the "file" source.
@@ -443,18 +437,22 @@ func (a *Agent) serve(ctx context.Context) error {
 	defer context.AfterFunc(ctx, func() { conn.Close() })()
 	a.control.Store(&conn)
 
-	services := *a.advertised.Load()
-	var hello api.Hello
-	for _, svc := range services {
-		hello.Services = append(hello.Services, svc.advert)
-	}
+	hello := api.Hello{Services: *a.adverts.Load()}
 	if err := json.NewEncoder(conn).Encode(hello); err != nil {
 		return err
 	}
 	a.connected.Store(true)
 	defer a.connected.Store(false)
+	var ready, notReady []string
+	for _, svc := range hello.Services {
+		if svc.Ready {
+			ready = append(ready, svc.Name)
+		} else {
+			notReady = append(notReady, svc.Name)
+		}
+	}
 	a.Log.Info("connected to coordinator; advertised services and awaiting requests",
-		"server", a.Server, "cluster", a.Cluster, "services", slices.Sorted(maps.Keys(services)))
+		"server", a.Server, "cluster", a.Cluster, "ready", ready, "not_ready", notReady)
 
 	dec := json.NewDecoder(conn)
 	for {

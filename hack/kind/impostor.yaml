@@ -1,0 +1,35 @@
+# An exit node running as the wrong service account. Its token is genuine
+# and from the trusted issuer, but its subject is not exit_subject, so the
+# coordinator must reject it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tunneler-impostor
+  namespace: tunneler
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: tunneler-impostor}
+  template:
+    metadata:
+      labels: {app: tunneler-impostor}
+    spec:
+      serviceAccountName: default
+      containers:
+        - name: exit
+          image: tunneler:e2e
+          imagePullPolicy: Never
+          args: ["start", "exit", "--kubernetes", "--health-addr", ""]
+          env:
+            - {name: TUNNELER_SERVER, value: "http://tunneler-coordinator.tunneler.svc.cluster.local:8443"}
+            - {name: TUNNELER_CLUSTER, value: kind}
+          volumeMounts:
+            - {name: token, mountPath: /var/run/secrets/tunneler, readOnly: true}
+      volumes:
+        - name: token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: tunneler
+                  expirationSeconds: 3600
+                  path: token
