@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/mtsaas/tunneler/internal/api"
 )
@@ -143,8 +144,8 @@ func TestHelpStyle(t *testing.T) {
 			}
 		}
 		for _, line := range strings.Split(strings.TrimSpace(cmd.Example), "\n") {
-			if line != "" && !strings.HasPrefix(line, "$ tunneler ") {
-				t.Errorf("%s: example %q should start with \"$ tunneler \"", cmd.CommandPath(), line)
+			if line != "" && !strings.HasPrefix(line, "$ ") {
+				t.Errorf("%s: example %q should be a command, starting with \"$ \"", cmd.CommandPath(), line)
 			}
 		}
 		var out bytes.Buffer
@@ -158,4 +159,67 @@ func TestHelpStyle(t *testing.T) {
 		}
 	}
 	walk(rootCmd())
+}
+
+func TestKubeCommands(t *testing.T) {
+	services := []api.Cluster{{Name: "prod", Services: []api.Service{
+		{Name: "kubernetes", Kind: "kubernetes", Ready: true, Labels: map[string]string{"cluster": "prod", "kind": "kubernetes", "name": "kubernetes"}},
+		{Name: "orders", Kind: "postgres", Ready: true, Labels: map[string]string{"cluster": "prod", "kind": "postgres", "name": "orders"}},
+	}}}
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(services)
+	}))
+	defer srv.Close()
+	// The CLI uses the default transport; let it trust the test server.
+	defaultTransport := http.DefaultTransport
+	http.DefaultTransport = srv.Client().Transport
+	defer func() { http.DefaultTransport = defaultTransport }()
+	kubeconfig := filepath.Join(t.TempDir(), "config")
+	t.Setenv("KUBECONFIG", kubeconfig)
+
+	// The selector need not say kind=kubernetes: the postgres service on the
+	// same cluster is not a candidate.
+	out, errOut, status := cli(t, srv.URL, "kube", "config", "cluster=prod", "-o", "json")
+	if status != 0 {
+		t.Fatalf("kube config: status %d, %s", status, errOut)
+	}
+	var res map[string]string
+	json.Unmarshal([]byte(out), &res)
+	if res["context"] != "tunneler-prod" || res["server"] != srv.URL+"/v1/gateway/prod/kubernetes" || res["notice"] == "" {
+		t.Errorf("kube config result = %v", res)
+	}
+	cfg, err := clientcmd.LoadFromFile(kubeconfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := cfg.AuthInfos["tunneler-prod"].Exec
+	if cfg.CurrentContext != "tunneler-prod" || cfg.Clusters["tunneler-prod"].Server != res["server"] ||
+		exec == nil || strings.Join(exec.Args, " ") != "kube token" || exec.Env[0].Value != srv.URL {
+		t.Errorf("kubeconfig = %+v, exec = %+v", cfg, exec)
+	}
+	// It holds no credential: the token comes from the plugin, when asked.
+	if raw, _ := os.ReadFile(kubeconfig); strings.Contains(string(raw), "token:") {
+		t.Errorf("the kubeconfig holds a token:\n%s", raw)
+	}
+
+	// A cluster with no kubernetes service offers nothing to configure.
+	if _, _, status := cli(t, srv.URL, "kube", "config", "cluster=dev"); status != exitDenied {
+		t.Errorf("kube config for an unknown cluster: status %d, want %d", status, exitDenied)
+	}
+
+	// kubectl sends no credentials over plain HTTP; say so now, not later.
+	if _, errOut, status := cli(t, "http://coordinator.example", "kube", "config", "cluster=prod"); status == 0 || !strings.Contains(errOut, "https") {
+		t.Errorf("kube config against an http coordinator: status %d, %q", status, errOut)
+	}
+
+	// The plugin hands kubectl the login, and when to ask again.
+	out, _, status = cli(t, srv.URL, "kube", "token")
+	var cred execCredential
+	if err := json.Unmarshal([]byte(out), &cred); err != nil || status != 0 {
+		t.Fatalf("kube token: status %d, %v, %q", status, err, out)
+	}
+	if cred.Kind != "ExecCredential" || cred.APIVersion != "client.authentication.k8s.io/v1" ||
+		!strings.HasPrefix(cred.Status.Token, "h.") || time.Until(cred.Status.ExpirationTimestamp) < 50*time.Minute {
+		t.Errorf("credential = %+v", cred)
+	}
 }

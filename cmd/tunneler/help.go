@@ -181,7 +181,7 @@ has to be parsed and no credentials are shown.`),
 
 Every service has these labels, besides those its owners gave it:
 - cluster: the cluster it runs in
-- kind: postgres
+- kind: postgres (see "tunneler connect") or kubernetes (see "tunneler kube")
 - name: its name, unique in its cluster
 - namespace: for services registered in Kubernetes
 

@@ -48,7 +48,7 @@ func (c *Coordinator) handleGateway(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		c.log.Info("gateway request rejected: bad or expired ID token", "cluster", cluster, "service", name, "remote", r.RemoteAddr, "err", err)
-		writeError(w, http.StatusUnauthorized, "not logged in, or login expired; run: tunneler auth login")
+		refuseGateway(w, http.StatusUnauthorized, "not logged in, or login expired; run: tunneler auth login")
 		return
 	}
 	audit := c.audit.With("user", id.Username, "subject", id.Subject, "cluster", cluster, "service", name, "remote", r.RemoteAddr)
@@ -64,7 +64,7 @@ func (c *Coordinator) handleGateway(w http.ResponseWriter, r *http.Request) {
 	}
 	if !allowed {
 		audit.Warn("access denied: no such service, or no grant selects it", "groups", id.Groups)
-		writeError(w, http.StatusForbidden, "no such service, or access denied; see: tunneler auth status")
+		refuseGateway(w, http.StatusForbidden, "no such service, or access denied; see: tunneler auth status")
 		return
 	}
 	h := c.gateways.handler(c, cluster, svc)
@@ -79,4 +79,22 @@ func (c *Coordinator) handleGateway(w http.ResponseWriter, r *http.Request) {
 	r.URL.RawPath = ""
 	r.RequestURI = ""
 	h.ServeAs(w, r, id.Username, roles, audit)
+}
+
+// refuseGateway answers a request before the caller is known to have access
+// to the service, when the answer must not depend on whether the service
+// exists, let alone on its kind. The body is therefore one that every kind's
+// clients can read: an api.Error, which is also shaped as the Status object
+// that kubectl prints the message of.
+func refuseGateway(w http.ResponseWriter, code int, message string) {
+	writeJSON(w, code, map[string]any{
+		"error":      message,
+		"kind":       "Status",
+		"apiVersion": "v1",
+		"metadata":   map[string]any{},
+		"status":     "Failure",
+		"message":    "tunneler: " + message,
+		"reason":     map[int]string{http.StatusUnauthorized: "Unauthorized", http.StatusForbidden: "Forbidden"}[code],
+		"code":       code,
+	})
 }

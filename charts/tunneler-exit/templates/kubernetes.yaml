@@ -1,0 +1,17 @@
+{{- if .Values.kubernetes.enabled }}
+# Registers this cluster's own API with the exit node.
+apiVersion: tunneler.marconet.com/v1alpha1
+kind: TunnelService
+metadata:
+  name: {{ .Values.kubernetes.name }}
+  annotations:
+    # The resource's definition arrives with this same chart.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  kind: kubernetes
+  grantableRoles: {{ .Values.kubernetes.groups | toJson }}
+  {{- with .Values.kubernetes.labels }}
+  labels:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

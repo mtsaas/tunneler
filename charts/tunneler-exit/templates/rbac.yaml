@@ -19,6 +19,18 @@ rules:
   - apiGroups: ["tunneler.marconet.com"]
     resources: ["tunnelservices/status"]
     verbs: ["patch"]
+  {{- if .Values.kubernetes.enabled }}
+  # To act for users against this cluster's API. Any user, since people are
+  # not known in advance, but only the listed groups, which is what carries
+  # permissions. The exit node itself refuses system: users.
+  - apiGroups: [""]
+    resources: ["users"]
+    verbs: ["impersonate"]
+  - apiGroups: [""]
+    resources: ["groups"]
+    verbs: ["impersonate"]
+    resourceNames: {{ required "kubernetes.groups is required when kubernetes.enabled" .Values.kubernetes.groups | toJson }}
+  {{- end }}
   {{- if eq .Values.secretAccess "cluster" }}
   - apiGroups: [""]
     resources: ["secrets"]

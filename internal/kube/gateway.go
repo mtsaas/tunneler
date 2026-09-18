@@ -1,6 +1,7 @@
 package kube
 
 import (
+	"bufio"
 	"context"
 	"log/slog"
 	"net"
@@ -101,6 +102,16 @@ func (r *statusRecorder) Write(p []byte) (int, error) {
 		r.status = http.StatusOK
 	}
 	return r.ResponseWriter.Write(p)
+}
+
+// Hijack notes an upgrade, whose 101 response the reverse proxy writes to the
+// connection itself rather than through WriteHeader.
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, brw, err := http.NewResponseController(r.ResponseWriter).Hijack()
+	if err == nil && r.status == 0 {
+		r.status = http.StatusSwitchingProtocols
+	}
+	return conn, brw, err
 }
 
 func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }

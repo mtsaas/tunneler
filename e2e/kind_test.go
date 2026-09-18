@@ -9,9 +9,15 @@ package e2e
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/pem"
 	"io"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -67,6 +73,9 @@ func TestKindExitAuth(t *testing.T) {
 		run(t, "helm", "--kube-context", "kind-"+cluster, "upgrade", "--install", release, chart,
 			"--namespace", "tunneler", "--create-namespace", "--values", values)
 	}
+	// Helm installs a chart's CRDs once and never upgrades them, so a cluster
+	// reused from an earlier run needs the current definition applied.
+	kubectl("apply", "--server-side", "-f", "charts/tunneler-exit/crds")
 	helm("tunneler-coordinator", "charts/tunneler-coordinator", "hack/kind/coordinator-values.yaml")
 	helm("tunneler-exit", "charts/tunneler-exit", "hack/kind/exit-values.yaml")
 	kubectl("apply", "-f", "hack/kind/manifests.yaml", "-f", "hack/kind/impostor.yaml")
@@ -143,4 +152,103 @@ func coordinatorLog(t *testing.T, ctx context.Context, clients *kubernetes.Clien
 	defer stream.Close()
 	b, _ := io.ReadAll(stream)
 	return string(b)
+}
+
+// TestKindKubectl runs the real kubectl through the tunnel: to a coordinator
+// in the cluster, through the exit node, to the cluster's own API server.
+// It runs after TestKindExitAuth, which deploys everything.
+func TestKindKubectl(t *testing.T) {
+	if os.Getenv("TUNNELER_KIND") == "" {
+		t.Skip("TUNNELER_KIND not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	admin := func(args ...string) string {
+		return run(t, "kubectl", append([]string{"--context", "kind-" + cluster}, args...)...)
+	}
+	for ready := ""; ready != "True" && ctx.Err() == nil; time.Sleep(2 * time.Second) {
+		out, _ := exec.Command("kubectl", "--context", "kind-"+cluster, "-n", "tunneler", "get", "tunnelservice", "kubernetes",
+			"-o", `jsonpath={.status.conditions[?(@.type=="Ready")].status}`).Output()
+		ready = string(out)
+	}
+
+	// Reach the coordinator from here, as a laptop would over the internet.
+	forward := exec.CommandContext(ctx, "kubectl", "--context", "kind-"+cluster, "-n", "tunneler",
+		"port-forward", "service/tunneler-coordinator", "18443:8443")
+	if err := forward.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer forward.Process.Kill()
+
+	// kubectl sends credentials only over TLS, which in production an ingress
+	// provides in front of the coordinator. Here, this does.
+	upstream, _ := url.Parse("http://127.0.0.1:18443")
+	front := httputil.NewSingleHostReverseProxy(upstream)
+	front.FlushInterval = -1
+	ingress := httptest.NewTLSServer(front)
+	defer ingress.Close()
+	ca := base64.StdEncoding.EncodeToString(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ingress.Certificate().Raw}))
+
+	// A kubeconfig that knows only the coordinator, and a login.
+	token := strings.TrimSpace(admin("-n", "tunneler", "create", "token", "e2e-user", "--audience", "tunneler-users", "--duration", "1h"))
+	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
+	os.WriteFile(kubeconfig, []byte(`apiVersion: v1
+kind: Config
+current-context: tunneler
+clusters: [{name: tunneler, cluster: {server: "`+ingress.URL+`/v1/gateway/kind/tunneler-kubernetes", certificate-authority-data: "`+ca+`"}}]
+users: [{name: me, user: {token: "`+token+`"}}]
+contexts: [{name: tunneler, context: {cluster: tunneler, user: me, namespace: tunneler}}]
+`), 0o600)
+	kubectl := func(args ...string) (string, error) {
+		cmd := exec.CommandContext(ctx, "kubectl", append([]string{"--kubeconfig", kubeconfig}, args...)...)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	var out string
+	var err error
+	for ctx.Err() == nil { // until the port-forward is up
+		if out, err = kubectl("get", "pods"); err == nil {
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	if err != nil || !strings.Contains(out, "tunneler-coordinator-0") {
+		t.Fatalf("kubectl get pods: %v\n%s", err, out)
+	}
+
+	// The cluster knows the person by the identity the coordinator gave, and
+	// its own RBAC decides what they may do.
+	if out, err := kubectl("auth", "whoami", "-o", "jsonpath={.status.userInfo.groups}"); err != nil || !strings.Contains(out, "tunneler:view") {
+		t.Errorf("kubectl auth whoami: %v\n%s", err, out)
+	}
+	if out, err := kubectl("delete", "pod", "tunneler-coordinator-0"); err == nil || !strings.Contains(out, "forbidden") {
+		t.Errorf("deleting a pod with only view: %v\n%s", err, out)
+	}
+	// Someone with no grant is told why, in words kubectl can show.
+	nobody := strings.TrimSpace(admin("-n", "tunneler", "create", "token", "default", "--audience", "tunneler-users", "--duration", "10m"))
+	if out, err := kubectl("--token", nobody, "get", "pods"); err == nil || !strings.Contains(out, "tunneler auth status") {
+		t.Errorf("kubectl without a grant: %v\n%s", err, out)
+	}
+	if out, err := kubectl("get", "secrets"); err == nil || !strings.Contains(out, "forbidden") {
+		t.Errorf("view does not include secrets, yet: %v\n%s", err, out)
+	}
+
+	// exec upgrades the connection, through the ingress-less path here:
+	// kubectl, the gateway, the tunnel, the exit node, the API server.
+	if out, err := kubectl("exec", "deployment/postgres", "--", "echo", "hello from the pod"); err != nil || !strings.Contains(out, "hello from the pod") {
+		t.Errorf("kubectl exec: %v\n%s", err, out)
+	}
+	// A watch streams.
+	watch := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfig, "get", "pods", "--watch", "--request-timeout=5s")
+	if out, _ := watch.CombinedOutput(); !strings.Contains(string(out), "tunneler-coordinator-0") {
+		t.Errorf("kubectl get --watch:\n%s", out)
+	}
+
+	// All of it is on the coordinator's audit trail.
+	log := admin("-n", "tunneler", "logs", "statefulset/tunneler-coordinator")
+	for _, want := range []string{`"msg":"kubernetes request"`, `"resource":"pods"`, `"subresource":"exec"`, `"command":["echo","hello from the pod"]`, `"verb":"delete"`, `"status":403`} {
+		if !strings.Contains(log, want) {
+			t.Errorf("audit trail lacks %s", want)
+		}
+	}
 }

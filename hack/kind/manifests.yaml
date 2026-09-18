@@ -97,3 +97,47 @@ spec:
       kubernetesSecret: {name: pg-admin, key: database_uri}
   grantableRoles: [pg_read_all_data]
   labels: {environment: e2e}
+---
+# A person, for the kubectl test. What they may do is this cluster's
+# business: the coordinator only says who they are and which groups they hold.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: e2e-user
+  namespace: tunneler
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tunneler-view
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
+subjects:
+  - kind: Group
+    name: tunneler:view
+---
+# "view" does not include exec; grant it in one namespace, to test upgrades.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tunneler-exec
+  namespace: tunneler
+rules:
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tunneler-exec
+  namespace: tunneler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: tunneler-exec
+subjects:
+  - kind: Group
+    name: tunneler:view

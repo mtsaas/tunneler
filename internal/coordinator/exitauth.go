@@ -89,16 +89,26 @@ func newKubeVerifier(cfg *Config) (*kubeVerifier, error) {
 	if cfg.ExitIssuerCAFile == "" {
 		return v, nil
 	}
-	pem, err := os.ReadFile(cfg.ExitIssuerCAFile)
+	client, err := caClient(cfg.ExitIssuerCAFile)
 	if err != nil {
 		return nil, fmt.Errorf("exit_issuer_ca_file: %w", err)
 	}
+	v.client = client
+	return v, nil
+}
+
+// caClient returns an HTTP client that trusts the PEM bundle in file, and
+// nothing else, when verifying servers.
+func caClient(file string) (*http.Client, error) {
+	pem, err := os.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(pem) {
-		return nil, fmt.Errorf("exit_issuer_ca_file: %s holds no certificates", cfg.ExitIssuerCAFile)
+		return nil, fmt.Errorf("%s holds no certificates", file)
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = &tls.Config{RootCAs: pool}
-	v.client = &http.Client{Transport: transport}
-	return v, nil
+	return &http.Client{Transport: transport}, nil
 }

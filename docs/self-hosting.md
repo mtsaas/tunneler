@@ -12,6 +12,7 @@ principles. If you only want the Azure procedure, go to
 - [3. The Entra app registration](#3-the-entra-app-registration)
 - [4. The coordinator](#4-the-coordinator)
 - [5. Azure Kubernetes Service setup](#5-azure-kubernetes-service-setup)
+- [5.7 Offer the cluster to kubectl](#57-offer-the-cluster-to-kubectl)
 - [6. Grants: who can reach what](#6-grants-who-can-reach-what)
 - [7. The client](#7-the-client)
 - [8. Operation](#8-operation)
@@ -455,6 +456,68 @@ The coordinator knows this service as `shop-postgres`. It has the labels
 
 `grantableRoles` is a limit. The coordinator can give a person only roles
 from this list. A grant that names another role fails.
+
+### 5.7 Offer the cluster to kubectl
+
+The exit node can also offer the Kubernetes API of its own cluster. People
+then use `kubectl`, and every other tool that reads a kubeconfig, through the
+coordinator. This works differently from a database.
+
+- There is no temporary account. For each request, the exit node tells the
+  API server who the person is, with the impersonation feature of Kubernetes.
+- The RBAC of the cluster decides what the person can do. Tunneler decides
+  only who they are and which groups they have.
+- The coordinator records each request: the person, the verb, the resource,
+  the namespace, the name, and the result. For `kubectl exec`, it records the
+  command. The audit log of the cluster names the person too.
+- The credential is the service account of the exit node. It stays in the
+  cluster.
+
+1. Select the groups that people can get, for example `tunneler:view`. Bind
+   each group to a role with the usual RBAC objects:
+
+   ```bash
+   kubectl create clusterrolebinding tunneler-view --clusterrole=view --group=tunneler:view
+   ```
+
+2. Enable the feature in the exit node chart. Give the same groups:
+
+   ```bash
+   helm upgrade tunneler-exit oci://ghcr.io/mtsaas/charts/tunneler-exit --reuse-values \
+     --set kubernetes.enabled=true --set 'kubernetes.groups={tunneler:view}'
+   ```
+
+   The exit node can impersonate these groups only. It refuses all other
+   groups, and it refuses users whose names start with `system:`.
+
+   NOTE: Helm does not upgrade the custom resource definition of a chart. If
+   you installed an earlier version with Helm, apply the definition first:
+   `kubectl apply --server-side -f charts/tunneler-exit/crds`. Argo CD does
+   this for you.
+
+3. Add a grant to the coordinator configuration. The `roles` of a grant for
+   a `kubernetes` service are the groups:
+
+   ```json
+   {"group": "<group-id>", "labels": {"cluster": "prod", "kind": "kubernetes"}, "roles": ["tunneler:view"]}
+   ```
+
+4. Each person adds the cluster to their kubeconfig one time:
+
+   ```bash
+   tunneler kube config cluster=prod
+   kubectl get pods
+   ```
+
+   The kubeconfig contains no credential. `kubectl` gets the login from
+   `tunneler kube token` when it needs it.
+
+The coordinator must have an `https://` address. `kubectl` does not send a
+login to an `http://` address.
+
+CAUTION: If the coordinator is down, `kubectl` through it does not work.
+Keep a second way into each cluster for a small group of administrators, for
+example `az aks get-credentials`.
 
 ## 6. Grants: who can reach what
 

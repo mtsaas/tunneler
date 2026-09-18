@@ -2,3 +2,6 @@ image: {repository: tunneler, tag: e2e, pullPolicy: Never}
 server: http://tunneler-coordinator.tunneler.svc.cluster.local:8443
 cluster: kind
 replicas: 1
+kubernetes:
+  enabled: true
+  groups: ["tunneler:view"]

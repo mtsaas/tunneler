@@ -60,8 +60,11 @@ type TLSConfig struct {
 // https://login.microsoftonline.com/<tenant-id>/v2.0 and the groups claim
 // carries group object IDs.
 type OIDCConfig struct {
-	Issuer        string `json:"issuer"`
-	ClientID      string `json:"client_id"`
+	Issuer   string `json:"issuer"`
+	ClientID string `json:"client_id"`
+	// CAFile, if set, is a PEM bundle trusted when talking to the issuer,
+	// for a provider with a private certificate. Entra needs nothing.
+	CAFile        string `json:"ca_file,omitempty"`
 	UsernameClaim string `json:"username_claim"` // default "preferred_username"
 	UserIDClaim   string `json:"user_id_claim"`  // default "oid", the Entra user object ID; "sub" is app-specific there
 	GroupsClaim   string `json:"groups_claim"`   // default "groups"

@@ -43,11 +43,20 @@ spec:
           properties:
             spec:
               type: object
-              required: [kind, credentials]
+              required: [kind]
+              x-kubernetes-validations:
+                - rule: "self.kind != 'postgres' || has(self.credentials)"
+                  message: a postgres service needs credentials
+                - rule: "self.kind != 'kubernetes' || !has(self.credentials)"
+                  message: a kubernetes service takes no credentials; the exit node uses its own service account
               properties:
                 kind:
+                  description: >-
+                    postgres: a database, reached with "tunneler connect".
+                    kubernetes: this cluster's API, reached with kubectl after
+                    "tunneler kube config".
                   type: string
-                  enum: [postgres]
+                  enum: [postgres, kubernetes]
                 credentials:
                   type: object
                   required: [dsnRef]
@@ -79,8 +88,8 @@ spec:
                             secretName: {type: string}
                 grantableRoles:
                   description: >-
-                    Database roles the coordinator may grant to the accounts it
-                    provisions here.
+                    What the coordinator may grant a user here: database roles
+                    for postgres, groups to impersonate for kubernetes.
                   type: array
                   items: {type: string}
                 labels:

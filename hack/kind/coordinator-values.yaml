@@ -1,8 +1,22 @@
-# A coordinator inside the kind cluster that trusts the cluster's own issuer.
+# A coordinator inside the kind cluster that trusts the cluster's own issuer,
+# both for exit nodes and, standing in for Entra, for users.
 image: {repository: tunneler, tag: e2e, pullPolicy: Never}
 config:
   exit_issuers: ["https://kubernetes.default.svc.cluster.local"]
   # The API server's certificate is signed by the cluster's private CA.
   exit_issuer_ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-  # Discovery must succeed at startup, but no user logs in during this test.
-  oidc: {issuer: "https://accounts.google.com", client_id: unused}
+  # A test user is a service account token with this audience:
+  #   kubectl -n tunneler create token e2e-user --audience tunneler-users
+  oidc:
+    issuer: https://kubernetes.default.svc.cluster.local
+    client_id: tunneler-users
+    ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    # A service account's subject is a system: user, which exit nodes rightly
+    # refuse to impersonate. The token's unique ID stands in for a person's
+    # name; the grant below matches on the subject, as the user ID.
+    username_claim: jti
+    user_id_claim: sub
+  grants:
+    - user: system:serviceaccount:tunneler:e2e-user
+      labels: {cluster: kind, kind: kubernetes}
+      roles: ["tunneler:view"]

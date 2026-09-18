@@ -22,6 +22,19 @@ replicas: 2
 #               the TunnelService alone. Convenient for development clusters.
 secretAccess: namespaced
 
+# Offer this cluster's own Kubernetes API through the coordinator, for
+# kubectl. Users are impersonated, so the cluster's RBAC decides what they
+# may do: bind the groups below to Roles and ClusterRoles, and name them as
+# `roles` in the coordinator's grants.
+kubernetes:
+  enabled: false
+  name: kubernetes
+  # The only groups a user may be given here. The exit node is allowed to
+  # impersonate these and no others.
+  groups: []
+  # - tunneler:view
+  labels: {}
+
 # Only needed for TunnelService resources that refer to Azure Key Vault: the
 # client ID of a managed identity with a federated credential for this
 # chart's service account. Authentication to the coordinator does not use it.

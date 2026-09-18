@@ -3,6 +3,7 @@ package coordinator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -30,6 +31,13 @@ type Authenticator func(ctx context.Context, token string) (*Identity, error)
 // by the configured provider for the configured client. It fetches the
 // provider's discovery document, so the issuer must be reachable.
 func NewOIDCAuthenticator(ctx context.Context, cfg OIDCConfig) (Authenticator, error) {
+	if cfg.CAFile != "" {
+		client, err := caClient(cfg.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("oidc.ca_file: %w", err)
+		}
+		ctx = oidc.ClientContext(ctx, client) // the provider keeps it, for fetching keys later
+	}
 	provider, err := oidc.NewProvider(ctx, cfg.Issuer)
 	if err != nil {
 		return nil, err

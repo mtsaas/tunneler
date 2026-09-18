@@ -321,6 +321,16 @@ func TestExecUpgrades(t *testing.T) {
 	if len(rec) == 0 || rec[0]["subresource"] != "exec" || fmt.Sprint(rec[0]["command"]) != "[sh -c id]" {
 		t.Errorf("exec should be recorded with its command when it starts; audit = %v", rec)
 	}
+
+	// And again when it ends, as the upgrade it was.
+	conn.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(c.auditRecords()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if rec := c.auditRecords(); len(rec) < 2 || rec[1]["msg"] != "kubernetes request" || rec[1]["status"] != float64(101) {
+		t.Errorf("the finished exec should be recorded with status 101; audit = %v", rec)
+	}
 }
 
 func TestPingReportsBadCredentials(t *testing.T) {
