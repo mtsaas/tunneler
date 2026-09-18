@@ -140,6 +140,17 @@ func (c *cluster) auditRecords() []map[string]any {
 	return records
 }
 
+// waitForRecords returns the audit records once there are n of them. The
+// record of a finished request is written after the response is, so a
+// caller that has just read a response may be a moment ahead of it.
+func (c *cluster) waitForRecords(n int) []map[string]any {
+	deadline := time.Now().Add(5 * time.Second)
+	for len(c.auditRecords()) < n && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	return c.auditRecords()
+}
+
 func (c *cluster) get(path string, header http.Header) *http.Response {
 	c.t.Helper()
 	req, _ := http.NewRequest("GET", c.gateway.URL+path, nil)
@@ -200,8 +211,7 @@ func TestIdentity(t *testing.T) {
 	}
 
 	// The audit trail says what was asked for and how it went.
-	records := c.auditRecords()
-	first := records[0]
+	first := c.waitForRecords(1)[0]
 	for k, want := range map[string]any{"msg": "kubernetes request", "verb": "list", "resource": "pods", "namespace": "shop", "status": float64(200)} {
 		if first[k] != want {
 			t.Errorf("audit %s = %v, want %v (record %v)", k, first[k], want, first)
@@ -324,11 +334,7 @@ func TestExecUpgrades(t *testing.T) {
 
 	// And again when it ends, as the upgrade it was.
 	conn.Close()
-	deadline := time.Now().Add(5 * time.Second)
-	for len(c.auditRecords()) < 2 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if rec := c.auditRecords(); len(rec) < 2 || rec[1]["msg"] != "kubernetes request" || rec[1]["status"] != float64(101) {
+	if rec := c.waitForRecords(2); len(rec) < 2 || rec[1]["msg"] != "kubernetes request" || rec[1]["status"] != float64(101) {
 		t.Errorf("the finished exec should be recorded with status 101; audit = %v", rec)
 	}
 }
@@ -344,5 +350,14 @@ func TestPingReportsBadCredentials(t *testing.T) {
 	}
 	if err := api.Ping(context.Background()); err == nil || !strings.Contains(err.Error(), "401") {
 		t.Errorf("Ping = %v, want an error naming the 401", err)
+	}
+}
+
+func TestFollowedLogsAreRecordedAtStart(t *testing.T) {
+	c := newCluster(t, []string{"tunneler:view"}, func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "a log line") })
+	c.get("/api/v1/namespaces/shop/pods/web-0/log?follow=true", nil).Body.Close()
+	rec := c.waitForRecords(2)
+	if len(rec) != 2 || rec[0]["msg"] != "kubernetes request started" || rec[0]["subresource"] != "log" {
+		t.Errorf("audit = %v", rec)
 	}
 }

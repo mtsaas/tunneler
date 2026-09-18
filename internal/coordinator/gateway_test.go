@@ -126,6 +126,10 @@ func TestKubernetesGateway(t *testing.T) {
 		got.Header.Get("Authorization") != "Bearer exit-node-token" || got.URL.RawQuery != "limit=5" {
 		t.Errorf("the API server was asked: %s %v", got.URL, got.Header)
 	}
+	// The record of a request is written after its response is.
+	for deadline := time.Now().Add(5 * time.Second); !strings.Contains(audit.String(), `"msg":"kubernetes request"`) && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+	}
 	if log := audit.String(); !strings.Contains(log, `"msg":"kubernetes request"`) || !strings.Contains(log, `"user":"alice@example.com"`) ||
 		!strings.Contains(log, `"resource":"pods"`) || !strings.Contains(log, `"namespace":"shop"`) {
 		t.Errorf("audit trail lacks the request:\n%s", log)

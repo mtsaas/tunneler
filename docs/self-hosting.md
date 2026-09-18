@@ -1,7 +1,10 @@
 # Self-hosting guide
 
-This guide tells you how to install and operate tunneler. It starts from first
-principles. If you only want the Azure procedure, go to
+This guide tells you how to install and operate tunneler: a coordinator, the
+exit nodes that connect to it, and the clients. It does not tell you how to
+offer a database or a cluster through tunneler. For that, read
+[Services](services/README.md) when tunneler operates. This guide starts
+from first principles. If you only want the Azure procedure, go to
 [Azure Kubernetes Service setup](#5-azure-kubernetes-service-setup).
 
 ## Contents
@@ -12,7 +15,6 @@ principles. If you only want the Azure procedure, go to
 - [3. The Entra app registration](#3-the-entra-app-registration)
 - [4. The coordinator](#4-the-coordinator)
 - [5. Azure Kubernetes Service setup](#5-azure-kubernetes-service-setup)
-- [5.7 Offer the cluster to kubectl](#57-offer-the-cluster-to-kubectl)
 - [6. Grants: who can reach what](#6-grants-who-can-reach-what)
 - [7. The client](#7-the-client)
 - [8. Operation](#8-operation)
@@ -77,8 +79,6 @@ You need these items.
 - A load balancer or ingress in front of the coordinator that passes
   WebSocket connections. Most do this by default.
 - One or more AKS clusters with the OIDC issuer feature enabled.
-- In each cluster, a Postgres database and an administrative role for
-  tunneler (see [section 5.4](#54-prepare-the-postgres-database)).
 - The `az` and `kubectl` commands.
 
 The container image is `ghcr.io/mtsaas/tunneler:latest`. One image contains
@@ -308,222 +308,11 @@ token and rotates it. The exit node presents it to the coordinator.
 If the coordinator log contains `exit node rejected`, read the `err` field.
 It names the issuer, the subject, or the bound cluster that did not match.
 
-### 5.4 Prepare the Postgres database
+### 5.4 Next: offer services
 
-The exit node needs an administrative role on each database. That role
-creates and removes the temporary accounts. It does not need superuser.
-
-1. Connect to the database as a superuser.
-
-2. Create the role:
-
-   ```sql
-   CREATE ROLE tunneler_admin LOGIN PASSWORD '<password>' CREATEROLE;
-   ```
-
-3. For each role that people can receive, give `tunneler_admin` the right to
-   grant it:
-
-   ```sql
-   GRANT readonly TO tunneler_admin WITH ADMIN OPTION;
-   GRANT readwrite TO tunneler_admin WITH ADMIN OPTION;
-   ```
-
-4. Write the connection string for `tunneler_admin`:
-
-   ```
-   postgres://tunneler_admin:<password>@<host>:5432/<database>?sslmode=require
-   ```
-
-   The database in this string is the only database that sessions can use.
-   For a server with more databases, register one `TunnelService` per
-   database.
-
-### 5.5 Store the connection string
-
-Put the connection string where the `TunnelService` can refer to it. There
-are two options.
-
-**Option A: a Kubernetes Secret.** Create the Secret in the namespace of the
-database:
-
-```bash
-kubectl -n shop create secret generic orders-db-tunneler --from-literal=dsn='postgres://...'
-```
-
-Then let the exit node read that one Secret. Create a Role and a RoleBinding
-in the same namespace. The `resourceNames` field limits the Role to this
-Secret only:
-
-```yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata: {name: tunneler-read-dsn, namespace: shop}
-rules:
-  - apiGroups: [""]
-    resources: [secrets]
-    resourceNames: [orders-db-tunneler]
-    verbs: [get]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata: {name: tunneler-read-dsn, namespace: shop}
-roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: tunneler-read-dsn}
-subjects:
-  - {kind: ServiceAccount, name: tunneler-exit, namespace: tunneler}
-```
-
-On a development cluster, you can skip the Role and the RoleBinding. Install
-the exit node chart with `--set secretAccess=cluster`. The exit node can then
-read every Secret in the cluster.
-
-CAUTION: Do not use `secretAccess=cluster` on a production cluster. It gives
-the exit node access to all Secrets.
-
-**Option B: Azure Key Vault.** The exit node reads the secret through a
-workload identity. This is the better option for credentials that Terraform
-manages.
-
-1. Create a managed identity for the exit node:
-
-   ```bash
-   az identity create -g $RG -n tunneler-exit
-   ```
-
-2. Add a federated credential for the exit node service account:
-
-   ```bash
-   az identity federated-credential create -g $RG --identity-name tunneler-exit \
-     --name tunneler-exit --issuer $ISSUER_URL \
-     --subject system:serviceaccount:tunneler:tunneler-exit \
-     --audience api://AzureADTokenExchange
-   ```
-
-3. Give the identity the `Key Vault Secrets User` role on the secret:
-
-   ```bash
-   az role assignment create --role "Key Vault Secrets User" \
-     --assignee-object-id $(az identity show -g $RG -n tunneler-exit --query principalId -o tsv) \
-     --assignee-principal-type ServicePrincipal \
-     --scope /subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.KeyVault/vaults/$VAULT/secrets/tunneler-db-uri
-   ```
-
-4. Give the client ID of the identity to the chart. The chart adds the
-   workload identity annotation and label:
-
-   ```bash
-   helm upgrade tunneler-exit oci://ghcr.io/mtsaas/charts/tunneler-exit --reuse-values \
-     --set workloadIdentity.clientId=$(az identity show -g $RG -n tunneler-exit --query clientId -o tsv)
-   ```
-
-### 5.6 Register the service
-
-1. Create a `TunnelService` in the namespace of the database:
-
-   ```yaml
-   apiVersion: tunneler.marconet.com/v1alpha1
-   kind: TunnelService
-   metadata:
-     name: postgres
-     namespace: shop
-   spec:
-     kind: postgres
-     credentials:
-       dsnRef:
-         kubernetesSecret: {name: orders-db-tunneler, key: dsn}
-     grantableRoles: [readonly, readwrite]
-     labels:
-       team: shop
-   ```
-
-   For Key Vault, replace `kubernetesSecret` with
-   `azureKeyVault: {vaultUri: https://<vault>.vault.azure.net, secretName: tunneler-db-uri}`.
-
-2. Make sure that the service is ready:
-
-   ```bash
-   kubectl -n shop get tunnelservice
-   ```
-
-   The `READY` column must show `True`. If it shows `False`, the `REASON`
-   column tells you why. `CredentialsInvalid` means that the exit node
-   cannot read the Secret. `Unreachable` means that the connection string
-   does not work.
-
-The coordinator knows this service as `shop-postgres`. It has the labels
-`cluster`, `kind`, `name`, `namespace`, and `team`. When you delete the
-`TunnelService`, the service disappears from the coordinator.
-
-`grantableRoles` is a limit. The coordinator can give a person only roles
-from this list. A grant that names another role fails.
-
-### 5.7 Offer the cluster to kubectl
-
-The exit node can also offer the Kubernetes API of its own cluster. People
-then use `kubectl`, and every other tool that reads a kubeconfig, through the
-coordinator. This works differently from a database.
-
-- There is no temporary account. For each request, the exit node tells the
-  API server who the person is, with the impersonation feature of Kubernetes.
-- The RBAC of the cluster decides what the person can do. Tunneler decides
-  only who they are and which groups they have.
-- The coordinator records each request: the person, the verb, the resource,
-  the namespace, the name, and the result. For `kubectl exec`, it records the
-  command. The audit log of the cluster names the person too.
-- The credential is the service account of the exit node. It stays in the
-  cluster.
-
-1. Select the groups that people can get, for example `tunneler:view`. Bind
-   each group to a role with the usual RBAC objects:
-
-   ```bash
-   kubectl create clusterrolebinding tunneler-view --clusterrole=view --group=tunneler:view
-   ```
-
-2. Enable the feature in the exit node chart. Give the same groups:
-
-   ```bash
-   helm upgrade tunneler-exit oci://ghcr.io/mtsaas/charts/tunneler-exit --reuse-values \
-     --set kubernetes.enabled=true --set 'kubernetes.groups={tunneler:view}'
-   ```
-
-   The exit node can impersonate these groups only. It refuses all other
-   groups, and it refuses users whose names start with `system:`.
-
-   NOTE: Helm does not upgrade the custom resource definition of a chart. If
-   you installed an earlier version with Helm, apply the definition first:
-   `kubectl apply --server-side -f charts/tunneler-exit/crds`. Argo CD does
-   this for you.
-
-3. Add a grant to the coordinator configuration. The `roles` of a grant for
-   a `kubernetes` service are the groups:
-
-   ```json
-   {"group": "<group-id>", "labels": {"cluster": "prod", "kind": "kubernetes"}, "roles": ["tunneler:view"]}
-   ```
-
-4. Each person connects to the cluster one time. For a `kubernetes`
-   service, `tunneler connect` adds a context to the kubeconfig and stops:
-
-   ```bash
-   tunneler connect cluster=prod kind=kubernetes
-   kubectl get pods
-   ```
-
-   The kubeconfig contains no credential. `kubectl` gets the login from
-   tunneler when it needs it. To run one command and keep nothing, put the
-   command after `--`:
-
-   ```bash
-   tunneler connect cluster=prod kind=kubernetes -- kubectl get pods
-   ```
-
-The coordinator must have an `https://` address. `kubectl` does not send a
-login to an `http://` address.
-
-CAUTION: If the coordinator is down, `kubectl` through it does not work.
-Keep a second way into each cluster for a small group of administrators, for
-example `az aks get-credentials`.
+The cluster is now connected, and it offers nothing yet. To offer a database
+or the Kubernetes API of the cluster, read
+[Services](services/README.md).
 
 ## 6. Grants: who can reach what
 
@@ -536,7 +325,8 @@ labels in the grant.
 ```
 
 This grant reaches every service on `prod` with the label `team: shop`. A
-person who uses it gets the database role `readonly`.
+person who uses it gets the role `readonly` there. The meaning of a role
+depends on the kind of service. See [Services](services/README.md#3-roles).
 
 Some rules:
 
@@ -545,8 +335,8 @@ Some rules:
 - A grant with only `"cluster": "prod"` reaches everything on `prod`.
 - A person with several grants gets the roles from all grants that reach the
   service.
-- A grant with no `roles` gives an account with no privileges beyond
-  `PUBLIC`.
+- A grant with no `roles` gives access with no roles. For a database, that
+  is an account with the privileges of `PUBLIC` only.
 - Every service has the labels `cluster`, `kind`, `name`, and `namespace`.
   The exit node sets them. A `TunnelService` cannot set them.
 
@@ -585,32 +375,14 @@ Each person installs the `tunneler` command. See
    and the services that you can reach. If the groups list is empty, the app
    registration does not emit groups. See [section 3](#3-the-entra-app-registration).
 
-4. Connect to a service. Give labels that match exactly one service. The
-   same command connects to a database and to a cluster
-   (see [section 5.7](#57-offer-the-cluster-to-kubectl)):
+4. Make sure that you can see the services:
 
    ```bash
-   tunneler connect cluster=prod team=shop
+   tunneler services list
    ```
 
-   If the labels match more than one service, the command lists them and
-   asks you to select one. With no labels, it lists every service that you
-   can reach.
-
-The command prints a host, a port, a user, and a password. Give them to your
-database tool. Press Ctrl-C to disconnect. The coordinator then removes the
-account. The port for one service is the same each time, so a saved
-connection in a database tool continues to work. Only the user and the
-password change.
-
-To run one command, put it after `--`. The command gets the connection in
-its environment (`PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`,
-and `DATABASE_URL`). When the command stops, the coordinator removes the
-account:
-
-```bash
-tunneler connect cluster=prod team=shop -- psql
-```
+The client is now ready. To connect to a service, read
+[Services](services/README.md#5-how-people-connect).
 
 ### Scripts and agents
 

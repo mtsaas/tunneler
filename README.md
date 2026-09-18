@@ -16,6 +16,10 @@ To host tunneler yourself, read the [self-hosting guide](docs/self-hosting.md).
 It explains the parts from first principles and walks through the
 [Azure Kubernetes Service setup](docs/self-hosting.md#5-azure-kubernetes-service-setup).
 
+To offer a service through tunneler, and to connect to one, read
+[Services](docs/services/README.md): [Postgres](docs/services/postgres.md) and
+[Kubernetes](docs/services/kubernetes.md).
+
 ### Installation
 
 Install the client. The script uses Go if you have it, otherwise Docker:

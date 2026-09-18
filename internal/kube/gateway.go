@@ -66,7 +66,10 @@ func (g *Gateway) ServeAs(w http.ResponseWriter, r *http.Request, user string, g
 		r.Header.Add(headerGroup, group)
 	}
 
-	longLived := info.Verb == "watch" || r.Header.Get("Upgrade") != ""
+	// Requests that stay open are also recorded when they start, since when
+	// they end may be hours away: watches, followed logs, and the upgrades
+	// of exec, attach and port-forward.
+	longLived := info.Verb == "watch" || r.Header.Get("Upgrade") != "" || r.URL.Query().Get("follow") == "true"
 	if longLived {
 		audit.Info("kubernetes request started")
 	}
