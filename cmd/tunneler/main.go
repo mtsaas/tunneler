@@ -40,13 +40,15 @@ func rootCmd() *cobra.Command {
 
 	auth := &cobra.Command{Use: "auth", Short: "Manage your login"}
 	auth.AddCommand(authLoginCmd(), authStatusCmd())
-	clusters := &cobra.Command{Use: "clusters", Short: "Inspect clusters"}
-	clusters.AddCommand(clustersListCmd(), clustersForgetCmd())
+	services := &cobra.Command{Use: "services", Short: "Inspect services"}
+	services.AddCommand(servicesListCmd())
+	clusters := &cobra.Command{Use: "clusters", Short: "Manage clusters"}
+	clusters.AddCommand(clustersForgetCmd())
 	sessions := &cobra.Command{Use: "sessions", Short: "Manage sessions"}
 	sessions.AddCommand(sessionsListCmd(), sessionsRevokeCmd())
 	start := &cobra.Command{Use: "start", Short: "Run a server component"}
 	start.AddCommand(startCoordinatorCmd(), startExitCmd())
 
-	root.AddCommand(configCmd(), auth, clusters, connectCmd(), sessions, start)
+	root.AddCommand(configCmd(), auth, services, clusters, connectCmd(), sessions, start)
 	return root
 }

@@ -13,14 +13,15 @@ import (
 	"github.com/mtsaas/tunneler/internal/api"
 )
 
-func clustersListCmd() *cobra.Command {
+func servicesListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List the clusters and services you can reach",
-		Long: `List the clusters and services you can reach.
+		Short: "List the services you can reach",
+		Long: `List the services you can reach, with the labels to select them by.
 
-A cluster is listed while one of its exit nodes is connected to the
-coordinator, and a service only if your groups grant you access to it.`,
+A service is listed while an exit node of its cluster is connected to the
+coordinator and your grants reach it. STATUS says whether that exit node can
+currently connect to it.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			c, token, err := authed(cmd.Context())

@@ -27,7 +27,7 @@ func connectCmd() *cobra.Command {
 
 Name the service by its labels, as many as it takes to match exactly one.
 Every service has the labels cluster, kind and name, besides those its
-cluster gave it; "tunneler clusters list" shows them all. If the selector
+cluster gave it; "tunneler services list" shows them all. If the selector
 matches several services, they are listed so you can narrow it.
 
 The coordinator provisions a temporary account for you on the service and
@@ -49,7 +49,7 @@ connections until you press Ctrl-C, which revokes the account.`,
 				selector["name"] = name
 			}
 			if len(selector) == 0 {
-				return errors.New("say which service: tunneler connect LABEL=VALUE... (see: tunneler clusters list)")
+				return errors.New("say which service: tunneler connect LABEL=VALUE... (see: tunneler services list)")
 			}
 			return connect(cmd.Context(), api.SessionRequest{Selector: selector}, port)
 		},
