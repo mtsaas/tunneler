@@ -23,7 +23,7 @@ func servicesListCmd() *cobra.Command {
 A service is listed while an exit node of its cluster is connected to the
 coordinator and your grants reach it. STATUS says whether that exit node can
 currently connect to it.`,
-		Args: cobra.NoArgs,
+		Args: usage(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			c, token, err := authed(cmd.Context())
 			if err != nil {
@@ -33,9 +33,13 @@ currently connect to it.`,
 			if err := c.do(cmd.Context(), http.MethodGet, "/v1/clusters", token, nil, &clusters); err != nil {
 				return err
 			}
+			if outputJSON {
+				result(clusters, "")
+				return nil
+			}
 			if len(clusters) == 0 {
-				log.Info("Nothing to list. Either no exit node is connected, or none of your groups is granted access to " +
-					"any service. To see which, run: tunneler auth status")
+				fmt.Print("No services. Either no exit node is connected, or no grant gives you access to one.\n" +
+					"To see which, run:\n\n    tunneler auth status\n\n")
 				return nil
 			}
 			printServices(os.Stdout, clusters, false)

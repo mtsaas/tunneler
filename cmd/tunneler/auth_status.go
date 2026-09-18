@@ -25,13 +25,26 @@ The output follows a login through the system: the claims the identity
 provider put in your token, what the coordinator makes of them, which grants
 your groups satisfy, and which services those grants reach right now. When
 you cannot reach something, the first section that looks wrong says why.`,
-		Args: cobra.NoArgs,
+		Args: usage(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			c, token, err := authed(cmd.Context())
 			if err != nil {
 				return err
 			}
 
+			if outputJSON {
+				var st api.AuthStatus
+				if err := c.do(cmd.Context(), http.MethodGet, "/v1/auth/status", token, nil, &st); err != nil {
+					return err
+				}
+				result(map[string]any{
+					"server":           c.state.Server,
+					"token_expires_at": jwtExpiry(token),
+					"renewable":        c.state.RefreshToken != "",
+					"identity":         st,
+				}, "")
+				return nil
+			}
 			fmt.Printf("Coordinator: %s\n\n", c.state.Server)
 			fmt.Println("1. Your ID token, as the identity provider issued it")
 			fmt.Printf("   expires %s; %s\n\n", jwtExpiry(token).Local().Format(time.DateTime),

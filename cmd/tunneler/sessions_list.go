@@ -16,7 +16,7 @@ func sessionsListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List your sessions (admins: everyone's)",
-		Args:  cobra.NoArgs,
+		Args:  usage(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			c, token, err := authed(cmd.Context())
 			if err != nil {
@@ -25,6 +25,10 @@ func sessionsListCmd() *cobra.Command {
 			var sessions []api.Session
 			if err := c.do(cmd.Context(), http.MethodGet, "/v1/sessions", token, nil, &sessions); err != nil {
 				return err
+			}
+			if outputJSON {
+				result(sessions, "")
+				return nil
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 			fmt.Fprintln(w, "ID\tOWNER\tCLUSTER\tSERVICE\tACCOUNT\tEXPIRES")

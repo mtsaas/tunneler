@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"net"
 	"net/url"
 	"strings"
@@ -15,14 +14,14 @@ func configCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
 		Short: "Show or set the coordinator to talk to",
-		Args:  cobra.NoArgs,
+		Args:  usage(cobra.NoArgs),
 		RunE: func(*cobra.Command, []string) error {
 			c, err := loadClient()
 			if err != nil {
 				return err
 			}
 			if server == "" {
-				fmt.Println("server:", c.state.Server)
+				result(map[string]string{"server": c.state.Server, "file": c.path}, "server: "+c.state.Server)
 				return nil
 			}
 			u, err := url.Parse(server)
@@ -39,7 +38,8 @@ func configCmd() *cobra.Command {
 			if err := c.save(); err != nil {
 				return err
 			}
-			log.Info("Saved. Next: tunneler auth login", "file", c.path)
+			result(map[string]string{"server": c.state.Server, "file": c.path},
+				"Saved. Run the following to authenticate:\n\n    tunneler auth login")
 			return nil
 		},
 	}

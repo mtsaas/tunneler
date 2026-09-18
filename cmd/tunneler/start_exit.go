@@ -58,7 +58,7 @@ and /readyz while it is connected to the coordinator. Services are defined in th
 Users select services by label. Each also carries the labels cluster, kind
 and name automatically. The kind tells the coordinator which protocol-aware proxy to put in front of
 the service.`,
-		Args: cobra.NoArgs,
+		Args: usage(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			a.Log = log
 			log.Info("tunneler exit node starting", "version", version.String())

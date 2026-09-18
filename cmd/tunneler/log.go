@@ -14,9 +14,11 @@ import (
 // replaced once flags are parsed; see newLogger.
 var log = slog.New(statusHandler{w: os.Stderr, mu: new(sync.Mutex)})
 
-// newLogger returns the process logger. Servers always log JSON. The client
-// prints plain status lines for a person to read, unless verbose, when it
-// logs everything it does as structured text.
+// newLogger returns the process logger, which carries the timeline of what a
+// command is doing; the result of a command is written by result instead.
+// Servers always log JSON. The client prints plain, timestamped status lines
+// for a person to read; with --output json it logs JSON to stderr, and with
+// --verbose everything it does as structured text.
 func newLogger(server, verbose bool) *slog.Logger {
 	level := slog.LevelInfo
 	if verbose {
@@ -26,6 +28,8 @@ func newLogger(server, verbose bool) *slog.Logger {
 	switch {
 	case server:
 		return slog.New(slog.NewJSONHandler(os.Stdout, opts))
+	case outputJSON: // stdout is for results; the timeline goes to stderr
+		return slog.New(slog.NewJSONHandler(os.Stderr, opts))
 	case verbose:
 		return slog.New(slog.NewTextHandler(os.Stderr, opts))
 	}

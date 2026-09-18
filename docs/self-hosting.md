@@ -541,6 +541,30 @@ account:
 tunneler connect cluster=prod team=shop -- psql
 ```
 
+### Scripts and agents
+
+The client has a stable contract for programs. `tunneler --help` gives the
+same information.
+
+- `--output json` makes each command write its result to stdout as JSON.
+  Errors go to stderr as `{"error", "code", "matches"}`. The command does not
+  ask questions.
+- `tunneler connect <labels> -- <command>` is the best way to run one
+  database command. It shows no credentials.
+- The exit status tells you the type of failure:
+
+  | Status | Meaning |
+  |---|---|
+  | 0 | Success |
+  | 1 | Other failure |
+  | 2 | Incorrect flags or arguments |
+  | 3 | Not logged in. A person must run `tunneler auth login` |
+  | 4 | Access denied, or no service matches |
+  | 5 | The labels match more than one service. The error lists them |
+  | 6 | The service or the coordinator is not available |
+
+- `TUNNELER_SERVER` sets the coordinator without a configuration file.
+
 ## 8. Operation
 
 ### Sessions

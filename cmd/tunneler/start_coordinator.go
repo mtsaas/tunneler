@@ -17,7 +17,7 @@ func startCoordinatorCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "coordinator",
 		Short: "Run the central coordinator",
-		Args:  cobra.NoArgs,
+		Args:  usage(cobra.NoArgs),
 		RunE:  func(cmd *cobra.Command, _ []string) error { return startCoordinator(cmd.Context(), path) },
 	}
 	cmd.Flags().StringVar(&path, "config", "/etc/tunneler/config.json", "configuration file")

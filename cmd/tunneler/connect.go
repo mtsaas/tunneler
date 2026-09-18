@@ -173,7 +173,14 @@ func connect(ctx context.Context, selector map[string]string, port int, command 
 	if len(command) > 0 {
 		return runCommand(ctx, command, s, addr)
 	}
-	printSession(s, addr)
+	if outputJSON {
+		// One object, once connections are accepted: the signal to proceed.
+		result(map[string]any{
+			"event": "listening", "session": s, "host": addr.IP.String(), "port": addr.Port, "url": sessionURL(s, addr),
+		}, "")
+	} else {
+		printSession(s, addr)
+	}
 	log.Info(fmt.Sprintf("Listening on %s. Press Ctrl-C to disconnect and revoke the session.", addr))
 	select {
 	case <-ctx.Done():
@@ -208,11 +215,14 @@ func (c *client) createSession(ctx context.Context, token string, selector map[s
 				choices = append(choices, map[string]string{"cluster": cl.Name, "name": svc.Name})
 			}
 		}
-		fmt.Fprintf(os.Stderr, "\nMore than one service matches:\n\n")
-		printServices(os.Stderr, ambiguous.Matches, true)
-		if fi, err := os.Stdin.Stat(); err != nil || fi.Mode()&os.ModeCharDevice == 0 {
-			fmt.Fprintln(os.Stderr, "\nAdd labels until the selector matches one; name=... always will.")
-			return nil, errors.New("ambiguous selector")
+		if !outputJSON {
+			fmt.Fprintf(os.Stderr, "\nMore than one service matches:\n\n")
+			printServices(os.Stderr, ambiguous.Matches, true)
+		}
+		if fi, statErr := os.Stdin.Stat(); outputJSON || statErr != nil || fi.Mode()&os.ModeCharDevice == 0 {
+			// Nobody to ask. The error carries the matches, for JSON output.
+			ambiguous.Message += "; add labels until it matches one (name=... always will)"
+			return nil, ambiguous
 		}
 		fmt.Fprintf(os.Stderr, "\nWhich one? [1-%d]: ", len(choices))
 		var n int

@@ -17,7 +17,7 @@ When exit nodes authenticate with their cluster's service account tokens,
 the coordinator binds each cluster name to the first issuer that presents
 it and refuses the name to any other. A rebuilt cluster has a new issuer,
 so its exit nodes are refused until an admin releases the name.`,
-		Args: cobra.ExactArgs(1),
+		Args: usage(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, token, err := authed(cmd.Context())
 			if err != nil {
@@ -27,7 +27,8 @@ so its exit nodes are refused until an admin releases the name.`,
 			if err != nil {
 				return err
 			}
-			log.Info("Released: the next cluster to present the name " + args[0] + " will bind it.")
+			result(map[string]string{"released": args[0]},
+				"Released. The next cluster to present the name "+args[0]+" will own it.")
 			return nil
 		},
 	}

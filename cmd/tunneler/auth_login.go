@@ -11,7 +11,7 @@ func authLoginCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "login",
 		Short: "Sign in through the coordinator's identity provider",
-		Args:  cobra.NoArgs,
+		Args:  usage(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			c, err := loadClient()
@@ -28,8 +28,10 @@ func authLoginCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("To sign in, open\n\n    %s\n\nand enter the code %s\n\n", da.VerificationURI, da.UserCode)
-			log.Info("Waiting for you to finish signing in...")
+			// A person must do this part. With JSON output an agent gets what it
+			// needs to ask them, and the command then waits as usual.
+			result(map[string]any{"event": "device_code", "verification_uri": da.VerificationURI, "user_code": da.UserCode, "expires_at": da.Expiry},
+				fmt.Sprintf("To sign in, open\n\n    %s\n\nand enter the code %s\n\nWaiting for you to finish signing in...", da.VerificationURI, da.UserCode))
 			tok, err := conf.DeviceAccessToken(ctx, da)
 			if err != nil {
 				// Entra's way of saying the app registration is a confidential
@@ -43,7 +45,8 @@ func authLoginCmd() *cobra.Command {
 			if err := c.storeToken(tok); err != nil {
 				return err
 			}
-			log.Info("Logged in.", "token_expires", jwtExpiry(c.state.IDToken), "refreshable", c.state.RefreshToken != "")
+			result(map[string]any{"event": "logged_in", "token_expires_at": jwtExpiry(c.state.IDToken), "renewable": c.state.RefreshToken != ""},
+				"\nLogged in. To see what you can reach:\n\n    tunneler services list")
 			return nil
 		},
 	}

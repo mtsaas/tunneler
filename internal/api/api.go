@@ -92,6 +92,7 @@ type SessionEvent struct {
 
 // Error is the body of every non-2xx response.
 type Error struct {
+	Status  int    `json:"-"` // the HTTP status, set by clients
 	Message string `json:"error"`
 	// Matches accompanies 409 Conflict: the services an ambiguous selector
 	// matched.

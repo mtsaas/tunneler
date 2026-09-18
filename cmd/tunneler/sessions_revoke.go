@@ -11,7 +11,7 @@ func sessionsRevokeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "revoke ID",
 		Short: "End a session: disconnect it and drop its account",
-		Args:  cobra.ExactArgs(1),
+		Args:  usage(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, token, err := authed(cmd.Context())
 			if err != nil {
@@ -21,7 +21,8 @@ func sessionsRevokeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			log.Info("Session revoked: its connections are closed and its account dropped.", "session", args[0])
+			result(map[string]string{"revoked": args[0]},
+				"Session revoked. Its connections are closed and its account is removed.")
 			return nil
 		},
 	}

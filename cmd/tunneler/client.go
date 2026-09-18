@@ -49,6 +49,11 @@ func loadClient() (*client, error) {
 	if err := json.Unmarshal(data, &c.state); err != nil {
 		return nil, fmt.Errorf("%s: %w", c.path, err)
 	}
+	// For automation, which would rather not write a file first. A login
+	// belongs to the server it was made with, so it is not carried over.
+	if server := strings.TrimRight(os.Getenv("TUNNELER_SERVER"), "/"); server != "" && server != c.state.Server {
+		c.state.Server, c.state.IDToken, c.state.RefreshToken = server, "", ""
+	}
 	return c, nil
 }
 
@@ -95,6 +100,7 @@ func (c *client) do(ctx context.Context, method, path, token string, in, out any
 		if json.NewDecoder(resp.Body).Decode(e) != nil || e.Message == "" {
 			e.Message = resp.Status
 		}
+		e.Status = resp.StatusCode
 		return e
 	}
 	if out != nil {
@@ -126,7 +132,7 @@ func (c *client) token(ctx context.Context) (string, error) {
 		return c.state.IDToken, nil
 	}
 	if c.state.RefreshToken == "" {
-		return "", errors.New("not logged in; run: tunneler auth login")
+		return "", fmt.Errorf("%w; run: tunneler auth login", errNotLoggedIn)
 	}
 	log.Debug("ID token expired or about to; refreshing", "expired_at", jwtExpiry(c.state.IDToken))
 	conf, err := c.oauth(ctx)
@@ -135,7 +141,7 @@ func (c *client) token(ctx context.Context) (string, error) {
 	}
 	tok, err := conf.TokenSource(ctx, &oauth2.Token{RefreshToken: c.state.RefreshToken}).Token()
 	if err != nil {
-		return "", fmt.Errorf("login expired (%w); run: tunneler auth login", err)
+		return "", fmt.Errorf("%w: the login expired and could not be renewed (%v); run: tunneler auth login", errNotLoggedIn, err)
 	}
 	return c.state.IDToken, c.storeToken(tok)
 }
