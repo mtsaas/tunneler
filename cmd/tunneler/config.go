@@ -36,6 +36,7 @@ $ tunneler config`,
 				return errors.New("--server must be an https:// URL")
 			}
 			c.state.Server = strings.TrimRight(server, "/")
+			c.Server = c.state.Server
 			c.state.IDToken, c.state.RefreshToken = "", "" // they belonged to the old server
 			if err := c.save(); err != nil {
 				return err

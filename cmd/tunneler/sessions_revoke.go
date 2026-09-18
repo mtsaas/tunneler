@@ -1,9 +1,6 @@
 package main
 
 import (
-	"net/http"
-	"net/url"
-
 	"github.com/spf13/cobra"
 )
 
@@ -13,12 +10,11 @@ func sessionsRevokeCmd() *cobra.Command {
 		Short: "End a session and remove its account",
 		Args:  usage(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, token, err := authed(cmd.Context())
+			c, err := authed(cmd.Context())
 			if err != nil {
 				return err
 			}
-			err = c.do(cmd.Context(), http.MethodDelete, "/v1/sessions/"+url.PathEscape(args[0]), token, nil, nil)
-			if err != nil {
+			if err := c.RevokeSession(cmd.Context(), args[0]); err != nil {
 				return err
 			}
 			result(map[string]string{"revoked": args[0]},

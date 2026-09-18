@@ -16,25 +16,26 @@ import (
 	"github.com/mtsaas/tunneler/internal/version"
 )
 
-// Handler returns the coordinator's HTTP API.
+// Handler returns the coordinator's HTTP API, whose client side is Client
+// and ExitClient. The routes are described in routes.go.
 func (c *Coordinator) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc(routeHealth, func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"version": version.String()})
 	})
-	mux.HandleFunc("GET /v1/auth/config", c.handleAuthConfig)
-	mux.HandleFunc("GET /v1/auth/status", c.user(c.handleAuthStatus))
-	mux.HandleFunc("GET /v1/clusters", c.user(c.handleListClusters))
-	mux.HandleFunc("GET /v1/clusters/bindings", c.user(c.handleListBindings))
-	mux.HandleFunc("DELETE /v1/clusters/{name}/binding", c.user(c.handleForgetCluster))
-	mux.HandleFunc("GET /v1/sessions", c.user(c.handleListSessions))
-	mux.HandleFunc("POST /v1/sessions", c.user(c.handleCreateSession))
-	mux.HandleFunc("DELETE /v1/sessions/{id}", c.user(c.handleDeleteSession))
-	mux.HandleFunc("GET /v1/sessions/{id}/connect", c.user(c.handleConnect))
-	mux.HandleFunc("GET /v1/sessions/{id}/events", c.user(c.handleSessionEvents))
-	mux.HandleFunc("GET /v1/exit/control", c.exit(c.handleExitControl))
-	mux.HandleFunc("GET /v1/exit/data", c.exit(c.handleExitData))
-	mux.HandleFunc("POST /v1/exit/result", c.exit(c.handleExitResult))
+	mux.HandleFunc(routeAuthConfig, c.handleAuthConfig)
+	mux.HandleFunc(routeAuthStatus, c.user(c.handleAuthStatus))
+	mux.HandleFunc(routeServices, c.user(c.handleListClusters))
+	mux.HandleFunc(routeBindings, c.user(c.handleListBindings))
+	mux.HandleFunc(routeForgetCluster, c.user(c.handleForgetCluster))
+	mux.HandleFunc(routeSessions, c.user(c.handleListSessions))
+	mux.HandleFunc(routeCreateSession, c.user(c.handleCreateSession))
+	mux.HandleFunc(routeRevokeSession, c.user(c.handleDeleteSession))
+	mux.HandleFunc(routeSessionConnect, c.user(c.handleConnect))
+	mux.HandleFunc(routeSessionEvents, c.user(c.handleSessionEvents))
+	mux.HandleFunc(routeExitControl, c.exit(c.handleExitControl))
+	mux.HandleFunc(routeExitData, c.exit(c.handleExitData))
+	mux.HandleFunc(routeExitResult, c.exit(c.handleExitResult))
 	return mux
 }
 
@@ -156,7 +157,7 @@ func (c *Coordinator) handleForgetCluster(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusForbidden, "admins only")
 		return
 	}
-	name := r.PathValue("name")
+	name := r.PathValue("cluster")
 	if err := c.store.unbindCluster(name); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

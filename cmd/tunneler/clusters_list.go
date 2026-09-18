@@ -2,13 +2,10 @@ package main
 
 import (
 	"fmt"
-	"net/http"
 	"os"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
-
-	"github.com/mtsaas/tunneler/internal/api"
 )
 
 func clustersListCmd() *cobra.Command {
@@ -25,12 +22,12 @@ release the name with "tunneler clusters forget".`,
 		Example: `$ tunneler clusters list
 $ tunneler clusters list --output json`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			c, token, err := authed(cmd.Context())
+			c, err := authed(cmd.Context())
 			if err != nil {
 				return err
 			}
-			var bindings []api.ClusterBinding
-			if err := c.do(cmd.Context(), http.MethodGet, "/v1/clusters/bindings", token, nil, &bindings); err != nil {
+			bindings, err := c.ClusterBindings(cmd.Context())
+			if err != nil {
 				return err
 			}
 			if outputJSON {

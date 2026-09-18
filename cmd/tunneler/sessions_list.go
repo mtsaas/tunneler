@@ -2,14 +2,11 @@ package main
 
 import (
 	"fmt"
-	"net/http"
 	"os"
 	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
-
-	"github.com/mtsaas/tunneler/internal/api"
 )
 
 func sessionsListCmd() *cobra.Command {
@@ -18,12 +15,12 @@ func sessionsListCmd() *cobra.Command {
 		Short: "List your sessions (admins: all sessions)",
 		Args:  usage(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			c, token, err := authed(cmd.Context())
+			c, err := authed(cmd.Context())
 			if err != nil {
 				return err
 			}
-			var sessions []api.Session
-			if err := c.do(cmd.Context(), http.MethodGet, "/v1/sessions", token, nil, &sessions); err != nil {
+			sessions, err := c.Sessions(cmd.Context())
+			if err != nil {
 				return err
 			}
 			if outputJSON {

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -103,7 +102,7 @@ func connect(ctx context.Context, selector map[string]string, port int, command 
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 
-	c, token, err := authed(ctx)
+	c, err := authed(ctx)
 	if err != nil {
 		return err
 	}
@@ -117,7 +116,7 @@ func connect(ctx context.Context, selector map[string]string, port int, command 
 		defer ln.Close()
 	}
 
-	s, err := c.createSession(ctx, token, selector)
+	s, err := c.createSession(ctx, selector)
 	if err != nil {
 		return err
 	}
@@ -131,11 +130,7 @@ func connect(ctx context.Context, selector map[string]string, port int, command 
 			return // the coordinator already ended it
 		}
 		log.Info("Disconnecting and revoking the session...")
-		token, err := c.token(ctx)
-		if err == nil {
-			err = c.do(ctx, http.MethodDelete, "/v1/sessions/"+s.ID, token, nil, nil)
-		}
-		if err != nil {
+		if err := c.RevokeSession(ctx, s.ID); err != nil {
 			log.Warn("Could not revoke the session; it will end on its own at "+s.ExpiresAt.Local().Format(time.TimeOnly), "err", err)
 			return
 		}
@@ -200,18 +195,17 @@ func connect(ctx context.Context, selector map[string]string, port int, command 
 
 // createSession asks for a session on the service the selector matches. If
 // it matches several and there is a person to ask, they pick one.
-func (c *client) createSession(ctx context.Context, token string, selector map[string]string) (*api.Session, error) {
+func (c *client) createSession(ctx context.Context, selector map[string]string) (*api.Session, error) {
 	for {
 		what := "the service labelled " + formatLabels(selector)
 		if len(selector) == 0 {
 			what = "the only service you can reach"
 		}
 		log.Info(fmt.Sprintf("Requesting access to %s...", what))
-		var s api.Session
-		err := c.do(ctx, http.MethodPost, "/v1/sessions", token, api.SessionRequest{Selector: selector}, &s)
+		s, err := c.CreateSession(ctx, selector)
 		ambiguous := (*api.Error)(nil)
 		if !errors.As(err, &ambiguous) || len(ambiguous.Matches) == 0 {
-			return &s, err
+			return s, err
 		}
 
 		var choices []map[string]string
@@ -274,19 +268,19 @@ func runCommand(ctx context.Context, command []string, s *api.Session, addr *net
 	return err
 }
 
-// watchSession follows the session's event stream until the coordinator
-// reports that the session ended, and returns the reason. An interrupted
-// stream is reopened; a session that no longer exists counts as ended.
-// It returns "" only when ctx is done first.
+// watchSession follows the session's events until the coordinator reports
+// that the session ended, and returns the reason. An interrupted stream is
+// reopened; a session that no longer exists counts as ended. It returns ""
+// only when ctx is done first.
 func (c *client) watchSession(ctx context.Context, sessionID string) string {
 	backoff := time.Second
 	for ctx.Err() == nil {
-		reason, err := c.followEvents(ctx, sessionID)
+		reason, err := c.WatchSession(ctx, sessionID)
 		if reason != "" {
 			return reason
 		}
-		if status := (*api.Error)(nil); errors.As(err, &status) {
-			return "it was revoked, or your access was withdrawn" // a 4xx: the session is gone
+		if gone := (*api.Error)(nil); errors.As(err, &gone) {
+			return "it was revoked, or your access was withdrawn"
 		}
 		if ctx.Err() != nil {
 			return ""
@@ -301,54 +295,16 @@ func (c *client) watchSession(ctx context.Context, sessionID string) string {
 	return ""
 }
 
-func (c *client) followEvents(ctx context.Context, sessionID string) (reason string, err error) {
-	token, err := c.token(ctx)
-	if err != nil {
-		return "", err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.state.Server+"/v1/sessions/"+sessionID+"/events", nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		e := &api.Error{Message: resp.Status}
-		json.NewDecoder(resp.Body).Decode(e)
-		return "", e
-	}
-	dec := json.NewDecoder(resp.Body)
-	for {
-		var ev api.SessionEvent
-		if err := dec.Decode(&ev); err != nil {
-			return "", err
-		}
-		if ev.Ended {
-			return ev.Reason, nil
-		}
-	}
-}
-
 // forward carries one local connection, the n'th, to the coordinator. It
 // returns an error only if the session as a whole is over.
 func (c *client) forward(ctx context.Context, local net.Conn, sessionID string, n int64) error {
 	defer local.Close()
 	log.Info(fmt.Sprintf("Connection %d: opened by a local client; tunneling to the coordinator.", n), "local", local.RemoteAddr())
 
-	token, err := c.token(ctx)
-	if err != nil {
-		log.Error(fmt.Sprintf("Connection %d: failed", n), "err", err)
-		return nil
-	}
 	start := time.Now()
-	stream, err := tunnel.Dial(ctx, c.state.Server+"/v1/sessions/"+sessionID+"/connect",
-		http.Header{"Authorization": {"Bearer " + token}})
-	if status := (*tunnel.StatusError)(nil); errors.As(err, &status) &&
-		(status.Code == http.StatusNotFound || status.Code == http.StatusForbidden) {
+	stream, err := c.DialSession(ctx, sessionID)
+	if refused := (*api.Error)(nil); errors.As(err, &refused) &&
+		(refused.Status == http.StatusNotFound || refused.Status == http.StatusForbidden) {
 		return errors.New("the coordinator no longer honors this session: it was revoked, or your access was withdrawn")
 	}
 	if err != nil {

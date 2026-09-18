@@ -15,7 +15,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
 
-	"github.com/mtsaas/tunneler/internal/api"
+	"github.com/mtsaas/tunneler/internal/coordinator"
 )
 
 // TokenFile returns a TokenFunc that presents the token in the file at path,
@@ -23,7 +23,7 @@ import (
 // projected service account token whose audience is the coordinator's
 // exit_audience; the coordinator verifies it against the cluster's own OIDC
 // issuer, so nothing has to be registered anywhere for a new cluster.
-func TokenFile(path string) TokenFunc {
+func TokenFile(path string) coordinator.TokenFunc {
 	return func(context.Context) (string, error) {
 		b, err := os.ReadFile(path)
 		if err != nil {
@@ -107,37 +107,21 @@ func (f tokenSourceFunc) Token() (*oauth2.Token, error) { return f() }
 // application, whose client ID is asked of the coordinator. The coordinator
 // admits it if Entra put the application role "exit:<cluster>" in it, which
 // it does when that role is assigned to the pod's managed identity.
-func AzureWorkloadIdentity(cred *AzureCredential, server string) TokenFunc {
+func AzureWorkloadIdentity(cred *AzureCredential, server string) coordinator.TokenFunc {
 	var audience string // resolved once, on first success
 	return func(ctx context.Context) (string, error) {
 		if audience == "" {
-			var err error
-			if audience, err = coordinatorClientID(ctx, server); err != nil {
+			ac, err := (&coordinator.Client{Server: server}).AuthConfig(ctx)
+			if err != nil {
 				return "", fmt.Errorf("asking coordinator for its client ID: %w", err)
 			}
+			if ac.ClientID == "" {
+				return "", errors.New("coordinator reports no client ID")
+			}
+			audience = ac.ClientID
 		}
 		return cred.Token(ctx, audience+"/.default")
 	}
-}
-
-func coordinatorClientID(ctx context.Context, server string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server+"/v1/auth/config", nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	var ac api.AuthConfig
-	if err := json.NewDecoder(resp.Body).Decode(&ac); err != nil {
-		return "", err
-	}
-	if ac.ClientID == "" {
-		return "", fmt.Errorf("%s: no client ID in response", resp.Status)
-	}
-	return ac.ClientID, nil
 }
 
 // keyVaultSecret reads a secret's current value from Azure Key Vault.

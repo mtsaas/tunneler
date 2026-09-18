@@ -6,7 +6,6 @@
 package exit
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,8 +13,6 @@ import (
 	"log/slog"
 	"maps"
 	"net"
-	"net/http"
-	"net/url"
 	"os"
 	"reflect"
 	"slices"
@@ -24,6 +21,7 @@ import (
 	"time"
 
 	"github.com/mtsaas/tunneler/internal/api"
+	"github.com/mtsaas/tunneler/internal/coordinator"
 	"github.com/mtsaas/tunneler/internal/postgres"
 	"github.com/mtsaas/tunneler/internal/tunnel"
 )
@@ -95,17 +93,14 @@ type service struct {
 	report func(ctx context.Context, ready bool, reason, message string)
 }
 
-// A TokenFunc returns the bearer token that proves to the coordinator which
-// cluster the exit node speaks for. It is called for every request, so it
-// should cache.
-type TokenFunc func(ctx context.Context) (string, error)
-
 // Agent is an exit node.
 type Agent struct {
 	Server  string // coordinator base URL
 	Cluster string
-	Token   TokenFunc // nil sends no credentials, which only a coordinator in insecure_exit_auth mode accepts
-	Log     *slog.Logger
+	// Token proves to the coordinator which cluster this is. Nil presents
+	// nothing, which only a coordinator in insecure_exit_auth mode accepts.
+	Token coordinator.TokenFunc
+	Log   *slog.Logger
 
 	mu      sync.Mutex
 	sources map[string]map[string]*service // desired services, by the source that defined them
@@ -398,38 +393,14 @@ func (a *Agent) reapLoop(ctx context.Context) {
 	}
 }
 
-func (a *Agent) url(path, id string) string {
-	q := url.Values{"cluster": {a.Cluster}}
-	if id != "" {
-		q.Set("id", id)
-	}
-	return a.Server + path + "?" + q.Encode()
-}
-
-// header returns the credentials to send with a request to the coordinator.
-func (a *Agent) header(ctx context.Context) (http.Header, error) {
-	if a.Token == nil {
-		return nil, nil
-	}
-	token, err := a.Token(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return http.Header{"Authorization": {"Bearer " + token}}, nil
-}
-
-// dial opens an upgraded stream to the coordinator.
-func (a *Agent) dial(ctx context.Context, path, id string) (net.Conn, error) {
-	header, err := a.header(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return tunnel.Dial(ctx, a.url(path, id), header)
+// coordinator returns the agent's client of the coordinator's API.
+func (a *Agent) coordinator() *coordinator.ExitClient {
+	return &coordinator.ExitClient{Server: a.Server, Cluster: a.Cluster, Token: a.Token}
 }
 
 // serve runs one control stream until it fails.
 func (a *Agent) serve(ctx context.Context) error {
-	conn, err := a.dial(ctx, "/v1/exit/control", "")
+	conn, err := a.coordinator().Control(ctx)
 	if err != nil {
 		return err
 	}
@@ -484,21 +455,9 @@ func (a *Agent) handle(ctx context.Context, req api.ExitRequest) {
 		res.Error = err.Error()
 	}
 	// Best effort: the coordinator's call times out on its own otherwise.
-	body, _ := json.Marshal(res)
-	post, err := http.NewRequestWithContext(ctx, http.MethodPost, a.url("/v1/exit/result", req.ID), bytes.NewReader(body))
-	if err != nil {
-		return
-	}
-	if post.Header, err = a.header(ctx); err != nil {
-		log.Warn("could not report result: no token", "err", err)
-		return
-	}
-	resp, err := http.DefaultClient.Do(post)
-	if err != nil {
+	if err := a.coordinator().Result(ctx, req.ID, res); err != nil {
 		log.Warn("could not report result", "err", err)
-		return
 	}
-	resp.Body.Close()
 }
 
 func (a *Agent) do(ctx context.Context, req api.ExitRequest, log *slog.Logger) error {
@@ -516,7 +475,7 @@ func (a *Agent) do(ctx context.Context, req api.ExitRequest, log *slog.Logger) e
 		if err != nil {
 			return fmt.Errorf("connecting to %s: %w", svc.backend.Addr(), err)
 		}
-		stream, err := a.dial(ctx, "/v1/exit/data", req.ID)
+		stream, err := a.coordinator().Data(ctx, req.ID)
 		if err != nil {
 			target.Close()
 			log.Warn("opening data stream", "err", err)

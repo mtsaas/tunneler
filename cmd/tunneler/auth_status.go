@@ -4,15 +4,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
-
-	"github.com/mtsaas/tunneler/internal/api"
 )
 
 func authStatusCmd() *cobra.Command {
@@ -28,14 +25,15 @@ If you cannot reach a service, the first section that looks wrong says why.
 Exits with 3 if you are not logged in.`,
 		Args: usage(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			c, token, err := authed(cmd.Context())
+			c, err := authed(cmd.Context())
 			if err != nil {
 				return err
 			}
+			token, _ := c.token(cmd.Context())
 
 			if outputJSON {
-				var st api.AuthStatus
-				if err := c.do(cmd.Context(), http.MethodGet, "/v1/auth/status", token, nil, &st); err != nil {
+				st, err := c.AuthStatus(cmd.Context())
+				if err != nil {
 					return err
 				}
 				result(map[string]any{
@@ -52,8 +50,8 @@ Exits with 3 if you are not logged in.`,
 				map[bool]string{true: "renews itself with a refresh token", false: "no refresh token, so you will need to log in again"}[c.state.RefreshToken != ""])
 			printClaims(token)
 
-			var st api.AuthStatus
-			if err := c.do(cmd.Context(), http.MethodGet, "/v1/auth/status", token, nil, &st); err != nil {
+			st, err := c.AuthStatus(cmd.Context())
+			if err != nil {
 				return fmt.Errorf("the coordinator did not accept the token: %w", err)
 			}
 			fmt.Println("\n2. You, as the coordinator sees you")

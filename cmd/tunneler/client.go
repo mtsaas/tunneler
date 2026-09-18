@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -17,11 +16,13 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 
-	"github.com/mtsaas/tunneler/internal/api"
+	"github.com/mtsaas/tunneler/internal/coordinator"
 )
 
-// client talks to the coordinator using the state saved by earlier commands.
+// client talks to the coordinator using the state saved by earlier commands:
+// which coordinator, and the login to present to it.
 type client struct {
+	*coordinator.Client
 	path string
 
 	mu    sync.Mutex // guards state, which connect refreshes from many goroutines
@@ -39,6 +40,8 @@ func loadClient() (*client, error) {
 		return nil, err
 	}
 	c := &client{path: filepath.Join(dir, "tunneler", "config.json")}
+	c.Client = &coordinator.Client{Token: c.token, HTTP: &http.Client{Transport: logTransport{}}}
+	defer func() { c.Server = c.state.Server }()
 	data, err := os.ReadFile(c.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return c, nil
@@ -68,52 +71,27 @@ func (c *client) save() error {
 	return os.WriteFile(c.path, data, 0o600) // holds a refresh token
 }
 
-// do makes an API request. A non-nil in is sent as JSON, and a non-nil out
-// receives the decoded response. A non-empty token authenticates the request.
-func (c *client) do(ctx context.Context, method, path, token string, in, out any) error {
-	if c.state.Server == "" {
-		return errors.New("no coordinator configured; run: tunneler config --server URL")
-	}
-	var body bytes.Buffer
-	if in != nil {
-		if err := json.NewEncoder(&body).Encode(in); err != nil {
-			return err
-		}
-	}
-	req, err := http.NewRequestWithContext(ctx, method, c.state.Server+path, &body)
-	if err != nil {
-		return err
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
+// logTransport records each request to the coordinator, for --verbose.
+type logTransport struct{}
+
+func (logTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	start := time.Now()
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
+	resp, err := http.DefaultTransport.RoundTrip(req)
+	if err == nil {
+		log.Debug("coordinator request", "method", req.Method, "path", req.URL.Path, "status", resp.StatusCode,
+			"took", time.Since(start).Round(time.Millisecond).String())
 	}
-	defer resp.Body.Close()
-	log.Debug("coordinator request", "method", method, "path", path, "status", resp.StatusCode,
-		"took", time.Since(start).Round(time.Millisecond).String())
-	if resp.StatusCode >= 300 {
-		e := new(api.Error)
-		if json.NewDecoder(resp.Body).Decode(e) != nil || e.Message == "" {
-			e.Message = resp.Status
-		}
-		e.Status = resp.StatusCode
-		return e
-	}
-	if out != nil {
-		return json.NewDecoder(resp.Body).Decode(out)
-	}
-	return nil
+	return resp, err
 }
 
 // oauth returns the OAuth 2.0 configuration for the coordinator's identity
 // provider.
 func (c *client) oauth(ctx context.Context) (*oauth2.Config, error) {
-	var ac api.AuthConfig
-	if err := c.do(ctx, http.MethodGet, "/v1/auth/config", "", nil, &ac); err != nil {
+	if c.Server == "" {
+		return nil, errors.New("no coordinator configured; run: tunneler config --server URL")
+	}
+	ac, err := c.AuthConfig(ctx)
+	if err != nil {
 		return nil, err
 	}
 	log.Debug("discovering identity provider", "issuer", ac.Issuer, "client_id", ac.ClientID)
@@ -178,12 +156,16 @@ func jwtExpiry(token string) time.Time {
 	return time.Unix(claims.Exp, 0)
 }
 
-// authed loads the client and a current token.
-func authed(ctx context.Context) (*client, string, error) {
+// authed loads the client and makes sure that it has a current login, so
+// that a command fails for want of one before it does anything else.
+func authed(ctx context.Context) (*client, error) {
 	c, err := loadClient()
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	token, err := c.token(ctx)
-	return c, token, err
+	if c.Server == "" {
+		return nil, errors.New("no coordinator configured; run: tunneler config --server URL")
+	}
+	_, err = c.token(ctx)
+	return c, err
 }

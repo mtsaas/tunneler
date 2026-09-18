@@ -1,10 +1,6 @@
 package main
 
 import (
-	"errors"
-	"io"
-	"net/http"
-
 	"github.com/spf13/cobra"
 
 	"github.com/mtsaas/tunneler/internal/version"
@@ -29,17 +25,14 @@ func versionCmd() *cobra.Command {
 				return err
 			}
 			out["server"] = c.state.Server
-			var health struct {
-				Version string `json:"version"`
-			}
-			err = c.do(cmd.Context(), http.MethodGet, "/healthz", "", nil, &health)
+			coordinatorVersion, err := c.Version(cmd.Context())
 			switch {
-			case errors.Is(err, io.EOF): // older coordinators answer /healthz with an empty body
-				health.Version = "an old build, from before version reporting"
 			case err != nil:
-				health.Version = "unreachable: " + err.Error()
+				coordinatorVersion = "unreachable: " + err.Error()
+			case coordinatorVersion == "":
+				coordinatorVersion = "an old build, from before version reporting"
 			}
-			out["coordinator"] = health.Version
+			out["coordinator"] = coordinatorVersion
 			return nil
 		},
 	}

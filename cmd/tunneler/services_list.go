@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"slices"
 	"strings"
@@ -25,12 +24,12 @@ STATUS is "ready" if the service's exit node can connect to it.`,
 $ tunneler services list --output json`,
 		Args: usage(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			c, token, err := authed(cmd.Context())
+			c, err := authed(cmd.Context())
 			if err != nil {
 				return err
 			}
-			var clusters []api.Cluster
-			if err := c.do(cmd.Context(), http.MethodGet, "/v1/clusters", token, nil, &clusters); err != nil {
+			clusters, err := c.Services(cmd.Context())
+			if err != nil {
 				return err
 			}
 			if outputJSON {
