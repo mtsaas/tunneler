@@ -54,10 +54,10 @@ func TestAccess(t *testing.T) {
 func TestExitIssuerPattern(t *testing.T) {
 	const pattern = "https://*.oic.prod-aks.azure.com/11111111-2222-3333-4444-555555555555/*/"
 	for issuer, want := range map[string]bool{
-		"https://eastus.oic.prod-aks.azure.com/11111111-2222-3333-4444-555555555555/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/": true,
+		"https://eastus.oic.prod-aks.azure.com/11111111-2222-3333-4444-555555555555/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/":     true,
 		"https://westeurope.oic.prod-aks.azure.com/11111111-2222-3333-4444-555555555555/ffffffff-0000-1111-2222-333333333333/": true,
-		"https://eastus.oic.prod-aks.azure.com/99999999-8888-7777-6666-555555555555/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/": false, // another tenant
-		"https://evil.example.com/oic.prod-aks.azure.com/11111111-2222-3333-4444-555555555555/x/":                       false,
+		"https://eastus.oic.prod-aks.azure.com/99999999-8888-7777-6666-555555555555/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/":     false, // another tenant
+		"https://evil.example.com/oic.prod-aks.azure.com/11111111-2222-3333-4444-555555555555/x/":                              false,
 	} {
 		v := &kubeVerifier{patterns: []string{pattern}}
 		// A token whose payload is just the issuer claim.
