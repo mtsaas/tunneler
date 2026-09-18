@@ -77,9 +77,9 @@ type Agent struct {
 	kick    chan struct{}                  // wakes reconcile early
 
 	advertised atomic.Pointer[map[string]*service] // desired services, by name
-	adverts    atomic.Pointer[[]api.Service]       // what the coordinator was last told, sorted by name
-	connected  atomic.Bool                         // a control stream is up
-	control    atomic.Pointer[net.Conn]
+	adverts    atomic.Pointer[[]api.Service]       // what the coordinator is told, sorted by name
+	changed    chan struct{}                       // wakes the session's advertiser when adverts change
+	connected  atomic.Bool                         // a session is up
 }
 
 // Healthy reports whether the agent is connected to the coordinator, for
@@ -96,6 +96,7 @@ func (a *Agent) SetServices(source string, services map[string]*service) {
 		a.sources = make(map[string]map[string]*service)
 		a.health = make(map[*service]string)
 		a.kick = make(chan struct{}, 1)
+		a.changed = make(chan struct{}, 1)
 	}
 	a.sources[source] = services
 	a.mu.Unlock()
@@ -143,8 +144,7 @@ func (a *Agent) reconcileLoop(ctx context.Context) {
 // credentials, then advertises them all, each marked ready or not and why.
 // The coordinator refuses sessions on a service that is not ready, so a
 // broken credential shows up as a clear message rather than a failed login.
-// If what would be advertised changed, the control stream is dropped so
-// that reconnecting publishes it; connections in flight are unaffected.
+// If what would be advertised changed, the coordinator is told again.
 func (a *Agent) reconcile(ctx context.Context) {
 	desired := a.desired()
 
@@ -207,8 +207,9 @@ func (a *Agent) reconcile(ctx context.Context) {
 	a.advertised.Store(&desired)
 	if prev := a.adverts.Swap(&adverts); prev != nil && !reflect.DeepEqual(*prev, adverts) {
 		a.Log.Info("advertised services changed; republishing to the coordinator", "services", slices.Sorted(maps.Keys(desired)))
-		if conn := a.control.Load(); conn != nil {
-			(*conn).Close() // Run reconnects with the new set
+		select {
+		case a.changed <- struct{}{}:
+		default:
 		}
 	}
 }
@@ -307,8 +308,8 @@ func newService(sc ServiceConfig) (*service, error) {
 	return svc, nil
 }
 
-// Run keeps a control stream open to the coordinator, reconnecting with
-// backoff, until ctx is done.
+// Run keeps a session open with the coordinator, reconnecting with backoff,
+// until ctx is done.
 func (a *Agent) Run(ctx context.Context) error {
 	if a.sources == nil {
 		a.SetServices("none", nil) // initialize even with no source
@@ -326,7 +327,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		if time.Since(start) > time.Minute {
 			backoff = time.Second // it was a healthy connection
 		}
-		a.Log.Warn("control stream lost; reconnecting", "err", err, "in", backoff.String())
+		a.Log.Warn("session with the coordinator lost; reconnecting", "err", err, "in", backoff.String())
 		select {
 		case <-time.After(backoff):
 		case <-ctx.Done():
@@ -375,18 +376,31 @@ func (a *Agent) coordinator() *coordinator.ExitClient {
 	return &coordinator.ExitClient{Server: a.Server, Cluster: a.Cluster, Token: a.Token}
 }
 
-// serve runs one control stream until it fails.
+// serve runs one session with the coordinator until it fails.
 func (a *Agent) serve(ctx context.Context) error {
-	conn, err := a.coordinator().Control(ctx)
+	sess, err := a.coordinator().Connect(ctx, a.Log)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
-	defer context.AfterFunc(ctx, func() { conn.Close() })()
-	a.control.Store(&conn)
+	// The advertiser must be gone before the next session begins, lest it
+	// swallow a change that the next session's hello would miss.
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	defer sess.Close()
 
-	hello := api.Hello{Services: *a.adverts.Load()}
-	if err := json.NewEncoder(conn).Encode(hello); err != nil {
+	adverts, err := sess.Open()
+	if err != nil {
+		return err
+	}
+	select {
+	case <-a.changed: // the hello carries every change so far
+	default:
+	}
+	hello, err := a.hello(ctx)
+	if err != nil {
+		return err
+	}
+	if err := tunnel.WriteMessage(adverts, hello); err != nil {
 		return err
 	}
 	a.connected.Store(true)
@@ -401,54 +415,114 @@ func (a *Agent) serve(ctx context.Context) error {
 	}
 	a.Log.Info("connected to coordinator; advertised services and awaiting requests",
 		"server", a.Server, "cluster", a.Cluster, "ready", ready, "not_ready", notReady)
+	wg.Go(func() { a.readvertise(ctx, sess, adverts) })
 
-	dec := json.NewDecoder(conn)
 	for {
-		// The coordinator pings far more often than this; silence means the
-		// path is dead even if TCP has not noticed.
-		conn.SetReadDeadline(time.Now().Add(3 * time.Minute))
-		var req api.ExitRequest
-		if err := dec.Decode(&req); err != nil {
+		stream, err := sess.Accept(ctx)
+		if err != nil {
 			return err
 		}
-		if req.ID != "" {
-			go a.handle(ctx, req)
+		go a.handle(ctx, stream)
+	}
+}
+
+// readvertise tells the coordinator the services again, on the stream that
+// carried the hello, each time they change, until the session ends.
+func (a *Agent) readvertise(ctx context.Context, sess *tunnel.Session, adverts net.Conn) {
+	for {
+		select {
+		case <-a.changed:
+		case <-sess.Done():
+			return
+		}
+		hello, err := a.hello(ctx)
+		if err == nil {
+			err = tunnel.WriteMessage(adverts, hello)
+		}
+		if err != nil {
+			a.Log.Warn("could not republish services; reconnecting", "err", err)
+			sess.Close()
+			return
 		}
 	}
 }
 
-// handle performs one request and reports its outcome to the coordinator.
-func (a *Agent) handle(ctx context.Context, req api.ExitRequest) {
-	log := a.Log.With("op", req.Op, "service", req.Service, "request", req.ID)
-	start := time.Now()
-	err := a.do(ctx, req, log)
-	log.Debug("request handled", "took", time.Since(start).Round(time.Millisecond).String(), "err", err)
-	if err == nil && req.Op == api.OpDial {
-		return // the data stream was the answer
+// hello returns the services to advertise, with the proof of this node's
+// cluster that the coordinator requires of all it is told.
+func (a *Agent) hello(ctx context.Context) (api.Hello, error) {
+	token, err := a.token(ctx)
+	return api.Hello{Services: *a.adverts.Load(), Token: token}, err
+}
+
+// requestTimeout bounds the wait for a request on a stream the coordinator
+// has opened, which it writes at once.
+const requestTimeout = 10 * time.Second
+
+// handle performs the request that the coordinator opened stream for, and
+// answers on it. A dial goes on to carry the connection over the stream.
+func (a *Agent) handle(ctx context.Context, stream net.Conn) {
+	defer stream.Close()
+	var req api.ExitRequest
+	stream.SetReadDeadline(time.Now().Add(requestTimeout))
+	if err := tunnel.ReadMessage(stream, &req); err != nil {
+		a.Log.Warn("could not read the coordinator's request", "err", err)
+		return
 	}
+	stream.SetReadDeadline(time.Time{})
+
+	log := a.Log.With("op", req.Op, "service", req.Service)
+	start := time.Now()
+	svc := (*a.advertised.Load())[req.Service]
+	target, err := a.do(ctx, svc, req, log)
+	log.Debug("request handled", "took", time.Since(start).Round(time.Millisecond).String(), "err", err)
 	res := api.ExitResult{}
 	if err != nil {
 		log.Warn("request failed", "err", err)
 		res.Error = err.Error()
 	}
-	// Best effort: the coordinator's call times out on its own otherwise.
-	if err := a.coordinator().Result(ctx, req.ID, res); err != nil {
-		log.Warn("could not report result", "err", err)
+	// The coordinator disconnects a node whose answer does not prove its
+	// cluster, so a node that cannot prove it leaves the request unanswered.
+	// The token is fetched now, after the work, so that it is fresh.
+	if res.Token, err = a.token(ctx); err != nil {
+		log.Warn("could not obtain the credentials to answer the coordinator", "err", err)
+	} else if err = tunnel.WriteMessage(stream, res); err != nil {
+		log.Warn("could not answer the coordinator; it gave up waiting, or the session ended", "err", err)
+	}
+	if err != nil {
+		if target != nil {
+			target.Close()
+		}
+		return
+	}
+	if target != nil {
+		log.Info("connection opened", "addr", svc.backend.Addr())
+		tunnel.Splice(stream, target)
+		log.Info("connection closed", "addr", svc.backend.Addr(), "duration", time.Since(start).Round(time.Millisecond).String())
 	}
 }
 
-func (a *Agent) do(ctx context.Context, req api.ExitRequest, log *slog.Logger) error {
-	svc := (*a.advertised.Load())[req.Service]
+// token returns what proves this node's cluster to the coordinator, if
+// there is anything to present.
+func (a *Agent) token(ctx context.Context) (string, error) {
+	if a.Token == nil {
+		return "", nil
+	}
+	return a.Token(ctx)
+}
+
+// do performs req on svc, which is nil if the node does not offer the
+// service. For a dial, it returns the connection to the service.
+func (a *Agent) do(ctx context.Context, svc *service, req api.ExitRequest, log *slog.Logger) (net.Conn, error) {
 	if svc == nil {
-		return fmt.Errorf("no such service %q", req.Service)
+		return nil, fmt.Errorf("no such service %q", req.Service)
 	}
 	accts, _ := svc.backend.(accounts)
 	if req.Op != api.OpDial {
 		switch {
 		case accts == nil:
-			return fmt.Errorf("services of kind %q have no accounts to manage", svc.advert.Kind)
+			return nil, fmt.Errorf("services of kind %q have no accounts to manage", svc.advert.Kind)
 		case req.Role == nil:
-			return errors.New("request has no role")
+			return nil, errors.New("request has no role")
 		}
 	}
 
@@ -456,37 +530,25 @@ func (a *Agent) do(ctx context.Context, req api.ExitRequest, log *slog.Logger) e
 	case api.OpDial:
 		target, err := svc.backend.Connect(ctx)
 		if err != nil {
-			return fmt.Errorf("connecting to %s: %w", svc.backend.Addr(), err)
+			return nil, fmt.Errorf("connecting to %s: %w", svc.backend.Addr(), err)
 		}
-		stream, err := a.coordinator().Data(ctx, req.ID)
-		if err != nil {
-			target.Close()
-			log.Warn("opening data stream", "err", err)
-			return nil // the coordinator is unreachable; there is no one to tell
-		}
-		go func() {
-			log.Info("connection opened", "addr", svc.backend.Addr())
-			start := time.Now()
-			tunnel.Splice(stream, target)
-			log.Info("connection closed", "addr", svc.backend.Addr(), "duration", time.Since(start).Round(time.Millisecond).String())
-		}()
-		return nil
+		return target, nil
 
 	case api.OpCreateRole:
 		for _, r := range req.Role.MemberOf {
 			if !slices.Contains(svc.roles, r) {
-				return fmt.Errorf("role %q is not grantable on service %q", r, req.Service)
+				return nil, fmt.Errorf("role %q is not grantable on service %q", r, req.Service)
 			}
 		}
 		// Sweep up after sessions that were never revoked, for example
 		// because this node was down when they ended.
 		svc.reap(ctx, a.Log)
 		log.Info("provisioning account", "account", req.Role.Name, "member_of", req.Role.MemberOf, "valid_until", req.Role.ValidUntil)
-		return accts.CreateRole(ctx, *req.Role)
+		return nil, accts.CreateRole(ctx, *req.Role)
 
 	case api.OpDropRole:
 		log.Info("dropping account and disconnecting it", "account", req.Role.Name)
-		return accts.DropRole(ctx, req.Role.Name)
+		return nil, accts.DropRole(ctx, req.Role.Name)
 	}
-	return fmt.Errorf("unknown operation %q", req.Op)
+	return nil, fmt.Errorf("unknown operation %q", req.Op)
 }

@@ -123,31 +123,46 @@ type Error struct {
 
 func (e *Error) Error() string { return e.Message }
 
-// Hello is the first thing an exit node writes on its control stream. The
-// rest of the stream flows the other way: one JSON ExitRequest per line.
+// Hello lists an exit node's services. The node writes one on the first
+// stream it opens to the coordinator, and another there whenever its
+// services change.
 type Hello struct {
 	Services []Service `json:"services"`
+	// Token proves which cluster the node speaks for; see ExitResult.Token.
+	// Exit nodes of v0.3.1 and earlier send none after connecting.
+	Token string `json:"token,omitempty"`
 }
 
 // Operations an exit node performs for the coordinator.
 const (
-	OpDial       = "dial"        // connect to Service; answered with a data stream
+	OpDial       = "dial"        // connect to Service
 	OpCreateRole = "create_role" // provision Role on Service
 	OpDropRole   = "drop_role"   // drop the role named Role.Name on Service
 )
 
-// ExitRequest asks an exit node to do something. Every request but a dial is
-// answered with an ExitResult. A request with an empty ID is a keepalive.
+// ExitRequest asks an exit node to do something. The coordinator opens a
+// stream to the node for each request and writes the request on it. The
+// node answers there with an ExitResult, after which the stream of a
+// successful dial carries the connection to the service.
 type ExitRequest struct {
+	// ID names the request for exit nodes of v0.3.1 and earlier, which
+	// answer on connections of their own. For them, a request with an empty
+	// ID is a keepalive.
 	ID      string `json:"id,omitempty"`
 	Op      string `json:"op,omitempty"`
 	Service string `json:"service,omitempty"`
 	Role    *Role  `json:"role,omitempty"`
 }
 
-// ExitResult reports the outcome of an ExitRequest, including a failed dial.
+// ExitResult reports the outcome of an ExitRequest.
 type ExitResult struct {
 	Error string `json:"error,omitempty"`
+	// Token proves which cluster the exit node speaks for, as its
+	// credentials did when it connected. The coordinator requires one with
+	// every Hello and ExitResult, and disconnects a node whose token its
+	// rules no longer admit. Thus withdrawing a node's admission cuts the
+	// node off when it next speaks rather than when it next connects.
+	Token string `json:"token,omitempty"`
 }
 
 // Role is an account to provision on a service.

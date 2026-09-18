@@ -2,7 +2,7 @@
 // WebSocket connections, so that the coordinator needs only a single HTTPS
 // port for its API, client streams and exit node streams, and so that the
 // streams pass through any proxy, ingress or service mesh without special
-// configuration.
+// configuration. A Session carries many streams over one such connection.
 package tunnel
 
 import (
@@ -39,7 +39,7 @@ func Dial(ctx context.Context, rawURL string, header http.Header) (net.Conn, err
 func stream(ws *websocket.Conn) net.Conn {
 	ws.SetReadLimit(-1) // a stream, not messages: the peer's writes have no meaningful size
 	// The stream's life is governed by Close, not by a context.
-	return &conn{Conn: websocket.NetConn(context.Background(), ws, websocket.MessageBinary)}
+	return &conn{Conn: websocket.NetConn(context.Background(), ws, websocket.MessageBinary), ws: ws}
 }
 
 // conn makes Close prompt. A WebSocket closes with a handshake, which lets
@@ -48,6 +48,7 @@ func stream(ws *websocket.Conn) net.Conn {
 // at once, so the handshake runs in the background.
 type conn struct {
 	net.Conn
+	ws   *websocket.Conn
 	once sync.Once
 }
 

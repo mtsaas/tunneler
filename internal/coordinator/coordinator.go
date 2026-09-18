@@ -67,7 +67,8 @@ func New(cfg *Config, auth Authenticator, log, audit *slog.Logger) (*Coordinator
 		sessions: make(map[string]*session),
 	}
 	c.cfg.Store(cfg)
-	c.hub.onConnect = c.retryDrops
+	c.hub.admit = c.admitExit
+	c.hub.onOffer = c.retryDrops
 	log.Info("session database opened", "path", cfg.Database, "saved_sessions", len(sessions))
 	for _, s := range sessions {
 		if s.revoked {
@@ -325,9 +326,10 @@ func (c *Coordinator) dropAccount(s *session) error {
 	return err
 }
 
-// retryDrops runs when an exit node connects. It drops the accounts of the
-// cluster's sessions that ended while no exit node could be reached, which
-// includes sessions that expired while the coordinator itself was down.
+// retryDrops runs whenever an exit node begins to offer a service, as on
+// connecting. It drops the accounts of the cluster's sessions that ended
+// while no exit node could be reached, which includes sessions that expired
+// while the coordinator itself was down.
 func (c *Coordinator) retryDrops(cluster string) {
 	sessions, err := c.store.load()
 	if err != nil {

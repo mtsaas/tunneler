@@ -46,8 +46,8 @@ records each SQL statement.
 Three facts explain most of the design.
 
 **Exit nodes make all the connections.** A cluster needs no open port. An
-exit node dials the coordinator, and the coordinator asks it for connections
-over that link.
+exit node dials the coordinator once, and all connections into the cluster
+go over that link.
 
 **The coordinator has no list of clusters.** An exit node presents a token
 that its own Kubernetes cluster issued. The coordinator makes sure that the
@@ -422,6 +422,14 @@ tunneler sessions revoke <id>
 
 A revoked session loses its connections at once. The exit node removes the
 account.
+
+### Upgrades
+
+Upgrade the coordinator before the exit nodes. A new coordinator serves the
+exit nodes of the previous version, but a new exit node cannot connect to an
+old coordinator. Such an exit node logs that the coordinator must be
+upgraded first, and it does not become ready. Thus a rolling update of the
+exit node chart stops before it replaces a working exit node.
 
 ### A rebuilt cluster
 

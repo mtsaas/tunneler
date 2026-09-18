@@ -34,6 +34,7 @@ func (c *Coordinator) Handler() http.Handler {
 	mux.HandleFunc(routeSessionConnect, c.user(c.handleConnect))
 	mux.HandleFunc(routeSessionEvents, c.user(c.handleSessionEvents))
 	mux.HandleFunc(routeGateway, c.handleGateway) // authenticates for itself, to answer in the kind's manner
+	mux.HandleFunc(routeExitConnect, c.exit(c.handleExitConnect))
 	mux.HandleFunc(routeExitControl, c.exit(c.handleExitControl))
 	mux.HandleFunc(routeExitData, c.exit(c.handleExitData))
 	mux.HandleFunc(routeExitResult, c.exit(c.handleExitResult))
@@ -70,40 +71,46 @@ func (c *Coordinator) user(next func(http.ResponseWriter, *http.Request, *Identi
 func ExitRole(cluster string) string { return "exit:" + cluster }
 
 // exit wraps a handler that requires an exit node's credentials, passing it
-// the name of the authenticated cluster. An exit node presents one of:
-//
-//   - its Kubernetes service account token, if its cluster's issuer matches
-//     exit_issuers; the cluster name is bound to that issuer on first use
-//   - a token from the identity provider carrying the role ExitRole(cluster),
-//     as an Azure workload identity obtains
-//   - nothing, if the coordinator runs with insecure_exit_auth
+// the name of the authenticated cluster.
 func (c *Coordinator) exit(next func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		cluster, token := r.URL.Query().Get("cluster"), bearer(r)
-		var err error
-		issuer, kube := c.kube.trusts(token, c.config().ExitIssuers)
-		switch {
-		case cluster == "":
-			err = errors.New("no cluster named")
-		case c.config().InsecureExitAuth:
-		case kube:
-			err = c.authKubeExit(r.Context(), cluster, issuer, token)
-		default:
-			var id *Identity
-			if id, err = c.auth(r.Context(), token); err == nil && !slices.Contains(id.Roles, ExitRole(cluster)) {
-				err = fmt.Errorf("identity %s lacks role %q; it has %q", id.Subject, ExitRole(cluster), id.Roles)
-			}
-			if err != nil && issuer != "" && len(c.config().ExitIssuers) > 0 {
-				err = fmt.Errorf("%w (issuer %s matches no exit_issuers pattern either)", err, issuer)
-			}
-		}
-		if err != nil {
+		cluster := r.URL.Query().Get("cluster")
+		if err := c.admitExit(r.Context(), cluster, bearer(r)); err != nil {
 			c.log.Warn("exit node rejected", "cluster", cluster, "remote", c.remote(r), "err", err)
 			writeError(w, http.StatusUnauthorized, "not authorized as an exit node of this cluster")
 			return
 		}
 		next(w, r, cluster)
 	}
+}
+
+// admitExit checks that token proves its bearer an exit node of the
+// cluster. An exit node presents one of:
+//
+//   - its Kubernetes service account token, if its cluster's issuer matches
+//     exit_issuers; the cluster name is bound to that issuer on first use
+//   - a token from the identity provider carrying the role ExitRole(cluster),
+//     as an Azure workload identity obtains
+//   - nothing, if the coordinator runs with insecure_exit_auth
+func (c *Coordinator) admitExit(ctx context.Context, cluster, token string) error {
+	var err error
+	issuer, kube := c.kube.trusts(token, c.config().ExitIssuers)
+	switch {
+	case cluster == "":
+		err = errors.New("no cluster named")
+	case c.config().InsecureExitAuth:
+	case kube:
+		err = c.authKubeExit(ctx, cluster, issuer, token)
+	default:
+		var id *Identity
+		if id, err = c.auth(ctx, token); err == nil && !slices.Contains(id.Roles, ExitRole(cluster)) {
+			err = fmt.Errorf("identity %s lacks role %q; it has %q", id.Subject, ExitRole(cluster), id.Roles)
+		}
+		if err != nil && issuer != "" && len(c.config().ExitIssuers) > 0 {
+			err = fmt.Errorf("%w (issuer %s matches no exit_issuers pattern either)", err, issuer)
+		}
+	}
+	return err
 }
 
 // authKubeExit verifies a service account token from a trusted cluster
@@ -378,36 +385,15 @@ func (c *Coordinator) handleSessionEvents(w http.ResponseWriter, r *http.Request
 	}
 }
 
-func (c *Coordinator) handleExitControl(w http.ResponseWriter, r *http.Request, cluster string) {
+// handleExitConnect serves an exit node's session; see hub.
+func (c *Coordinator) handleExitConnect(w http.ResponseWriter, r *http.Request, cluster string) {
 	conn, err := tunnel.Accept(w, r)
 	if err != nil {
 		return
 	}
-	if err := c.hub.serveControl(cluster, c.remote(r), conn); err != nil {
-		c.log.Info("exit node control stream ended", "cluster", cluster, "remote", c.remote(r), "err", err)
+	if err := c.hub.serve(cluster, c.remote(r), tunnel.Server(conn, c.log)); err != nil {
+		c.log.Info("exit node session ended", "cluster", cluster, "remote", c.remote(r), "err", err)
 	}
-}
-
-// handleExitData accepts the data stream that answers a dial.
-func (c *Coordinator) handleExitData(w http.ResponseWriter, r *http.Request, cluster string) {
-	conn, err := tunnel.Accept(w, r)
-	if err != nil {
-		return
-	}
-	if !c.hub.deliver(cluster, r.URL.Query().Get("id"), conn, api.ExitResult{}) {
-		conn.Close() // the dial gave up waiting
-	}
-}
-
-// handleExitResult accepts the outcome of any request other than a
-// successful dial.
-func (c *Coordinator) handleExitResult(w http.ResponseWriter, r *http.Request, cluster string) {
-	var res api.ExitResult
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&res); err != nil {
-		writeError(w, http.StatusBadRequest, "malformed result: "+err.Error())
-		return
-	}
-	c.hub.deliver(cluster, r.URL.Query().Get("id"), nil, res)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
