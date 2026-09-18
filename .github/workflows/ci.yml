@@ -2,8 +2,8 @@ name: ci
 
 # Every push and pull request is tested. A merge to main publishes the image
 # as :latest and :<commit>, and the charts as 0.0.0-main.<commit>. A tag
-# vX.Y.Z publishes the image as :vX.Y.Z, the charts as X.Y.Z, and a GitHub
-# release with client binaries.
+# vX.Y.Z publishes the image as :vX.Y.Z and :latest, the charts as X.Y.Z,
+# and a GitHub release with client binaries.
 on:
   push:
     branches: [main]
@@ -35,7 +35,11 @@ jobs:
       contents: write # to create the release
       packages: write
     steps:
+      # Main builds retain the nearest release in their version, so clients
+      # can compare themselves with a coordinator installed from :latest.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -53,17 +57,22 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             tag="${GITHUB_REF_NAME}"
             {
-              echo "IMAGE_TAGS=ghcr.io/mtsaas/tunneler:${tag}"
+              echo "IMAGE_TAGS=ghcr.io/mtsaas/tunneler:${tag},ghcr.io/mtsaas/tunneler:latest"
               echo "CHART_VERSION=${tag#v}"
               echo "APP_VERSION=${tag}"
               echo "LDFLAGS=-s -w -X github.com/mtsaas/tunneler/internal/version.tag=${tag}"
             } >> "$GITHUB_ENV"
           else
+            release="$(git describe --tags --match 'v[0-9]*.[0-9]*.[0-9]*' --abbrev=0 2>/dev/null || true)"
+            ldflags="-s -w"
+            if [[ -n "$release" ]]; then
+              ldflags+=" -X github.com/mtsaas/tunneler/internal/version.tag=${release}+${GITHUB_SHA::7}"
+            fi
             {
               echo "IMAGE_TAGS=ghcr.io/mtsaas/tunneler:latest,ghcr.io/mtsaas/tunneler:${GITHUB_SHA}"
               echo "CHART_VERSION=0.0.0-main.${GITHUB_SHA::7}"
               echo "APP_VERSION=${GITHUB_SHA}"
-              echo "LDFLAGS=-s -w"
+              echo "LDFLAGS=${ldflags}"
             } >> "$GITHUB_ENV"
           fi
 

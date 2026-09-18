@@ -8,6 +8,7 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/spf13/cobra v1.10.2
+	golang.org/x/mod v0.38.0
 	golang.org/x/oauth2 v0.37.0
 	golang.org/x/term v0.45.0
 	k8s.io/api v0.37.0

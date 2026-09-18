@@ -135,6 +135,9 @@ TUNNELER_SERVER: the coordinator's URL. Overrides "tunneler config --server".
 
 TUNNELER_CLUSTER: for "start exit", the name of the cluster.
 
+TUNNELER_NO_UPDATE_CHECK: if set, do not check the coordinator for a newer
+client version.
+
 Set by "tunneler connect -- COMMAND" for the command it runs.
 
 For a postgres service:

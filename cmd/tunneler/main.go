@@ -51,6 +51,9 @@ func rootCmd() *cobra.Command {
 			log = newLogger(server, verbose)
 			return nil
 		},
+		PersistentPostRun: func(cmd *cobra.Command, _ []string) {
+			notifyUpdate(cmd)
+		},
 	}
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Log everything that happens")
 	root.PersistentFlags().StringVarP(&output, "output", "o", "text", "Output `format`: text or json")
