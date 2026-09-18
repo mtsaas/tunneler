@@ -39,7 +39,7 @@ or nothing, which only a coordinator running with insecure_exit_auth, for
 local development, accepts.
 
 Services come from the configuration file, from TunnelService resources in
-the cluster with --kubernetes (see deploy/crd.yaml), or both. A service is
+the cluster with --kubernetes (see charts/tunneler-exit), or both. A service is
 advertised only once its credentials have connected. /healthz answers 200 while the process runs
 and /readyz while it is connected to the coordinator. Services are defined in the configuration file:
 

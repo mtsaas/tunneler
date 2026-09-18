@@ -23,7 +23,7 @@ import (
 )
 
 // TunnelServiceGVR identifies the TunnelService custom resource. Its
-// definition is in deploy/crd.yaml.
+// definition is in charts/tunneler-exit/crds.
 var TunnelServiceGVR = schema.GroupVersionResource{Group: "tunneler.marconet.com", Version: "v1alpha1", Resource: "tunnelservices"}
 
 // TunnelService registers a service with the cluster's exit node. It is

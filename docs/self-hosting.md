@@ -74,7 +74,7 @@ You need these items.
   TLS certificate. Any host that runs containers is sufficient. The
   coordinator needs one persistent disk for its SQLite file.
 - A load balancer or ingress in front of the coordinator that passes
-  HTTP/1.1 connection upgrades (the same requirement as WebSockets).
+  WebSocket connections. Most do this by default.
 - One or more AKS clusters with the OIDC issuer feature enabled.
 - In each cluster, a Postgres database and an administrative role for
   tunneler (see [section 5.4](#54-prepare-the-postgres-database)).
@@ -175,6 +175,47 @@ a cluster in a different tenant cannot match.
 
 ### 4.2 Run the coordinator
 
+You can run the coordinator in Kubernetes or as one container. Use the
+first procedure if you have a cluster for it.
+
+**In Kubernetes, with Helm.** The chart creates a StatefulSet with a
+persistent volume, and a Service. The coordinator serves plain HTTP in the
+cluster, and your ingress terminates TLS.
+
+1. Write a file `coordinator-values.yaml`. The `config` key holds the
+   configuration from section 4.1, without `listen`, `database`, and `tls`:
+
+   ```yaml
+   config:
+     exit_issuers: ["https://*.oic.prod-aks.azure.com/<tenant-id>/*/"]
+     oidc:
+       issuer: https://login.microsoftonline.com/<tenant-id>/v2.0
+       client_id: <app-id>
+     admins: ["<group-id>"]
+     grants:
+       - group: <group-id>
+         labels: {cluster: prod, kind: postgres}
+         roles: [readonly]
+   ingress:
+     enabled: true
+     className: nginx
+     host: tunneler.example.com
+     tlsSecretName: tunneler-tls
+   ```
+
+2. Install the chart:
+
+   ```bash
+   helm upgrade --install tunneler-coordinator oci://ghcr.io/mtsaas/charts/tunneler-coordinator \
+     --version <version> --namespace tunneler --create-namespace \
+     --values coordinator-values.yaml
+   ```
+
+   If you use a service mesh gateway, leave `ingress.enabled` off. Route your
+   gateway to the Service `tunneler-coordinator`, port 8443.
+
+**As one container.**
+
 1. Put the configuration file, the certificate, and the key on the host.
 
 2. Start the container. Mount the configuration, the TLS files, and a
@@ -236,33 +277,31 @@ The exit node runs as a Deployment with two replicas. It gets a projected
 service account token with the audience `tunneler`. Kubernetes issues that
 token and rotates it. The exit node presents it to the coordinator.
 
-1. Install the `TunnelService` custom resource definition:
+1. Install the chart. It contains the `TunnelService` custom resource
+   definition. Set `server` to the coordinator URL. Set `cluster` to the name
+   of this cluster, for example `prod`:
 
    ```bash
-   kubectl apply -f deploy/crd.yaml
+   helm upgrade --install tunneler-exit oci://ghcr.io/mtsaas/charts/tunneler-exit \
+     --version <version> --namespace tunneler --create-namespace \
+     --set server=https://tunneler.example.com --set cluster=prod
    ```
-
-2. Open `deploy/exit-node.yaml`. Set `TUNNELER_SERVER` to the coordinator
-   URL. Set `TUNNELER_CLUSTER` to the name of this cluster, for example
-   `prod`.
 
    CAUTION: Use each cluster name once. The coordinator binds a name to the
    first cluster that presents it, and refuses the name to other clusters.
 
-3. Apply the file:
+   NOTE: The coordinator configuration names the service account
+   `system:serviceaccount:tunneler:tunneler-exit` in `exit_subject`. If you
+   install into a different namespace, change `exit_subject` to match.
 
-   ```bash
-   kubectl apply -f deploy/exit-node.yaml
-   ```
-
-4. Make sure that the exit node connected. Its log must contain
+2. Make sure that the exit node connected. Its log must contain
    `connected to coordinator`:
 
    ```bash
    kubectl -n tunneler logs deployment/tunneler-exit
    ```
 
-5. Make sure that the coordinator accepted it. The coordinator log must
+3. Make sure that the coordinator accepted it. The coordinator log must
    contain `exit node connected` with your cluster name.
 
 If the coordinator log contains `exit node rejected`, read the `err` field.
@@ -313,7 +352,32 @@ kubectl -n shop create secret generic orders-db-tunneler --from-literal=dsn='pos
 
 Then let the exit node read that one Secret. Create a Role and a RoleBinding
 in the same namespace. The `resourceNames` field limits the Role to this
-Secret only. `deploy/exit-node.yaml` ends with an example.
+Secret only:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: tunneler-read-dsn, namespace: shop}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [orders-db-tunneler]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: tunneler-read-dsn, namespace: shop}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: tunneler-read-dsn}
+subjects:
+  - {kind: ServiceAccount, name: tunneler-exit, namespace: tunneler}
+```
+
+On a development cluster, you can skip the Role and the RoleBinding. Install
+the exit node chart with `--set secretAccess=cluster`. The exit node can then
+read every Secret in the cluster.
+
+CAUTION: Do not use `secretAccess=cluster` on a production cluster. It gives
+the exit node access to all Secrets.
 
 **Option B: Azure Key Vault.** The exit node reads the secret through a
 workload identity. This is the better option for credentials that Terraform
@@ -343,9 +407,13 @@ manages.
      --scope /subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.KeyVault/vaults/$VAULT/secrets/tunneler-db-uri
    ```
 
-4. In `deploy/exit-node.yaml`, add the `azure.workload.identity/client-id`
-   annotation to the service account. Add the label
-   `azure.workload.identity/use: "true"` to the pod. Apply the file again.
+4. Give the client ID of the identity to the chart. The chart adds the
+   workload identity annotation and label:
+
+   ```bash
+   helm upgrade tunneler-exit oci://ghcr.io/mtsaas/charts/tunneler-exit --reuse-values \
+     --set workloadIdentity.clientId=$(az identity show -g $RG -n tunneler-exit --query clientId -o tsv)
+   ```
 
 ### 5.6 Register the service
 
@@ -413,8 +481,13 @@ Some rules:
 - Every service has the labels `cluster`, `kind`, `name`, and `namespace`.
   The exit node sets them. A `TunnelService` cannot set them.
 
-The coordinator reads the grants at start. After you change the file,
-restart the coordinator.
+The coordinator reads the configuration file again when the file changes.
+A restart is not necessary, and open connections stay open. New grants apply
+to the next request. If a person loses access, the coordinator revokes their
+session at their next connection.
+
+The keys `listen`, `database`, `tls`, `oidc`, and `exit_issuer_ca_file` are
+the exception. A change to those applies after a restart. The log names them.
 
 ## 7. The client
 
@@ -449,12 +522,24 @@ Each person installs the `tunneler` command. See
    tunneler connect cluster=prod team=shop
    ```
 
-   If the labels match more than one service, the command lists them. Add
-   the label `name=<service>` to select one.
+   If the labels match more than one service, the command lists them and
+   asks you to select one. With no labels, it lists every service that you
+   can reach.
 
 The command prints a host, a port, a user, and a password. Give them to your
 database tool. Press Ctrl-C to disconnect. The coordinator then removes the
-account.
+account. The port for one service is the same each time, so a saved
+connection in a database tool continues to work. Only the user and the
+password change.
+
+To run one command, put it after `--`. The command gets the connection in
+its environment (`PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`,
+and `DATABASE_URL`). When the command stops, the coordinator removes the
+account:
+
+```bash
+tunneler connect cluster=prod team=shop -- psql
+```
 
 ## 8. Operation
 

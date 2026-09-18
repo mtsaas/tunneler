@@ -4,13 +4,29 @@ package version
 
 import "runtime/debug"
 
-// String returns the short commit the binary was built from, with "+dirty"
-// if the tree had uncommitted changes, or "unknown" for a build made outside
-// a checkout (such as a Docker build that excludes .git).
+// tag is the release, such as v0.1.0, set by the linker for release builds.
+var tag string
+
+// String returns the release, if this is a release build, and the short
+// commit the binary was built from, with "+dirty" if the tree had uncommitted
+// changes. A build made outside a checkout (such as a Docker build that
+// excludes .git) has no commit.
 func String() string {
+	switch rev := revision(); {
+	case tag != "" && rev != "":
+		return tag + " (" + rev + ")"
+	case tag != "":
+		return tag
+	case rev != "":
+		return rev
+	}
+	return "unknown"
+}
+
+func revision() string {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
-		return "unknown"
+		return ""
 	}
 	var rev, dirty string
 	for _, s := range info.Settings {
@@ -24,7 +40,7 @@ func String() string {
 		}
 	}
 	if rev == "" {
-		return "unknown"
+		return ""
 	}
 	return rev[:min(len(rev), 7)] + dirty
 }
