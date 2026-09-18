@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/mtsaas/tunneler/internal/api"
 	"github.com/mtsaas/tunneler/internal/tunnel"
@@ -223,15 +224,16 @@ func (c *client) createSession(ctx context.Context, token string, selector map[s
 			fmt.Fprintf(os.Stderr, "\nMore than one service matches:\n\n")
 			printServices(os.Stderr, ambiguous.Matches, true)
 		}
-		if fi, statErr := os.Stdin.Stat(); outputJSON || statErr != nil || fi.Mode()&os.ModeCharDevice == 0 {
-			// Nobody to ask. The error carries the matches, for JSON output.
-			ambiguous.Message += "; add labels until it matches one (name=... always will)"
-			return nil, ambiguous
+		// A person can only be asked on a terminal. A character device is not
+		// enough of a test: /dev/null, the usual stdin of scripts, is one.
+		ambiguous.Message += "; add labels until it matches one (name=... always will)"
+		if outputJSON || !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stderr.Fd())) {
+			return nil, ambiguous // it carries the matches, for JSON output
 		}
 		fmt.Fprintf(os.Stderr, "\nWhich one? [1-%d]: ", len(choices))
 		var n int
 		if _, err := fmt.Fscanln(os.Stdin, &n); err != nil || n < 1 || n > len(choices) {
-			return nil, errors.New("no service chosen")
+			return nil, ambiguous // no usable answer leaves the selector ambiguous
 		}
 		selector = choices[n-1]
 	}

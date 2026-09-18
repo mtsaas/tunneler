@@ -97,6 +97,22 @@ func TestAgentContract(t *testing.T) {
 		t.Errorf("error does not say how to disambiguate: %q", failure.Error)
 	}
 
+	// The same without --output json, as a script with stdin from /dev/null
+	// runs it. /dev/null is a character device, which once passed for a
+	// terminal: the command prompted, read EOF, and exited 1.
+	devnull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devnull.Close()
+	stdin := os.Stdin
+	os.Stdin = devnull
+	_, errOut, status = cli(t, srv.URL, "connect", "cluster=dev")
+	os.Stdin = stdin
+	if status != exitAmbiguous || !strings.Contains(errOut, "name=") {
+		t.Errorf("ambiguous connect from a script: status %d, want %d; stderr %q", status, exitAmbiguous, errOut)
+	}
+
 	// Statuses tell failures apart without reading messages.
 	if _, _, status := cli(t, srv.URL, "sessions", "revoke", "gone", "-o", "json"); status != exitDenied {
 		t.Errorf("revoking a missing session: status %d, want %d", status, exitDenied)
