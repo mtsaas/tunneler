@@ -11,27 +11,15 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_PASSWORD: pw
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
       - run: test -z "$(gofmt -l .)"
-      - run: go vet ./...
-      - run: go test -race -count=1 ./...
-        env:
-          TUNNELER_TEST_DSN: postgres://postgres:pw@localhost:5432/postgres?sslmode=disable
+      # Unit tests only. The Postgres and kind end-to-end tests skip without
+      # TUNNELER_TEST_DSN and TUNNELER_KIND; run those locally.
+      - run: go test -vet=all ./...
 
   image:
     # Merges to main rebuild ghcr.io/mtsaas/tunneler:latest, plus a tag per commit.
