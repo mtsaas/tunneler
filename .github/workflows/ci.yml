@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5 # caches the module download and build caches, keyed on go.sum
         with:
           go-version-file: go.mod
       - run: test -z "$(gofmt -l .)"
@@ -31,7 +31,16 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # Compile here, where setup-go's build cache makes an unchanged
+      # dependency tree nearly free, rather than inside Docker where it would
+      # start cold on every run.
+      - run: |
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags="-s -w" -o dist/linux/$arch/tunneler ./cmd/tunneler
+          done
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -42,6 +51,7 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
+          build-args: SOURCE=prebuilt
           push: true
           tags: |
             ghcr.io/mtsaas/tunneler:latest

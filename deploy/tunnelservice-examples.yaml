@@ -12,7 +12,7 @@ spec:
       kubernetesSecret:
         name: preview-pr-123-agent-server-secrets
         key: database_uri
-  grantableRoles: [vantage_readonly, vantage_readwrite]
+  grantableRoles: [readonly, readwrite]
   labels:
     environment: preview-pr-123
     lifecycle: preview
@@ -31,8 +31,8 @@ spec:
     dsnRef:
       azureKeyVault:
         vaultUri: https://kv-platform-acme.vault.azure.net
-        secretName: vantage-tunneler-db-uri
-  grantableRoles: [vantage_readonly, vantage_readwrite]
+        secretName: tunneler-db-uri
+  grantableRoles: [readonly, readwrite]
   labels:
     environment: acme
     lifecycle: persistent
