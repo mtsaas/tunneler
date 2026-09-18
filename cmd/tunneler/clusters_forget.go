@@ -10,7 +10,7 @@ import (
 func clustersForgetCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "forget NAME",
-		Short: "Release the name of a rebuilt cluster (admins)",
+		Short: "Release the name of a rebuilt cluster",
 		Long: `Release the name of a rebuilt cluster.
 
 A cluster name belongs to the first cluster that uses it. A rebuilt cluster

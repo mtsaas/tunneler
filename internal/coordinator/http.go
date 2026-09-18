@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -24,6 +25,7 @@ func (c *Coordinator) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/auth/config", c.handleAuthConfig)
 	mux.HandleFunc("GET /v1/auth/status", c.user(c.handleAuthStatus))
 	mux.HandleFunc("GET /v1/clusters", c.user(c.handleListClusters))
+	mux.HandleFunc("GET /v1/clusters/bindings", c.user(c.handleListBindings))
 	mux.HandleFunc("DELETE /v1/clusters/{name}/binding", c.user(c.handleForgetCluster))
 	mux.HandleFunc("GET /v1/sessions", c.user(c.handleListSessions))
 	mux.HandleFunc("POST /v1/sessions", c.user(c.handleCreateSession))
@@ -120,8 +122,33 @@ func (c *Coordinator) authKubeExit(ctx context.Context, cluster, issuer, token s
 	if bound == issuer {
 		return nil
 	}
-	return fmt.Errorf("cluster %q is bound to issuer %s, not %s; if the cluster was rebuilt, an admin must run: tunneler clusters forget %s",
+	return fmt.Errorf("cluster %q is bound to issuer %s, not %s; see \"tunneler clusters list\", and if the cluster was rebuilt, an admin must run: tunneler clusters forget %s",
 		cluster, bound, issuer, cluster)
+}
+
+// handleListBindings lists every cluster name that is bound to an issuer or
+// has an exit node connected, so that an admin can see who owns a name
+// before releasing it.
+func (c *Coordinator) handleListBindings(w http.ResponseWriter, r *http.Request, id *Identity) {
+	if !c.isAdmin(id) {
+		writeError(w, http.StatusForbidden, "admins only")
+		return
+	}
+	bound, err := c.store.clusterBindings()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	for _, name := range c.hub.clusters() {
+		if _, ok := bound[name]; !ok {
+			bound[name] = "" // connected, but not by a bound issuer
+		}
+	}
+	bindings := []api.ClusterBinding{}
+	for _, name := range slices.Sorted(maps.Keys(bound)) {
+		bindings = append(bindings, api.ClusterBinding{Name: name, Issuer: bound[name], ExitNodes: c.hub.nodes(name)})
+	}
+	writeJSON(w, http.StatusOK, bindings)
 }
 
 func (c *Coordinator) handleForgetCluster(w http.ResponseWriter, r *http.Request, id *Identity) {

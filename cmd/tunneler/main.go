@@ -80,7 +80,7 @@ $ tunneler connect cluster=prod team=shop -- psql`
 		group(groupCore, "services", "List services you can reach", servicesListCmd()),
 		group(groupCore, "sessions", "List and revoke sessions", sessionsListCmd(), sessionsRevokeCmd()),
 		group(groupServer, "start", "Run the coordinator or an exit node", startCoordinatorCmd(), startExitCmd()),
-		group("", "clusters", "Manage cluster names", clustersForgetCmd()),
+		group("", "clusters", "Manage cluster names (admins)", clustersListCmd(), clustersForgetCmd()),
 		versionCmd(),
 	)
 	root.AddCommand(helpTopics()...)

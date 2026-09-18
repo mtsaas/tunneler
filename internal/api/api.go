@@ -36,6 +36,16 @@ type Grant struct {
 	Roles  []string          `json:"roles"`
 }
 
+// ClusterBinding is a cluster name and the cluster that owns it, for admins.
+type ClusterBinding struct {
+	Name string `json:"name"`
+	// Issuer is the OIDC issuer the name is bound to: only a cluster with
+	// this issuer may use the name. It is empty for a cluster whose exit
+	// nodes authenticate some other way, which binds nothing.
+	Issuer    string `json:"issuer,omitempty"`
+	ExitNodes int    `json:"exit_nodes"` // connected right now
+}
+
 // Cluster is a cluster with a connected exit node, and the services on it
 // that the caller may access.
 type Cluster struct {

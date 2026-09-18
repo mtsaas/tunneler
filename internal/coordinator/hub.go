@@ -75,6 +75,13 @@ func newHub(log *slog.Logger) *hub {
 	}
 }
 
+// nodes returns how many exit nodes of the cluster are connected.
+func (h *hub) nodes(cluster string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.exits[cluster])
+}
+
 // clusters returns the names of clusters with a connected exit node, sorted.
 func (h *hub) clusters() []string {
 	h.mu.Lock()

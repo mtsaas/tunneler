@@ -18,6 +18,7 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 
+	"github.com/mtsaas/tunneler/internal/api"
 	"github.com/mtsaas/tunneler/internal/coordinator"
 )
 
@@ -121,6 +122,16 @@ func TestKubeExitAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c2.Close()
+	// An admin can see who owns which name before releasing one.
+	list := httptest.NewRecorder()
+	c2.Handler().ServeHTTP(list, httptest.NewRequest("GET", "/v1/clusters/bindings", nil))
+	var bindings []api.ClusterBinding
+	json.NewDecoder(list.Body).Decode(&bindings)
+	if len(bindings) != 2 || bindings[0].Name != "dev" || bindings[0].Issuer != prodB.url ||
+		bindings[1].Name != "prod" || bindings[1].Issuer != prodA.url {
+		t.Errorf("bindings = %+v", bindings)
+	}
+
 	req := httptest.NewRequest("DELETE", "/v1/clusters/prod/binding", nil)
 	rec := httptest.NewRecorder()
 	c2.Handler().ServeHTTP(rec, req)

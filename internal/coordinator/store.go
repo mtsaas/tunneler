@@ -58,6 +58,24 @@ func (st *store) bindCluster(name, issuer string) (bound string, err error) {
 	return bound, err
 }
 
+// clusterBindings returns the issuer each bound cluster name belongs to.
+func (st *store) clusterBindings() (map[string]string, error) {
+	rows, err := st.db.Query(`SELECT name, issuer FROM clusters`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	bindings := make(map[string]string)
+	for rows.Next() {
+		var name, issuer string
+		if err := rows.Scan(&name, &issuer); err != nil {
+			return nil, err
+		}
+		bindings[name] = issuer
+	}
+	return bindings, rows.Err()
+}
+
 // unbindCluster releases a cluster name so that another issuer may claim it.
 func (st *store) unbindCluster(name string) error {
 	_, err := st.db.Exec(`DELETE FROM clusters WHERE name = ?`, name)
