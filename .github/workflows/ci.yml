@@ -34,9 +34,16 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      # Compile here, where setup-go's build cache makes an unchanged
-      # dependency tree nearly free, rather than inside Docker where it would
-      # start cold on every run.
+          cache: false # setup-go's cache is keyed on go.sum, so the test job's entry would shadow this job's
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: image-go-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: image-go-${{ hashFiles('go.sum') }}-
+      # Compile here, where the build cache makes an unchanged dependency
+      # tree nearly free, rather than inside Docker where it starts cold.
       - run: |
           for arch in amd64 arm64; do
             CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags="-s -w" -o dist/linux/$arch/tunneler ./cmd/tunneler
