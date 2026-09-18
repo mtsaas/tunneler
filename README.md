@@ -1,97 +1,68 @@
 # tunneler
 
 Identity-aware access to services inside Kubernetes clusters. Users sign in
-with Entra, get a temporary Postgres account scoped by their groups, and
-connect through a local port; every statement is audited under their name.
+with Entra, get a fully audited temporary sessions to services inside the cluster.
+It is designed to be dead-simple, and easy to host. It has three components:
 
-```
-psql ──▶ tunneler connect ══TLS══▶ coordinator ◀══TLS══ exit node ──▶ postgres
-```
+1. **Coordinator.** This is a central server where all clients and exit nodes connect.
+2. **Exit nodes.** These are deployed in one or more Kubernetes clusters where you want to expose access to a service.
+3. **Client.** This is a CLI installed on your machine that you can use to access a service.
 
-One binary, three modes.
+![](/Users/clarkmccauley/Documents/repos/clustertunnel/docs/architecture.png)
 
-## Coordinator
+## How can I use it?
+Tunneler exit nodes connect to a tunneler coordinator using OIDC to authenticate. 
+These exit nodes running within Kubernetes clusters look for CRDs like this that allow your application
+to "register" a service with the tunneler.
 
-Runs once, centrally. Verifies logins, applies grants, proxies and audits
-connections, keeps sessions in SQLite.
-
-```bash
-tunneler start coordinator --config coordinator.json
-```
-
-```json
-{
-  "listen": ":8443",
-  "database": "/var/lib/tunneler/tunneler.db",
-  "tls": {"cert_file": "tls.crt", "key_file": "tls.key"},
-  "exit_issuers": ["https://*.oic.prod-aks.azure.com/<tenant-id>/*/"],
-  "exit_subject": "system:serviceaccount:tunneler:tunneler-exit",
-  "oidc": {"issuer": "https://login.microsoftonline.com/<tenant-id>/v2.0", "client_id": "<client-id>"},
-  "admins": ["<group or user id>"],
-  "grants": [
-    {"group": "<group id>", "labels": {"cluster": "prod", "kind": "postgres"}, "roles": ["readonly"]},
-    {"user": "alice@example.com", "labels": {"cluster": "dev"}, "roles": ["readwrite"]}
-  ]
-}
+```yaml
+apiVersion: tunneler.marconet.com/v1alpha1
+kind: TunnelService
+metadata:
+  name: my-postgres-db
+spec:
+  kind: postgres
+  credentials:
+    dsnRef:
+      kubernetesSecret:
+        name: postgres-secret
+        key: database_uri
+  grantableRoles:
+    - pg_read_all_data
+  labels:
+    env: stage
 ```
 
-A grant reaches every service carrying all of its labels. Clusters and
-services are never configured here; exit nodes bring them, authenticating
-with their cluster's own service account tokens. `exit_issuers` trusts every
-AKS cluster in the tenant, and a cluster name is bound to the first cluster
-that presents it (`tunneler clusters forget NAME` releases it after a
-rebuild). For local development add `"insecure_exit_auth": true` and drop
-`tls`.
+Clients can connect to the coordinator to get access to this service
 
-## Exit node
+```shell
+# Configure your client to connect to this coordination server
+$ tunneler config --server https://<coordination server>.com
 
-Runs in each cluster. Dials out to the coordinator, advertises its services,
-provisions accounts on them. Credentials stay in the cluster. Authenticates
-with a projected service account token, so a new cluster needs nothing
-registered anywhere; see [examples/exit-node.yaml](examples/exit-node.yaml).
-(Azure Workload Identity with an `exit:<cluster>` app role also works.)
+# Log in using the identity provider configured in the coordination server
+$ tunneler auth login
 
-```bash
-TUNNELER_SERVER=https://tunneler.example.com TUNNELER_CLUSTER=prod tunneler start exit --config exit.json
+# List the available services
+$ tunneler services list
+CLUSTER   SERVICE          KIND       STATUS   LABELS
+dev       my-postgres-db   postgres   ready    cluster=dev,env=stage,kind=postgres,name=my-postgres-db
+
+# Connect to the postgres
+$ tunneler connect cluster=dev name=my-postgres-db
+22:47:19  Requesting access to the service labelled cluster=dev,name=my-postgres-db...
+22:47:19  Access granted to dev/my-postgres-db: temporary account tnl_clark_com_utrt7i7b is provisioned.
+
+  Host:      127.0.0.1
+  Port:      55344
+  Database:  postgres
+  User:      tnl_clark_com_utrt7i7b
+  Password:  NHW6GJYSR3DRILQJZL3JJK6S36
+  Expires:   2026-09-18 06:47:19
+
+  URL:       postgres://tnl_clark_com_utrt7i7b:NHW6GJYSR3DRILQJZL3JJK6S36@127.0.0.1:55344/postgres?sslmode=disable
+  psql:      psql 'postgres://tnl_clark_com_utrt7i7b:NHW6GJYSR3DRILQJZL3JJK6S36@127.0.0.1:55344/postgres?sslmode=disable'
+
+  Everything you run is audited as clark.mccauley@marconet.com.
+
+22:47:19  Listening on 127.0.0.1:55344. Press Ctrl-C to disconnect and revoke the session.
 ```
-
-```json
-{
-  "services": [
-    {
-      "name": "orders-db",
-      "kind": "postgres",
-      "dsn": "postgres://admin:$ORDERS_DB_PASSWORD@orders-db.shop.svc:5432/orders?sslmode=require",
-      "labels": {"team": "shop"},
-      "roles": ["readonly", "readwrite"]
-    }
-  ]
-}
-```
-
-Every service also gets the labels `cluster`, `kind` and `name`.
-
-## CLI
-
-```bash
-tunneler config --server https://tunneler.example.com
-tunneler auth login
-tunneler auth status                    # what the IdP said, and what it grants you
-tunneler clusters list
-tunneler clusters forget prod           # admin: release a rebuilt cluster's name
-tunneler connect cluster=prod team=shop # labels; must match exactly one service
-tunneler sessions list
-tunneler sessions revoke <id>
-```
-
-`connect` prints host, port, user, password and a `psql` command, then
-carries connections until Ctrl-C, which revokes the account.
-
-## Development
-
-```bash
-docker run --rm -d -p 5432:5432 -e POSTGRES_PASSWORD=pw postgres:17
-TUNNELER_TEST_DSN='postgres://postgres:pw@localhost:5432/postgres?sslmode=disable' go test -race ./...
-```
-
-`ponytail:` comments mark deliberate simplifications and their upgrade path.
