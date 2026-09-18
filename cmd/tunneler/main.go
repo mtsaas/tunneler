@@ -41,7 +41,7 @@ func rootCmd() *cobra.Command {
 	auth := &cobra.Command{Use: "auth", Short: "Manage your login"}
 	auth.AddCommand(authLoginCmd(), authStatusCmd())
 	clusters := &cobra.Command{Use: "clusters", Short: "Inspect clusters"}
-	clusters.AddCommand(clustersListCmd())
+	clusters.AddCommand(clustersListCmd(), clustersForgetCmd())
 	sessions := &cobra.Command{Use: "sessions", Short: "Manage sessions"}
 	sessions.AddCommand(sessionsListCmd(), sessionsRevokeCmd())
 	start := &cobra.Command{Use: "start", Short: "Run a server component"}

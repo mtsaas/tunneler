@@ -24,6 +24,8 @@ tunneler start coordinator --config coordinator.json
   "listen": ":8443",
   "database": "/var/lib/tunneler/tunneler.db",
   "tls": {"cert_file": "tls.crt", "key_file": "tls.key"},
+  "exit_issuers": ["https://*.oic.prod-aks.azure.com/<tenant-id>/*/"],
+  "exit_subject": "system:serviceaccount:tunneler:tunneler-exit",
   "oidc": {"issuer": "https://login.microsoftonline.com/<tenant-id>/v2.0", "client_id": "<client-id>"},
   "admins": ["<group or user id>"],
   "grants": [
@@ -34,18 +36,23 @@ tunneler start coordinator --config coordinator.json
 ```
 
 A grant reaches every service carrying all of its labels. Clusters and
-services are never configured here; exit nodes bring them. For local
-development add `"insecure_exit_auth": true` and drop `tls`.
+services are never configured here; exit nodes bring them, authenticating
+with their cluster's own service account tokens. `exit_issuers` trusts every
+AKS cluster in the tenant, and a cluster name is bound to the first cluster
+that presents it (`tunneler clusters forget NAME` releases it after a
+rebuild). For local development add `"insecure_exit_auth": true` and drop
+`tls`.
 
 ## Exit node
 
 Runs in each cluster. Dials out to the coordinator, advertises its services,
 provisions accounts on them. Credentials stay in the cluster. Authenticates
-with Azure Workload Identity (its managed identity needs the app role
-`exit:<cluster>`); see [examples/exit-node.yaml](examples/exit-node.yaml).
+with a projected service account token, so a new cluster needs nothing
+registered anywhere; see [examples/exit-node.yaml](examples/exit-node.yaml).
+(Azure Workload Identity with an `exit:<cluster>` app role also works.)
 
 ```bash
-TUNNELER_SERVER=https://tunneler.example.com tunneler start exit --cluster=prod --config exit.json
+TUNNELER_SERVER=https://tunneler.example.com TUNNELER_CLUSTER=prod tunneler start exit --config exit.json
 ```
 
 ```json
@@ -71,6 +78,7 @@ tunneler config --server https://tunneler.example.com
 tunneler auth login
 tunneler auth status                    # what the IdP said, and what it grants you
 tunneler clusters list
+tunneler clusters forget prod           # admin: release a rebuilt cluster's name
 tunneler connect cluster=prod team=shop # labels; must match exactly one service
 tunneler sessions list
 tunneler sessions revoke <id>

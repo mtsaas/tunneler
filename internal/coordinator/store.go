@@ -35,11 +35,33 @@ func openStore(path string) (*store, error) {
 		expires_at INTEGER NOT NULL, -- Unix seconds
 		revoked    INTEGER NOT NULL DEFAULT 0 -- ended, but its account is not yet known to be dropped
 	) STRICT`)
+	if err == nil {
+		_, err = db.Exec(`CREATE TABLE IF NOT EXISTS clusters (
+			name   TEXT PRIMARY KEY,
+			issuer TEXT NOT NULL -- the OIDC issuer whose tokens may claim this name
+		) STRICT`)
+	}
 	if err != nil {
 		db.Close()
 		return nil, err
 	}
 	return &store{db}, nil
+}
+
+// bindCluster binds a cluster name to an issuer if it is not yet bound, and
+// returns the issuer the name is bound to afterwards.
+func (st *store) bindCluster(name, issuer string) (bound string, err error) {
+	if _, err := st.db.Exec(`INSERT OR IGNORE INTO clusters VALUES (?, ?)`, name, issuer); err != nil {
+		return "", err
+	}
+	err = st.db.QueryRow(`SELECT issuer FROM clusters WHERE name = ?`, name).Scan(&bound)
+	return bound, err
+}
+
+// unbindCluster releases a cluster name so that another issuer may claim it.
+func (st *store) unbindCluster(name string) error {
+	_, err := st.db.Exec(`DELETE FROM clusters WHERE name = ?`, name)
+	return err
 }
 
 func (st *store) insert(s *session) error {

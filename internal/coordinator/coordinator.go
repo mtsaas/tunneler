@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
+
 	"github.com/mtsaas/tunneler/internal/api"
 	"github.com/mtsaas/tunneler/internal/postgres"
 )
@@ -41,6 +43,7 @@ type Coordinator struct {
 	auth  Authenticator
 	hub   *hub
 	store *store
+	kube  *kubeVerifier
 	log   *slog.Logger
 	audit *slog.Logger
 
@@ -69,6 +72,7 @@ func New(cfg *Config, auth Authenticator, log, audit *slog.Logger) (*Coordinator
 		auth:     auth,
 		hub:      newHub(log),
 		store:    st,
+		kube:     &kubeVerifier{patterns: cfg.ExitIssuers, audience: cfg.ExitAudience, providers: make(map[string]*oidc.Provider)},
 		log:      log,
 		audit:    audit,
 		sessions: make(map[string]*session),

@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ func (c *Coordinator) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/auth/config", c.handleAuthConfig)
 	mux.HandleFunc("GET /v1/auth/status", c.user(c.handleAuthStatus))
 	mux.HandleFunc("GET /v1/clusters", c.user(c.handleListClusters))
+	mux.HandleFunc("DELETE /v1/clusters/{name}/binding", c.user(c.handleForgetCluster))
 	mux.HandleFunc("GET /v1/sessions", c.user(c.handleListSessions))
 	mux.HandleFunc("POST /v1/sessions", c.user(c.handleCreateSession))
 	mux.HandleFunc("DELETE /v1/sessions/{id}", c.user(c.handleDeleteSession))
@@ -60,22 +62,31 @@ func (c *Coordinator) user(next func(http.ResponseWriter, *http.Request, *Identi
 func ExitRole(cluster string) string { return "exit:" + cluster }
 
 // exit wraps a handler that requires an exit node's credentials, passing it
-// the name of the authenticated cluster. An exit node presents a token from
-// the identity provider carrying the role ExitRole(cluster), as a workload
-// identity obtains. With insecure_exit_auth, for local development, it need
-// present nothing.
+// the name of the authenticated cluster. An exit node presents one of:
+//
+//   - its Kubernetes service account token, if its cluster's issuer matches
+//     exit_issuers; the cluster name is bound to that issuer on first use
+//   - a token from the identity provider carrying the role ExitRole(cluster),
+//     as an Azure workload identity obtains
+//   - nothing, if the coordinator runs with insecure_exit_auth
 func (c *Coordinator) exit(next func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		cluster := r.URL.Query().Get("cluster")
+		cluster, token := r.URL.Query().Get("cluster"), bearer(r)
 		var err error
+		issuer, kube := c.kube.trusts(token)
 		switch {
 		case cluster == "":
 			err = errors.New("no cluster named")
 		case c.cfg.InsecureExitAuth:
+		case kube:
+			err = c.authKubeExit(r.Context(), cluster, issuer, token)
 		default:
 			var id *Identity
-			if id, err = c.auth(r.Context(), bearer(r)); err == nil && !slices.Contains(id.Roles, ExitRole(cluster)) {
+			if id, err = c.auth(r.Context(), token); err == nil && !slices.Contains(id.Roles, ExitRole(cluster)) {
 				err = fmt.Errorf("identity %s lacks role %q; it has %q", id.Subject, ExitRole(cluster), id.Roles)
+			}
+			if err != nil && issuer != "" && len(c.cfg.ExitIssuers) > 0 {
+				err = fmt.Errorf("%w (issuer %s matches no exit_issuers pattern either)", err, issuer)
 			}
 		}
 		if err != nil {
@@ -85,6 +96,42 @@ func (c *Coordinator) exit(next func(http.ResponseWriter, *http.Request, string)
 		}
 		next(w, r, cluster)
 	}
+}
+
+// authKubeExit verifies a service account token from a trusted cluster
+// issuer and checks that the issuer is the one bound to the cluster name,
+// binding it if the name is new.
+func (c *Coordinator) authKubeExit(ctx context.Context, cluster, issuer, token string) error {
+	subject, err := c.kube.verify(ctx, issuer, token)
+	if err != nil {
+		return err
+	}
+	if c.cfg.ExitSubject != "" && subject != c.cfg.ExitSubject {
+		return fmt.Errorf("token subject %q is not exit_subject %q", subject, c.cfg.ExitSubject)
+	}
+	bound, err := c.store.bindCluster(cluster, issuer)
+	if err != nil {
+		return err
+	}
+	if bound == issuer {
+		return nil
+	}
+	return fmt.Errorf("cluster %q is bound to issuer %s, not %s; if the cluster was rebuilt, an admin must run: tunneler clusters forget %s",
+		cluster, bound, issuer, cluster)
+}
+
+func (c *Coordinator) handleForgetCluster(w http.ResponseWriter, r *http.Request, id *Identity) {
+	if !c.isAdmin(id) {
+		writeError(w, http.StatusForbidden, "admins only")
+		return
+	}
+	name := r.PathValue("name")
+	if err := c.store.unbindCluster(name); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	c.audit.Info("cluster name released; the next issuer to present it will bind it", "cluster", name, "by", id.Username)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (c *Coordinator) isAdmin(id *Identity) bool {

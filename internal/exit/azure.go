@@ -17,6 +17,21 @@ import (
 	"github.com/mtsaas/tunneler/internal/api"
 )
 
+// TokenFile returns a TokenFunc that presents the token in the file at path,
+// read afresh on every call because Kubernetes rotates it. The file is a
+// projected service account token whose audience is the coordinator's
+// exit_audience; the coordinator verifies it against the cluster's own OIDC
+// issuer, so nothing has to be registered anywhere for a new cluster.
+func TokenFile(path string) TokenFunc {
+	return func(context.Context) (string, error) {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(b)), nil
+	}
+}
+
 // AzureWorkloadIdentity returns a TokenFunc for a pod running under Azure
 // Workload Identity, or an error if the environment is not one: the AKS
 // webhook injects AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_AUTHORITY_HOST and

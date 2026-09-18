@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -27,6 +29,20 @@ type Config struct {
 	// Either way clusters are not configured; one exists for as long as an
 	// exit node is connected.
 	InsecureExitAuth bool `json:"insecure_exit_auth"`
+	// ExitIssuers are patterns, in path.Match syntax, for the OIDC issuers of
+	// Kubernetes clusters whose service account tokens may authenticate exit
+	// nodes. For every AKS cluster in a tenant:
+	//
+	//	https://*.oic.prod-aks.azure.com/<tenant-id>/*/
+	//
+	// A cluster name is bound to the first issuer that presents it, and other
+	// issuers are then refused that name. Nothing is configured per cluster.
+	ExitIssuers []string `json:"exit_issuers"`
+	// ExitAudience is the audience such tokens must carry; default "tunneler".
+	ExitAudience string `json:"exit_audience"`
+	// ExitSubject, if set, is the only token subject accepted from those
+	// issuers, such as system:serviceaccount:tunneler:tunneler-exit.
+	ExitSubject string `json:"exit_subject"`
 }
 
 // TLSConfig names a PEM certificate and key pair.
@@ -94,10 +110,11 @@ func LoadConfig(path string) (*Config, error) {
 	defer f.Close()
 
 	cfg := &Config{
-		Listen:     ":8443",
-		Database:   "tunneler.db",
-		SessionTTL: Duration(8 * time.Hour),
-		OIDC:       OIDCConfig{UsernameClaim: "preferred_username", UserIDClaim: "oid", GroupsClaim: "groups"},
+		Listen:       ":8443",
+		Database:     "tunneler.db",
+		ExitAudience: "tunneler",
+		SessionTTL:   Duration(8 * time.Hour),
+		OIDC:         OIDCConfig{UsernameClaim: "preferred_username", UserIDClaim: "oid", GroupsClaim: "groups"},
 	}
 	dec := json.NewDecoder(f)
 	dec.DisallowUnknownFields() // a misspelt key must not silently widen or drop access
@@ -116,6 +133,14 @@ func (c *Config) validate() error {
 	}
 	if c.SessionTTL <= 0 {
 		return errors.New("session_ttl must be positive")
+	}
+	for _, p := range c.ExitIssuers {
+		if _, err := path.Match(p, ""); err != nil {
+			return fmt.Errorf("exit_issuers: %q: %w", p, err)
+		}
+		if !strings.HasPrefix(p, "https://") {
+			return fmt.Errorf("exit_issuers: %q: must be an https:// URL pattern", p)
+		}
 	}
 	for i, g := range c.Grants {
 		if (g.Group == "") == (g.User == "") {

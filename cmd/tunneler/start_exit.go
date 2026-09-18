@@ -15,7 +15,7 @@ import (
 )
 
 func startExitCmd() *cobra.Command {
-	var path, healthAddr string
+	var path, healthAddr, tokenFile string
 	a := &exit.Agent{}
 	cmd := &cobra.Command{
 		Use:   "exit",
@@ -23,10 +23,12 @@ func startExitCmd() *cobra.Command {
 		Long: `Run the exit node for a cluster.
 
 Everything but the cluster name has a default suited to a Kubernetes
-Deployment. The coordinator URL comes from $TUNNELER_SERVER. The node proves
-which cluster it speaks for with Azure Workload Identity: its managed identity
-needs the app role "exit:<cluster>". Outside such a pod it sends no
-credentials, which only a coordinator running with insecure_exit_auth, for
+Deployment. The coordinator URL comes from $TUNNELER_SERVER and the cluster
+name from $TUNNELER_CLUSTER. The node proves which cluster it speaks for with,
+in order of preference: a projected service account token at --token-file,
+which the coordinator verifies against the cluster's own OIDC issuer; Azure
+Workload Identity, whose managed identity needs the app role "exit:<cluster>";
+or nothing, which only a coordinator running with insecure_exit_auth, for
 local development, accepts. /healthz answers 200 while the process runs
 and /readyz while it is connected to the coordinator. Services are defined in the configuration file:
 
@@ -52,12 +54,17 @@ the service.`,
 			if a.Server == "" {
 				return errors.New("--server or $TUNNELER_SERVER is required")
 			}
-			if token, err := exit.AzureWorkloadIdentity(a.Server); err != nil {
-				log.Warn("connecting to the coordinator WITHOUT credentials; it will refuse unless it runs with insecure_exit_auth", "reason", err)
-			} else {
+			if _, err := os.Stat(tokenFile); err == nil {
+				log.Info("authenticating to the coordinator with this cluster's service account token; the coordinator must trust the cluster's issuer",
+					"file", tokenFile)
+				a.Token = exit.TokenFile(tokenFile)
+			} else if token, err := exit.AzureWorkloadIdentity(a.Server); err == nil {
 				log.Info("authenticating to the coordinator with Azure Workload Identity",
 					"client_id", os.Getenv("AZURE_CLIENT_ID"), "needs_role", "exit:"+a.Cluster)
 				a.Token = token
+			} else {
+				log.Warn("connecting to the coordinator WITHOUT credentials; it will refuse unless it runs with insecure_exit_auth",
+					"no_token_file", tokenFile, "no_workload_identity", err)
 			}
 			a.Cluster = cmp.Or(a.Cluster, os.Getenv("TUNNELER_CLUSTER"))
 			if a.Cluster == "" {
@@ -79,6 +86,7 @@ the service.`,
 	cmd.Flags().StringVar(&a.Cluster, "cluster", "", "name of this cluster (default $TUNNELER_CLUSTER)")
 	cmd.Flags().StringVar(&healthAddr, "health-addr", ":8081", "address of the /healthz and /readyz endpoints; empty disables them")
 	cmd.Flags().StringVar(&a.Server, "server", "", "coordinator URL (default $TUNNELER_SERVER)")
+	cmd.Flags().StringVar(&tokenFile, "token-file", "/var/run/secrets/tunneler/token", "projected service account token to authenticate with, if present")
 	cmd.Flags().StringVar(&path, "config", "/etc/tunneler/exit.json", "configuration file")
 	return cmd
 }
