@@ -1,3 +1,10 @@
+{{- /* Fail at render time, with a message that names the value, rather than
+       at apply time or in a crash loop. */ -}}
+{{- $_ := required "config.oidc.issuer is required: the identity provider's issuer URL" .Values.config.oidc.issuer -}}
+{{- $_ := required "config.oidc.client_id is required: the app registration's client ID" .Values.config.oidc.client_id -}}
+{{- if and (not .Values.config.exit_issuers) (not .Values.config.insecure_exit_auth) -}}
+{{- fail "config.exit_issuers is required: without it no exit node can authenticate (or set config.insecure_exit_auth for local development)" -}}
+{{- end -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:

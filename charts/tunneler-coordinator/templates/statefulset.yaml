@@ -71,4 +71,4 @@ spec:
         {{- end }}
         resources:
           requests:
-            storage: {{ .Values.persistence.size }}
+            storage: {{ required "persistence.size is required, for example 1Gi" .Values.persistence.size }}

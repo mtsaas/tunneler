@@ -25,7 +25,7 @@ jobs:
       # Unit tests only. The Postgres and kind end-to-end tests skip without
       # TUNNELER_TEST_DSN and TUNNELER_KIND; run those locally.
       - run: go test -vet=all ./...
-      - run: helm lint charts/tunneler-coordinator && helm lint charts/tunneler-exit --set server=https://example.com,cluster=ci
+      - run: helm lint charts/tunneler-coordinator --values hack/kind/coordinator-values.yaml && helm lint charts/tunneler-exit --set server=https://example.com,cluster=ci
 
   publish:
     if: github.event_name == 'push'
