@@ -157,6 +157,7 @@ it. Each record is one JSON line in the log of the coordinator, with
 | `cluster` | The cluster of the service |
 | `service` | The name of the service |
 | `kind` | `postgres` or `kubernetes` |
+| `remote` | The address that the request came from. Behind an ingress, set `trusted_proxies` in the configuration of the coordinator. Without it, this is the address of the ingress |
 
 Thus one search finds all that a person did, or all that occurred on a
 service, for all kinds. For example, in a log system that has these fields:

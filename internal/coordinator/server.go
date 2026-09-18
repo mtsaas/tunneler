@@ -53,7 +53,7 @@ func (c *Coordinator) user(next func(http.ResponseWriter, *http.Request, *Identi
 			err = fmt.Errorf("token has no %q claim; is it a workload's?", c.config().OIDC.UsernameClaim)
 		}
 		if err != nil {
-			c.log.Info("request rejected: bad or expired ID token", "path", r.URL.Path, "remote", r.RemoteAddr, "err", err)
+			c.log.Info("request rejected: bad or expired ID token", "path", r.URL.Path, "remote", c.remote(r), "err", err)
 			writeError(w, http.StatusUnauthorized, "not logged in, or login expired; run: tunneler auth login")
 			return
 		}
@@ -98,7 +98,7 @@ func (c *Coordinator) exit(next func(http.ResponseWriter, *http.Request, string)
 			}
 		}
 		if err != nil {
-			c.log.Warn("exit node rejected", "cluster", cluster, "remote", r.RemoteAddr, "err", err)
+			c.log.Warn("exit node rejected", "cluster", cluster, "remote", c.remote(r), "err", err)
 			writeError(w, http.StatusUnauthorized, "not authorized as an exit node of this cluster")
 			return
 		}
@@ -330,7 +330,7 @@ func (c *Coordinator) handleConnect(w http.ResponseWriter, r *http.Request, id *
 	if err != nil {
 		return
 	}
-	c.serveSession(r.Context(), s, conn)
+	c.serveSession(r.Context(), s, conn, c.remote(r))
 }
 
 // handleSessionEvents streams SessionEvents until the session ends, so that
@@ -383,8 +383,8 @@ func (c *Coordinator) handleExitControl(w http.ResponseWriter, r *http.Request, 
 	if err != nil {
 		return
 	}
-	if err := c.hub.serveControl(cluster, conn); err != nil {
-		c.log.Info("exit node control stream ended", "cluster", cluster, "remote", r.RemoteAddr, "err", err)
+	if err := c.hub.serveControl(cluster, c.remote(r), conn); err != nil {
+		c.log.Info("exit node control stream ended", "cluster", cluster, "remote", c.remote(r), "err", err)
 	}
 }
 

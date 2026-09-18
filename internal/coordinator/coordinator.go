@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"reflect"
 	"strings"
 	"sync"
@@ -80,6 +81,11 @@ func New(cfg *Config, auth Authenticator, log, audit *slog.Logger) (*Coordinator
 }
 
 func (c *Coordinator) config() *Config { return c.cfg.Load() }
+
+// remote returns the address of whoever sent r; see remoteAddr.
+func (c *Coordinator) remote(r *http.Request) string {
+	return remoteAddr(r, c.config().trustedProxies)
+}
 
 // Reload puts a new configuration into effect without disturbing sessions
 // or connections. Grants, admins, the session lifetime and the rules for
@@ -346,9 +352,9 @@ func (c *Coordinator) retryDrops(cluster string) {
 	}
 }
 
-// serveSession proxies one client connection on behalf of a session. It
-// closes conn before returning.
-func (c *Coordinator) serveSession(ctx context.Context, s *session, conn net.Conn) {
+// serveSession proxies one client connection on behalf of a session, made
+// from remote. It closes conn before returning.
+func (c *Coordinator) serveSession(ctx context.Context, s *session, conn net.Conn, remote string) {
 	defer conn.Close()
 	proxy := kinds[s.info.Kind].proxy
 	if proxy == nil { // a session resumed from a newer coordinator's database
@@ -363,7 +369,7 @@ func (c *Coordinator) serveSession(ctx context.Context, s *session, conn net.Con
 	dial := func(ctx context.Context) (net.Conn, error) {
 		return c.hub.call(ctx, s.info.Cluster, api.ExitRequest{Op: api.OpDial, Service: s.info.Service})
 	}
-	log := c.audit.With(s.attrs(), "remote", conn.RemoteAddr().String())
+	log := c.audit.With(s.attrs(), "remote", remote)
 	log.Info("connection opened")
 	start := time.Now()
 	err := proxy(ctx, conn, dial, &s.info, log)

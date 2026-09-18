@@ -164,6 +164,7 @@ Each key has one purpose.
 | `exit_audience` | The audience that exit node tokens must carry. The default is `tunneler`. |
 | `exit_subject` | The only Kubernetes service account that an exit node can run as. |
 | `exit_issuer_ca_file` | A CA bundle for issuers with private certificates. AKS does not need it. |
+| `trusted_proxies` | The networks of the proxies in front of the coordinator, for example `["10.244.0.0/16"]` for the pods of an ingress. The coordinator then records the address of the person, from `X-Forwarded-For`, and not the address of the proxy. It reads that header only on connections from these networks. |
 | `oidc` | The identity provider from [section 3](#3-the-entra-app-registration). |
 | `admins` | Groups or people who can see and revoke all sessions. |
 | `grants` | Who can reach what. See [section 6](#6-grants-who-can-reach-what). |

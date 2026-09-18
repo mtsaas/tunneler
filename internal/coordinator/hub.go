@@ -121,8 +121,8 @@ func (h *hub) service(cluster, name string) (api.Service, bool) {
 }
 
 // serveControl registers conn as the control stream of one of the cluster's
-// exit nodes and blocks until the stream fails.
-func (h *hub) serveControl(cluster string, conn net.Conn) error {
+// exit nodes, connected from remote, and blocks until the stream fails.
+func (h *hub) serveControl(cluster, remote string, conn net.Conn) error {
 	defer conn.Close()
 
 	var hello api.Hello
@@ -156,7 +156,7 @@ func (h *hub) serveControl(cluster string, conn net.Conn) error {
 	nodes := len(h.exits[cluster])
 	h.mu.Unlock()
 
-	log := h.log.With("cluster", cluster, "remote", conn.RemoteAddr().String())
+	log := h.log.With("cluster", cluster, "remote", remote)
 	log.Info("exit node connected; its services are now routable",
 		"services", slices.Sorted(maps.Keys(e.services)), "nodes_in_cluster", nodes)
 	if h.onConnect != nil {

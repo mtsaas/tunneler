@@ -208,6 +208,7 @@ impersonator.
 | `You must be logged in to the server` | The login expired and tunneler could not renew it | Run `tunneler auth login` |
 | `the cluster's exit node could not be reached` | The exit node is not connected | Examine the pods of the exit node and their logs |
 | The `TunnelService` shows `READY False` | The exit node cannot reach the API server with its service account | Read the `REASON` column and the log of the exit node |
+| `kubectl get` operates, but `k9s` shows empty lists and no error | Something between the person and the coordinator holds data of an open HTTP/2 response. New versions of `k9s` and other tools get their lists from such a response | Start the tool with `DISABLE_HTTP2=1` to make sure that this is the cause. Then make the ingress give HTTP/1.1 for the coordinator, or let the coordinator terminate TLS itself. `go run ./hack/informerprobe CONTEXT` measures this |
 | `kubectl exec` stops immediately behind an ingress | The ingress does not pass the connection upgrade | Use `kubectl` 1.31 or later, which uses WebSocket |
 
 ## 7. Limits

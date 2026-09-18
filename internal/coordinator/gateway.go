@@ -47,7 +47,7 @@ func (c *Coordinator) handleGateway(w http.ResponseWriter, r *http.Request) {
 		err = fmt.Errorf("token has no %q claim", c.config().OIDC.UsernameClaim)
 	}
 	if err != nil {
-		c.log.Info("gateway request rejected: bad or expired ID token", "cluster", cluster, "service", name, "remote", r.RemoteAddr, "err", err)
+		c.log.Info("gateway request rejected: bad or expired ID token", "cluster", cluster, "service", name, "remote", c.remote(r), "err", err)
 		refuseGateway(w, http.StatusUnauthorized, "not logged in, or login expired; run: tunneler auth login")
 		return
 	}
@@ -55,7 +55,7 @@ func (c *Coordinator) handleGateway(w http.ResponseWriter, r *http.Request) {
 	// whether or not the service exists, and so cannot be in the manner of
 	// the service's kind.
 	svc, found := c.hub.service(cluster, name)
-	audit := c.audit.With(auditSubject(id.Username, id.Subject, cluster, name, svc.Kind), "remote", r.RemoteAddr)
+	audit := c.audit.With(auditSubject(id.Username, id.Subject, cluster, name, svc.Kind), "remote", c.remote(r))
 	var roles []string
 	allowed := found && kinds[svc.Kind].gateway != nil
 	if allowed {

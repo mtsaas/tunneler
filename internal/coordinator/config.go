@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path"
 	"slices"
@@ -18,8 +19,14 @@ type Config struct {
 	TLS        *TLSConfig `json:"tls"`         // nil serves plain HTTP, for use behind a TLS-terminating proxy
 	SessionTTL Duration   `json:"session_ttl"` // default 8h
 	OIDC       OIDCConfig `json:"oidc"`
-	Admins     []string   `json:"admins"` // groups that may list and revoke anyone's sessions
-	Grants     []Grant    `json:"grants"`
+	// TrustedProxies are the networks, in CIDR form, of the proxies in front
+	// of the coordinator: load balancers, ingress gateways. X-Forwarded-For
+	// is believed only on connections from them, so that logs and the audit
+	// trail name the person's address and not the proxy's. Empty means the
+	// coordinator is reached directly, and the header is ignored.
+	TrustedProxies []string `json:"trusted_proxies"`
+	Admins         []string `json:"admins"` // groups that may list and revoke anyone's sessions
+	Grants         []Grant  `json:"grants"`
 	// InsecureExitAuth admits any exit node as whatever cluster it claims to
 	// be, without credentials. It exists for local development only: with it
 	// on, anyone who can reach the coordinator can receive users' database
@@ -47,6 +54,8 @@ type Config struct {
 	// ExitSubject, if set, is the only token subject accepted from those
 	// issuers, such as system:serviceaccount:tunneler:tunneler-exit.
 	ExitSubject string `json:"exit_subject"`
+
+	trustedProxies []netip.Prefix // TrustedProxies, parsed by validate
 }
 
 // TLSConfig names a PEM certificate and key pair.
@@ -140,6 +149,14 @@ func (c *Config) validate() error {
 	}
 	if c.SessionTTL <= 0 {
 		return errors.New("session_ttl must be positive")
+	}
+	c.trustedProxies = nil
+	for _, cidr := range c.TrustedProxies {
+		prefix, err := netip.ParsePrefix(cidr)
+		if err != nil {
+			return fmt.Errorf("trusted_proxies: %q is not a network in CIDR form, such as 10.0.0.0/8", cidr)
+		}
+		c.trustedProxies = append(c.trustedProxies, prefix.Masked())
 	}
 	for _, p := range c.ExitIssuers {
 		if _, err := path.Match(p, ""); err != nil {
