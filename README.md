@@ -18,7 +18,19 @@ It explains the parts from first principles and walks through the
 
 ### Installation
 
-The client is a single Go binary. Install it with Go 1.26 or later:
+Install the client. The script uses Go if you have it, otherwise Docker:
+
+```shell
+# macOS and Linux
+curl -fsSL https://raw.githubusercontent.com/mtsaas/tunneler/main/install.sh | sh
+```
+
+```powershell
+# Windows
+irm https://raw.githubusercontent.com/mtsaas/tunneler/main/install.ps1 | iex
+```
+
+Or, with Go 1.26 or later:
 
 ```shell
 go install github.com/mtsaas/tunneler/cmd/tunneler@latest

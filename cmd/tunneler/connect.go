@@ -35,13 +35,15 @@ Creates a temporary account for you on the service, and opens a local port
 for your database tool. Ctrl-C disconnects and removes the account. The
 port for a service is the same every time.
 
+Every query in the session is logged with your identity.
+
 With "-- COMMAND", runs the command with the connection in its environment
 instead, and removes the account when the command exits.`,
 		Annotations: map[string]string{
 			helpArguments: selectorArguments + `
 
 After "--": a command to run. See "tunneler help environment".`,
-			helpJSON: `{"event": "listening", "host", "port", "url", "session"}`,
+			helpJSON: `{"event": "listening", "host", "port", "url", "session", "notice"}`,
 		},
 		Example: `$ tunneler connect cluster=prod team=shop
 $ tunneler connect env=preview-123 -- psql
@@ -96,6 +98,7 @@ func connect(ctx context.Context, selector map[string]string, port int, command 
 			log = slog.New(statusHandler{w: os.Stderr, mu: new(sync.Mutex), min: slog.LevelWarn})
 		}
 	}
+	parent := ctx // done when the person interrupts us, which is not a failure
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 
@@ -168,12 +171,16 @@ func connect(ctx context.Context, selector map[string]string, port int, command 
 	}()
 
 	if len(command) > 0 {
+		if !outputJSON {
+			fmt.Fprintf(os.Stderr, "%s\n\n", auditNotice(s))
+		}
 		return runCommand(ctx, command, s, addr)
 	}
 	if outputJSON {
 		// One object, once connections are accepted: the signal to proceed.
 		result(map[string]any{
 			"event": "listening", "session": s, "host": addr.IP.String(), "port": addr.Port, "url": sessionURL(s, addr),
+			"notice": auditNotice(s),
 		}, "")
 	} else {
 		printSession(s, addr)
@@ -181,8 +188,8 @@ func connect(ctx context.Context, selector map[string]string, port int, command 
 	log.Info(fmt.Sprintf("Listening on %s. Press Ctrl-C to disconnect and revoke the session.", addr))
 	select {
 	case <-ctx.Done():
-		if err := context.Cause(ctx); !errors.Is(err, context.Canceled) {
-			return err
+		if parent.Err() == nil {
+			return context.Cause(ctx) // the session ended under us, and this says why
 		}
 	case <-time.After(time.Until(s.ExpiresAt)):
 		log.Info("The session has reached its expiry.")
@@ -352,8 +359,15 @@ func (c *client) forward(ctx context.Context, local net.Conn, sessionID string, 
 	return nil
 }
 
+// auditNotice tells the person, every time a session starts, that what they
+// do in it is recorded under their name.
+func auditNotice(s *api.Session) string {
+	return fmt.Sprintf("NOTICE: This session is audited. Every query you run is logged with your identity (%s).", s.Owner)
+}
+
 // printSession writes what a client program needs in order to connect.
 func printSession(s *api.Session, addr *net.TCPAddr) {
+	fmt.Printf("\n%s\n", auditNotice(s))
 	fmt.Printf("\n  Host:      %s\n  Port:      %d\n", addr.IP, addr.Port)
 	if s.Database != "" {
 		fmt.Printf("  Database:  %s\n", s.Database)
@@ -365,7 +379,7 @@ func printSession(s *api.Session, addr *net.TCPAddr) {
 		dsn := sessionURL(s, addr)
 		fmt.Printf("\n  URL:       %s\n  psql:      psql '%s'\n", dsn, dsn)
 	}
-	fmt.Printf("\n  Everything you run is audited as %s.\n\n", s.Owner)
+	fmt.Println()
 }
 
 // sessionURL returns the connection URL for the session's local endpoint.

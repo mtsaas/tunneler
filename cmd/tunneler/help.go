@@ -166,7 +166,8 @@ service_unavailable, error. See "tunneler help exit-codes".
 name=SERVICE to the selector and try again.
 
 "tunneler connect" writes one object once it accepts connections:
-  {"event": "listening", "host", "port", "url", "session"}
+  {"event": "listening", "host", "port", "url", "session", "notice"}
+"notice" says that the session is audited; show it to the person.
 Then it reports connections to stderr, one JSON object per line.
 
 "tunneler auth login" needs a person. It writes
