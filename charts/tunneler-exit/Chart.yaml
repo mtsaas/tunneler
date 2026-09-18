@@ -1,0 +1,8 @@
+apiVersion: v2
+name: tunneler-exit
+description: The tunneler exit node for one cluster, with the TunnelService resource that registers services with it.
+type: application
+# CI sets both when it publishes the chart: the version from the git tag, and
+# the appVersion to the image tag built from the same commit.
+version: 0.0.0
+appVersion: latest

@@ -1,0 +1,36 @@
+# The coordinator's URL, and the name this cluster goes by. The coordinator
+# binds the name to the first cluster that presents it.
+server: ""
+cluster: ""
+
+image:
+  repository: ghcr.io/mtsaas/tunneler
+  # Defaults to the chart's appVersion, the image built from the same commit.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+replicas: 2
+
+# How the exit node may read the Secrets that TunnelService resources refer
+# to.
+#
+#   namespaced  It may read nothing by default. Each namespace that registers
+#               a service grants `get` on its one Secret with a Role and a
+#               RoleBinding to this chart's service account. Right for
+#               production.
+#   cluster     It may `get` any Secret in the cluster, so a registration is
+#               the TunnelService alone. Convenient for development clusters.
+secretAccess: namespaced
+
+# Only needed for TunnelService resources that refer to Azure Key Vault: the
+# client ID of a managed identity with a federated credential for this
+# chart's service account. Authentication to the coordinator does not use it.
+workloadIdentity:
+  clientId: ""
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    memory: 256Mi

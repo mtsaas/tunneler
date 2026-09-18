@@ -1,0 +1,43 @@
+image:
+  repository: ghcr.io/mtsaas/tunneler
+  # Defaults to the chart's appVersion, the image built from the same commit.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# The coordinator's configuration file, as documented in
+# docs/self-hosting.md, less "listen" and "database", which the chart sets.
+# Changes are picked up without a restart.
+config:
+  session_ttl: 8h
+  # exit_issuers: ["https://*.oic.prod-aks.azure.com/<tenant-id>/*/"]
+  exit_subject: system:serviceaccount:tunneler:tunneler-exit
+  oidc:
+    issuer: ""
+    client_id: ""
+  admins: []
+  grants: []
+
+# Sessions and cluster names live in a SQLite file on this volume.
+persistence:
+  size: 1Gi
+  storageClassName: ""
+
+service:
+  port: 8443
+
+# The coordinator serves plain HTTP; terminate TLS in front of it. Any
+# ingress that passes WebSocket works. Leave this off to bring your own
+# (an Istio Gateway, say) and route it to the Service.
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  tlsSecretName: ""
+  annotations: {}
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    memory: 256Mi

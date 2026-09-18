@@ -1,0 +1,8 @@
+apiVersion: v2
+name: tunneler-coordinator
+description: The tunneler coordinator, the central server that clients and exit nodes connect to.
+type: application
+# CI sets both when it publishes the chart: the version from the git tag, and
+# the appVersion to the image tag built from the same commit.
+version: 0.0.0
+appVersion: latest

@@ -1,5 +1,5 @@
-// Package e2e runs tunneler in a kind cluster. The tests need docker, kind
-// and kubectl, take minutes, and run only with TUNNELER_KIND=1:
+// Package e2e runs tunneler in a kind cluster. The tests need docker, kind,
+// helm and kubectl, take minutes, and run only with TUNNELER_KIND=1:
 //
 //	TUNNELER_KIND=1 go test -count=1 -timeout 15m ./e2e/
 //
@@ -62,11 +62,19 @@ func TestKindExitAuth(t *testing.T) {
 	kubectl := func(args ...string) string {
 		return run(t, "kubectl", append([]string{"--context", "kind-" + cluster}, args...)...)
 	}
-	kubectl("apply", "-f", "deploy/crd.yaml")
+	// Install with the published charts, so that they are what is tested.
+	helm := func(release, chart, values string) {
+		run(t, "helm", "--kube-context", "kind-"+cluster, "upgrade", "--install", release, chart,
+			"--namespace", "tunneler", "--create-namespace", "--values", values)
+	}
+	helm("tunneler-coordinator", "charts/tunneler-coordinator", "hack/kind/coordinator-values.yaml")
+	helm("tunneler-exit", "charts/tunneler-exit", "hack/kind/exit-values.yaml")
 	kubectl("apply", "-f", "hack/kind/manifests.yaml", "-f", "hack/kind/impostor.yaml")
 	// A fresh binding and fresh logs on every run.
-	kubectl("-n", "tunneler", "rollout", "restart", "deployment", "tunneler-coordinator", "tunneler-exit", "tunneler-impostor")
-	kubectl("-n", "tunneler", "rollout", "status", "deployment", "postgres", "tunneler-coordinator", "tunneler-exit", "--timeout=240s")
+	kubectl("-n", "tunneler", "rollout", "restart", "statefulset/tunneler-coordinator", "deployment/tunneler-exit", "deployment/tunneler-impostor")
+	kubectl("-n", "tunneler", "rollout", "status", "statefulset/tunneler-coordinator", "--timeout=240s")
+	kubectl("-n", "tunneler", "rollout", "status", "deployment/postgres", "--timeout=240s")
+	kubectl("-n", "tunneler", "rollout", "status", "deployment/tunneler-exit", "--timeout=240s")
 
 	cfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		clientcmd.NewDefaultClientConfigLoadingRules(), &clientcmd.ConfigOverrides{CurrentContext: "kind-" + cluster}).ClientConfig()
@@ -118,7 +126,7 @@ func TestKindExitAuth(t *testing.T) {
 
 func coordinatorLog(t *testing.T, ctx context.Context, clients *kubernetes.Clientset) string {
 	t.Helper()
-	pods, err := clients.CoreV1().Pods("tunneler").List(ctx, metav1.ListOptions{LabelSelector: "app=tunneler-coordinator"})
+	pods, err := clients.CoreV1().Pods("tunneler").List(ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/name=tunneler-coordinator"})
 	if err != nil || len(pods.Items) == 0 {
 		return ""
 	}
