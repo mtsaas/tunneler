@@ -56,8 +56,8 @@ type Cluster struct {
 // Service is a reachable service within a cluster, as advertised by the
 // cluster's exit nodes.
 type Service struct {
-	Name     string            `json:"name"`
-	Kind     string            `json:"kind"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
 	// Access says how the service is reached, which follows from its kind:
 	// AccessSession, through a session on which a temporary account is
 	// provisioned, or AccessGateway, per request through the coordinator's
