@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/mtsaas/tunneler/internal/coordinator"
+	"github.com/mtsaas/tunneler/internal/version"
 )
 
 func startCoordinatorCmd() *cobra.Command {
@@ -27,6 +28,7 @@ func startCoordinator(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
+	log.Info("tunneler coordinator starting", "version", version.String())
 	log.Info("configuration loaded", "file", path, "grants", len(cfg.Grants), "admin_groups", len(cfg.Admins),
 		"session_ttl", time.Duration(cfg.SessionTTL).String())
 	for _, g := range cfg.Grants {

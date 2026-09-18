@@ -17,6 +17,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/mtsaas/tunneler/internal/exit"
+	"github.com/mtsaas/tunneler/internal/version"
 )
 
 func startExitCmd() *cobra.Command {
@@ -60,6 +61,7 @@ the service.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			a.Log = log
+			log.Info("tunneler exit node starting", "version", version.String())
 			a.Server = strings.TrimRight(cmp.Or(a.Server, os.Getenv("TUNNELER_SERVER")), "/")
 			if a.Server == "" {
 				return errors.New("--server or $TUNNELER_SERVER is required")

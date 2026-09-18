@@ -12,12 +12,15 @@ import (
 
 	"github.com/mtsaas/tunneler/internal/api"
 	"github.com/mtsaas/tunneler/internal/tunnel"
+	"github.com/mtsaas/tunneler/internal/version"
 )
 
 // Handler returns the coordinator's HTTP API.
 func (c *Coordinator) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"version": version.String()})
+	})
 	mux.HandleFunc("GET /v1/auth/config", c.handleAuthConfig)
 	mux.HandleFunc("GET /v1/auth/status", c.user(c.handleAuthStatus))
 	mux.HandleFunc("GET /v1/clusters", c.user(c.handleListClusters))

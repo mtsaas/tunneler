@@ -49,6 +49,6 @@ func rootCmd() *cobra.Command {
 	start := &cobra.Command{Use: "start", Short: "Run a server component"}
 	start.AddCommand(startCoordinatorCmd(), startExitCmd())
 
-	root.AddCommand(configCmd(), auth, services, clusters, connectCmd(), sessions, start)
+	root.AddCommand(configCmd(), auth, services, clusters, connectCmd(), sessions, start, versionCmd())
 	return root
 }
