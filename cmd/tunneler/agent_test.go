@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/mtsaas/tunneler/internal/api"
 )
 
@@ -108,4 +110,36 @@ func TestAgentContract(t *testing.T) {
 	if want := "Saved. Run the following to authenticate:\n\n    tunneler auth login\n"; out != want {
 		t.Errorf("config output = %q, want %q", out, want)
 	}
+}
+
+// TestHelpStyle holds every command's help to the conventions of help.go:
+// a terse description with no full stop in listings, and examples written
+// as "$ command" lines.
+func TestHelpStyle(t *testing.T) {
+	var walk func(cmd *cobra.Command)
+	walk = func(cmd *cobra.Command) {
+		if cmd.Name() == "help" || strings.HasPrefix(cmd.CommandPath(), "tunneler completion") {
+			return
+		}
+		if cmd.HasParent() {
+			if cmd.Short == "" || strings.HasSuffix(cmd.Short, ".") || len(strings.Fields(cmd.Short)) > 9 {
+				t.Errorf("%s: Short %q should be a few words with no full stop", cmd.CommandPath(), cmd.Short)
+			}
+		}
+		for _, line := range strings.Split(strings.TrimSpace(cmd.Example), "\n") {
+			if line != "" && !strings.HasPrefix(line, "$ tunneler ") {
+				t.Errorf("%s: example %q should start with \"$ tunneler \"", cmd.CommandPath(), line)
+			}
+		}
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		help(cmd, nil)
+		if strings.Contains(out.String(), "`") && !strings.Contains(out.String(), "LEARN MORE") {
+			t.Errorf("%s: help contains a stray backtick:\n%s", cmd.CommandPath(), out.String())
+		}
+		for _, sub := range cmd.Commands() {
+			walk(sub)
+		}
+	}
+	walk(rootCmd())
 }

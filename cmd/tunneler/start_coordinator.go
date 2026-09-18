@@ -16,11 +16,11 @@ func startCoordinatorCmd() *cobra.Command {
 	var path string
 	cmd := &cobra.Command{
 		Use:   "coordinator",
-		Short: "Run the central coordinator",
+		Short: "Run the coordinator",
 		Args:  usage(cobra.NoArgs),
 		RunE:  func(cmd *cobra.Command, _ []string) error { return startCoordinator(cmd.Context(), path) },
 	}
-	cmd.Flags().StringVar(&path, "config", "/etc/tunneler/config.json", "configuration file")
+	cmd.Flags().StringVar(&path, "config", "/etc/tunneler/config.json", "Configuration file")
 	return cmd
 }
 

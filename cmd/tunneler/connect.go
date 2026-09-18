@@ -28,28 +28,25 @@ func connectCmd() *cobra.Command {
 	var port int
 	cmd := &cobra.Command{
 		Use:   "connect [LABEL=VALUE...] [-- COMMAND [ARG...]]",
-		Short: "Open a local endpoint for a service, or run a command against it",
-		Long: `Open a local endpoint for a service, or run a command against it.
+		Short: "Connect to a service",
+		Long: `Connect to a service.
 
-Name the service by its labels, as many as it takes to match exactly one.
-Every service has the labels cluster, kind and name, besides those its
-cluster gave it; "tunneler services list" shows them all. If the selector
-matches several services, you are asked to pick one.
+Creates a temporary account for you on the service, and opens a local port
+for your database tool. Ctrl-C disconnects and removes the account. The
+port for a service is the same every time.
 
-The coordinator provisions a temporary account for you on the service. With
-no command, this prints what your client needs to connect, then carries
-connections until you press Ctrl-C, which revokes the account. The local
-port is the same every time for a given service, so a connection saved in a
-database tool keeps working; only the user and password change.
+With "-- COMMAND", runs the command with the connection in its environment
+instead, and removes the account when the command exits.`,
+		Annotations: map[string]string{
+			helpArguments: selectorArguments + `
 
-With a command after "--", the command runs with the connection in its
-environment (PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE and
-DATABASE_URL), nothing is printed, and the account is revoked when the
-command exits.`,
-		Example: `  tunneler connect cluster=prod team=shop
-  tunneler connect env=preview-123 -- psql
-  tunneler connect name=orders-db -- pg_dump --schema-only -f schema.sql
-  tunneler connect`,
+After "--": a command to run. See "tunneler help environment".`,
+			helpJSON: `{"event": "listening", "host", "port", "url", "session"}`,
+		},
+		Example: `$ tunneler connect cluster=prod team=shop
+$ tunneler connect env=preview-123 -- psql
+$ tunneler connect name=orders-db -- pg_dump --schema-only -f schema.sql
+$ tunneler connect`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var command []string
 			if n := cmd.ArgsLenAtDash(); n >= 0 {
@@ -69,9 +66,9 @@ command exits.`,
 			return connect(cmd.Context(), selector, port, command)
 		},
 	}
-	cmd.Flags().StringVar(&cluster, "cluster", "", "shorthand for the label cluster=NAME")
-	cmd.Flags().StringVar(&name, "service", "", "shorthand for the label name=NAME")
-	cmd.Flags().IntVar(&port, "port", 0, "local port to listen on (default: one derived from the service's name)")
+	cmd.Flags().StringVar(&cluster, "cluster", "", "Same as the label cluster=NAME")
+	cmd.Flags().StringVar(&name, "service", "", "Same as the label name=NAME")
+	cmd.Flags().IntVar(&port, "port", 0, "Local port to listen on (default: fixed per service)")
 	return cmd
 }
 

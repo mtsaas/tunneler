@@ -18,13 +18,14 @@ import (
 func authStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
-		Short: "Show who you are logged in as and what that lets you reach",
-		Long: `Show who you are logged in as and what that lets you reach.
+		Short: "Show your login and what it lets you reach",
+		Long: `Show your login and what it lets you reach.
 
-The output follows a login through the system: the claims the identity
-provider put in your token, what the coordinator makes of them, which grants
-your groups satisfy, and which services those grants reach right now. When
-you cannot reach something, the first section that looks wrong says why.`,
+Shows, in order: the token from the identity provider, how the coordinator
+reads it, the grants that apply to you, and the services those grants reach.
+If you cannot reach a service, the first section that looks wrong says why.
+
+Exits with 3 if you are not logged in.`,
 		Args: usage(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			c, token, err := authed(cmd.Context())

@@ -35,36 +35,8 @@ func rootCmd() *cobra.Command {
 	var verbose bool
 	var output string
 	root := &cobra.Command{
-		Use:   "tunneler",
-		Short: "Identity-aware access to services inside Kubernetes clusters",
-		Long: `Identity-aware access to services inside Kubernetes clusters.
-
-Typical use:
-
-  tunneler config --server https://tunneler.example.com
-  tunneler auth login
-  tunneler services list
-  tunneler connect env=prod team=shop -- psql
-
-For scripts and agents:
-
-  --output json   Every command writes its result to stdout as JSON, reports
-                  errors on stderr as {"error", "code", "matches"}, and never
-                  prompts. "connect" writes one JSON object once it is
-                  listening, then events on stderr as JSON lines.
-  connect -- CMD  Runs CMD with PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE
-                  and DATABASE_URL set, prints no credentials, and revokes the
-                  account when CMD exits. Prefer it to parsing credentials:
-                    tunneler connect name=orders-db -- psql -Atc 'select 1'
-  auth login      Needs a person: it prints a URL and a code for them to use.
-                  Check first with "tunneler auth status"; exit status 3 means
-                  a login is needed.
-  TUNNELER_SERVER Overrides the configured coordinator.
-
-Exit status: 0 success; 1 failure; 2 usage; 3 not logged in; 4 access denied
-or no such service; 5 ambiguous selector (the error lists the matches; add
-name=... to pick one); 6 service or coordinator unavailable. With
-"connect -- CMD", the exit status of CMD.`,
+		Use:           "tunneler",
+		Short:         "Reach services inside Kubernetes clusters with your own login.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
@@ -80,21 +52,41 @@ name=... to pick one); 6 service or coordinator unavailable. With
 			return nil
 		},
 	}
-	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "log everything that happens, as structured records")
-	root.PersistentFlags().StringVarP(&output, "output", "o", "text", "output format: text or json")
+	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Log everything that happens")
+	root.PersistentFlags().StringVarP(&output, "output", "o", "text", "Output `format`: text or json")
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageError{err} })
 
-	auth := &cobra.Command{Use: "auth", Short: "Manage your login"}
-	auth.AddCommand(authLoginCmd(), authStatusCmd())
-	services := &cobra.Command{Use: "services", Short: "Inspect services"}
-	services.AddCommand(servicesListCmd())
-	clusters := &cobra.Command{Use: "clusters", Short: "Manage clusters"}
-	clusters.AddCommand(clustersForgetCmd())
-	sessions := &cobra.Command{Use: "sessions", Short: "Manage sessions"}
-	sessions.AddCommand(sessionsListCmd(), sessionsRevokeCmd())
-	start := &cobra.Command{Use: "start", Short: "Run a server component"}
-	start.AddCommand(startCoordinatorCmd(), startExitCmd())
+	root.SetHelpFunc(help)
+	root.AddGroup(
+		&cobra.Group{ID: groupCore, Title: "CORE COMMANDS"},
+		&cobra.Group{ID: groupServer, Title: "SERVER COMMANDS"},
+	)
+	root.Example = `$ tunneler config --server https://tunneler.example.com
+$ tunneler auth login
+$ tunneler services list
+$ tunneler connect cluster=prod team=shop -- psql`
 
-	root.AddCommand(configCmd(), auth, services, clusters, connectCmd(), sessions, start, versionCmd())
+	group := func(id, name, short string, subs ...*cobra.Command) *cobra.Command {
+		cmd := &cobra.Command{Use: name, Short: short, GroupID: id}
+		cmd.AddCommand(subs...)
+		return cmd
+	}
+	config, connect := configCmd(), connectCmd()
+	config.GroupID, connect.GroupID = groupCore, groupCore
+	root.AddCommand(
+		group(groupCore, "auth", "Log in and check your access", authLoginCmd(), authStatusCmd()),
+		config,
+		connect,
+		group(groupCore, "services", "List services you can reach", servicesListCmd()),
+		group(groupCore, "sessions", "List and revoke sessions", sessionsListCmd(), sessionsRevokeCmd()),
+		group(groupServer, "start", "Run the coordinator or an exit node", startCoordinatorCmd(), startExitCmd()),
+		group("", "clusters", "Manage cluster names", clustersForgetCmd()),
+		versionCmd(),
+	)
+	root.AddCommand(helpTopics()...)
+	root.InitDefaultCompletionCmd()
+	if completion, _, err := root.Find([]string{"completion"}); err == nil {
+		completion.Short = "Generate shell completion scripts"
+	}
 	return root
 }

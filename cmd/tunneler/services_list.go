@@ -17,12 +17,12 @@ import (
 func servicesListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List the services you can reach",
-		Long: `List the services you can reach, with the labels to select them by.
+		Short: "List services you can reach",
+		Long: `List services you can reach, with the labels that select them.
 
-A service is listed while an exit node of its cluster is connected to the
-coordinator and your grants reach it. STATUS says whether that exit node can
-currently connect to it.`,
+STATUS is "ready" if the service's exit node can connect to it.`,
+		Example: `$ tunneler services list
+$ tunneler services list --output json`,
 		Args: usage(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			c, token, err := authed(cmd.Context())

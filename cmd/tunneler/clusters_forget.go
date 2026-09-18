@@ -10,14 +10,13 @@ import (
 func clustersForgetCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "forget NAME",
-		Short: "Release a cluster name bound to a rebuilt cluster's old issuer (admins)",
-		Long: `Release a cluster name bound to a rebuilt cluster's old issuer.
+		Short: "Release the name of a rebuilt cluster (admins)",
+		Long: `Release the name of a rebuilt cluster.
 
-When exit nodes authenticate with their cluster's service account tokens,
-the coordinator binds each cluster name to the first issuer that presents
-it and refuses the name to any other. A rebuilt cluster has a new issuer,
-so its exit nodes are refused until an admin releases the name.`,
-		Args: usage(cobra.ExactArgs(1)),
+A cluster name belongs to the first cluster that uses it. A rebuilt cluster
+counts as a new one, and is refused the name until it is released.`,
+		Example: `$ tunneler clusters forget prod`,
+		Args:    usage(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, token, err := authed(cmd.Context())
 			if err != nil {

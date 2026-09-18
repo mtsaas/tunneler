@@ -13,8 +13,10 @@ func configCmd() *cobra.Command {
 	var server string
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "Show or set the coordinator to talk to",
-		Args:  usage(cobra.NoArgs),
+		Short: "Set the coordinator to use",
+		Example: `$ tunneler config --server https://tunneler.example.com
+$ tunneler config`,
+		Args: usage(cobra.NoArgs),
 		RunE: func(*cobra.Command, []string) error {
 			c, err := loadClient()
 			if err != nil {
@@ -43,6 +45,6 @@ func configCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&server, "server", "", "coordinator URL")
+	cmd.Flags().StringVar(&server, "server", "", "URL of the coordinator")
 	return cmd
 }

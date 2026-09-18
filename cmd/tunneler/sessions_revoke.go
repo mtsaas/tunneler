@@ -10,7 +10,7 @@ import (
 func sessionsRevokeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "revoke ID",
-		Short: "End a session: disconnect it and drop its account",
+		Short: "End a session and remove its account",
 		Args:  usage(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, token, err := authed(cmd.Context())

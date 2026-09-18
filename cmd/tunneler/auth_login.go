@@ -10,8 +10,11 @@ import (
 func authLoginCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "login",
-		Short: "Sign in through the coordinator's identity provider",
-		Args:  usage(cobra.NoArgs),
+		Short: "Log in with your organization's identity provider",
+		Long: `Log in with your organization's identity provider.
+
+Prints a URL and a code. Open the URL in any browser and enter the code.`,
+		Args: usage(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			c, err := loadClient()

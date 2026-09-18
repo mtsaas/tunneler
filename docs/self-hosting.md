@@ -543,8 +543,8 @@ tunneler connect cluster=prod team=shop -- psql
 
 ### Scripts and agents
 
-The client has a stable contract for programs. `tunneler --help` gives the
-same information.
+The client has a stable contract for programs. `tunneler help output` and
+`tunneler help exit-codes` give the same information.
 
 - `--output json` makes each command write its result to stdout as JSON.
   Errors go to stderr as `{"error", "code", "matches"}`. The command does not

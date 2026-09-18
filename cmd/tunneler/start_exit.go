@@ -29,35 +29,19 @@ func startExitCmd() *cobra.Command {
 		Short: "Run the exit node for a cluster",
 		Long: `Run the exit node for a cluster.
 
-Everything but the cluster name has a default suited to a Kubernetes
-Deployment. The coordinator URL comes from $TUNNELER_SERVER and the cluster
-name from $TUNNELER_CLUSTER. The node proves which cluster it speaks for with,
-in order of preference: a projected service account token at --token-file,
-which the coordinator verifies against the cluster's own OIDC issuer; Azure
-Workload Identity, whose managed identity needs the app role "exit:<cluster>";
-or nothing, which only a coordinator running with insecure_exit_auth, for
-local development, accepts.
+Connects out to the coordinator, offers it the cluster's services, and
+creates and removes accounts on them.
 
-Services come from the configuration file, from TunnelService resources in
-the cluster with --kubernetes (see charts/tunneler-exit), or both. A service is
-advertised only once its credentials have connected. /healthz answers 200 while the process runs
-and /readyz while it is connected to the coordinator. Services are defined in the configuration file:
+Services come from TunnelService resources (--kubernetes), from the
+configuration file, or both. A service is offered once its credentials work.
 
-  {
-    "services": [
-      {
-        "name": "orders-db",
-        "kind": "postgres",
-        "dsn": "postgres://tunneler:$ORDERS_DB_PASSWORD@orders-db.shop.svc:5432/orders?sslmode=require",
-        "labels": {"team": "shop", "tier": "primary"},
-        "roles": ["readonly", "readwrite"]
-      }
-    ]
-  }
+Proves which cluster it is with, in order: the service account token at
+--token-file; Azure Workload Identity; or nothing, which only a coordinator
+with insecure_exit_auth accepts.
 
-Users select services by label. Each also carries the labels cluster, kind
-and name automatically. The kind tells the coordinator which protocol-aware proxy to put in front of
-the service.`,
+Serves /healthz, and /readyz while connected to the coordinator.`,
+		Example: `$ tunneler start exit --kubernetes
+$ tunneler start exit --cluster dev --server http://localhost:8443 --config exit.json`,
 		Args: usage(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			a.Log = log
@@ -110,12 +94,12 @@ the service.`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&a.Cluster, "cluster", "", "name of this cluster (default $TUNNELER_CLUSTER)")
-	cmd.Flags().StringVar(&healthAddr, "health-addr", ":8081", "address of the /healthz and /readyz endpoints; empty disables them")
-	cmd.Flags().StringVar(&a.Server, "server", "", "coordinator URL (default $TUNNELER_SERVER)")
-	cmd.Flags().StringVar(&tokenFile, "token-file", "/var/run/secrets/tunneler/token", "projected service account token to authenticate with, if present")
-	cmd.Flags().StringVar(&path, "config", "/etc/tunneler/exit.json", "configuration file, if present")
-	cmd.Flags().BoolVar(&kubernetes, "kubernetes", false, "also discover services from TunnelService resources in the cluster")
+	cmd.Flags().StringVar(&a.Cluster, "cluster", "", "Name of this cluster (default $TUNNELER_CLUSTER)")
+	cmd.Flags().StringVar(&healthAddr, "health-addr", ":8081", "Address for /healthz and /readyz; empty to disable")
+	cmd.Flags().StringVar(&a.Server, "server", "", "URL of the coordinator (default $TUNNELER_SERVER)")
+	cmd.Flags().StringVar(&tokenFile, "token-file", "/var/run/secrets/tunneler/token", "Service account token to authenticate with, if present")
+	cmd.Flags().StringVar(&path, "config", "/etc/tunneler/exit.json", "Configuration file, if present")
+	cmd.Flags().BoolVar(&kubernetes, "kubernetes", false, "Discover services from TunnelService resources")
 	return cmd
 }
 

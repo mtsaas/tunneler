@@ -15,7 +15,7 @@ import (
 func sessionsListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List your sessions (admins: everyone's)",
+		Short: "List your sessions (admins: all sessions)",
 		Args:  usage(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			c, token, err := authed(cmd.Context())

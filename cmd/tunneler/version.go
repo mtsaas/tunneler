@@ -13,7 +13,7 @@ import (
 func versionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
-		Short: "Show the version of this client and of the coordinator",
+		Short: "Show client and coordinator versions",
 		Args:  usage(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out := map[string]string{"client": version.String()}
