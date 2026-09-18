@@ -225,9 +225,6 @@ func (c *Coordinator) handleCreateSession(w http.ResponseWriter, r *http.Request
 		}
 	}
 	switch {
-	case len(req.Selector) == 0:
-		writeError(w, http.StatusBadRequest, "a selector is required")
-		return
 	case n == 0:
 		c.audit.Warn("access denied: selector matches no service the user's grants reach",
 			"subject", id.Subject, "user", id.Username, "groups", id.Groups, "selector", req.Selector)

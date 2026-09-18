@@ -60,6 +60,7 @@ type Service struct {
 // SessionRequest asks the coordinator to provision access to the one service,
 // among those the caller may reach, that carries every label in Selector.
 // Every service has the labels "cluster", "kind" and "name" besides its own.
+// An empty selector matches every service the caller may reach.
 // If several services match, the coordinator answers 409 Conflict with an
 // Error listing them.
 type SessionRequest struct {

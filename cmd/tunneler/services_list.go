@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"slices"
@@ -37,21 +38,30 @@ currently connect to it.`,
 					"any service. To see which, run: tunneler auth status")
 				return nil
 			}
-			printServices(clusters)
+			printServices(os.Stdout, clusters, false)
 			return nil
 		},
 	}
 }
 
-// printServices writes a table of services and the labels to select them by.
-func printServices(clusters []api.Cluster) {
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "CLUSTER\tSERVICE\tKIND\tSTATUS\tLABELS")
+// printServices writes a table of services and the labels to select them
+// by, numbering the rows if asked.
+func printServices(out io.Writer, clusters []api.Cluster, numbered bool) {
+	w := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
+	header := "CLUSTER\tSERVICE\tKIND\tSTATUS\tLABELS"
+	if numbered {
+		header = "\t" + header
+	}
+	fmt.Fprintln(w, header)
+	n := 0
 	for _, cl := range clusters {
 		for _, svc := range cl.Services {
 			status := "ready"
 			if !svc.Ready {
 				status = "unreachable: " + svc.Status
+			}
+			if n++; numbered {
+				fmt.Fprintf(w, "%d\t", n)
 			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", cl.Name, svc.Name, svc.Kind, status, formatLabels(svc.Labels))
 		}

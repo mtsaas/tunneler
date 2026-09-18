@@ -7,8 +7,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 
@@ -19,6 +21,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := rootCmd().ExecuteContext(ctx); err != nil {
+		// A command run by "connect --" has reported its own failure.
+		if exit := (*exec.ExitError)(nil); errors.As(err, &exit) {
+			os.Exit(exit.ExitCode())
+		}
 		fmt.Fprintln(os.Stderr, "tunneler:", err)
 		os.Exit(1)
 	}

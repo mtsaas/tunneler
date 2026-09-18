@@ -36,11 +36,12 @@ func newLogger(server, verbose bool) *slog.Logger {
 // message, and for problems the error. Other attributes are dropped, so
 // messages at Info and above must read well on their own.
 type statusHandler struct {
-	w  io.Writer
-	mu *sync.Mutex
+	w   io.Writer
+	mu  *sync.Mutex
+	min slog.Level // the zero value is Info
 }
 
-func (h statusHandler) Enabled(_ context.Context, l slog.Level) bool { return l >= slog.LevelInfo }
+func (h statusHandler) Enabled(_ context.Context, l slog.Level) bool { return l >= h.min }
 func (h statusHandler) WithAttrs([]slog.Attr) slog.Handler           { return h }
 func (h statusHandler) WithGroup(string) slog.Handler                { return h }
 
