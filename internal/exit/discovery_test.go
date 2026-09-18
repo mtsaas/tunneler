@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,6 +35,10 @@ func TestDiscovery(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "orders-secrets", Namespace: "preview-1"},
 		Data:       map[string][]byte{"database_uri": []byte("postgres://admin:pw@127.0.0.1:1/orders?sslmode=disable")},
 	}
+	ownSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "tunneler"},
+		Data:       map[string][]byte{"dsn": []byte("postgres://admin:pw@127.0.0.1:1/shared?sslmode=disable")},
+	}
 	good := tunnelService("preview-1", "postgres", map[string]any{
 		"kind":           "postgres",
 		"credentials":    map[string]any{"dsnRef": map[string]any{"kubernetesSecret": map[string]any{"name": "orders-secrets", "key": "database_uri"}}},
@@ -50,7 +55,7 @@ func TestDiscovery(t *testing.T) {
 		map[schema.GroupVersionResource]string{TunnelServiceGVR: "TunnelServiceList"}, good)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	agent := &Agent{Log: log}
-	d := &Discovery{Agent: agent, Dynamic: dyn, Clients: k8sfake.NewSimpleClientset(secret), Log: log}
+	d := &Discovery{Agent: agent, Namespace: "tunneler", Dynamic: dyn, Clients: k8sfake.NewSimpleClientset(secret, ownSecret), Log: log}
 	go d.Run(ctx)
 
 	// The pre-existing resource is discovered and named <namespace>-<name>.
@@ -81,6 +86,42 @@ func TestDiscovery(t *testing.T) {
 	})
 	if _, ok := agent.desired()["preview-2-postgres"]; ok {
 		t.Error("service with unresolvable credentials was defined")
+	}
+
+	create := func(ns, name string, spec map[string]any) {
+		t.Helper()
+		if _, err := dyn.Resource(TunnelServiceGVR).Namespace(ns).Create(ctx, tunnelService(ns, name, spec), metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	invalid := func(ns, name, why string) {
+		t.Helper()
+		waitFor(t, ctx, func() bool {
+			c := condition(t, ctx, dyn, ns, name)
+			return c != nil && c.Reason == "InvalidSpec" && strings.Contains(c.Message, why)
+		})
+	}
+	ownDB := map[string]any{
+		"kind":        "postgres",
+		"credentials": map[string]any{"dsnRef": map[string]any{"kubernetesSecret": map[string]any{"name": "db", "key": "dsn"}}},
+	}
+
+	// In the exit node's own namespace a service keeps its plain name.
+	create("tunneler", "shared-db", ownDB)
+	waitFor(t, ctx, func() bool { _, ok := agent.desired()["shared-db"]; return ok })
+	if got := agent.desired()["shared-db"].advert.Labels["namespace"]; got != "tunneler" {
+		t.Errorf("namespace label = %q", got)
+	}
+
+	// Which makes a clash possible, and the later resource loses.
+	create("tunneler", "preview-1-postgres", ownDB)
+	invalid("tunneler", "preview-1-postgres", "already taken by the TunnelService preview-1/postgres")
+
+	// A tenant cannot offer the cluster's own API.
+	create("preview-2", "kubernetes", map[string]any{"kind": "kubernetes", "grantableRoles": []any{"system:masters"}})
+	invalid("preview-2", "kubernetes", "only be registered in the exit node's namespace")
+	if _, ok := agent.desired()["preview-2-kubernetes"]; ok {
+		t.Error("a tenant's kubernetes service was defined")
 	}
 
 	// Deleting the resource withdraws its service.

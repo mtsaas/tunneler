@@ -83,7 +83,15 @@ type TunnelServiceStatus struct {
 // TunnelService resources of the cluster, keeping them current as resources
 // come and go and as their credentials rotate.
 type Discovery struct {
-	Agent   *Agent
+	Agent *Agent
+	// Namespace is the namespace the exit node runs in, which belongs to
+	// whoever operates it. A service registered there keeps its plain name,
+	// and only there may a kind that offers the cluster itself be
+	// registered. Services of other namespaces are named NAMESPACE-NAME, so
+	// that every tenant can have its own "postgres". Empty, when the exit
+	// node runs outside the cluster, means no namespace is the operator's.
+	Namespace string
+
 	Dynamic dynamic.Interface
 	Clients kubernetes.Interface
 	Azure   *AzureCredential // nil outside a workload identity pod; Key Vault references then fail
@@ -122,7 +130,10 @@ func (d *Discovery) Run(ctx context.Context) error {
 	if !cache.WaitForCacheSync(ctx.Done(), informer.HasSynced) {
 		return errors.New("kubernetes: watching TunnelService resources: cache never synced")
 	}
-	d.Log.Info("watching TunnelService resources across all namespaces", "resources", len(d.services))
+	d.mu.Lock()
+	n := len(d.services)
+	d.mu.Unlock()
+	d.Log.Info("watching TunnelService resources across all namespaces", "resources", n)
 	<-ctx.Done()
 	return ctx.Err()
 }
@@ -179,14 +190,24 @@ func (d *Discovery) upsert(ctx context.Context, obj any) {
 	if labels == nil {
 		labels = make(map[string]string)
 	}
-	if _, ok := labels["namespace"]; ok {
+	name, invalid := d.serviceName(ts, key)
+	switch {
+	case invalid != "":
+	case labels["namespace"] != "":
+		invalid = `label "namespace" is attached automatically and cannot be set`
+	case clusterKinds[ts.Spec.Kind] && d.Namespace != "" && ts.Namespace != d.Namespace:
+		invalid = fmt.Sprintf("a service of kind %q offers the cluster itself, and can only be registered in the exit node's namespace, %q",
+			ts.Spec.Kind, d.Namespace)
+	}
+	if invalid != "" {
+		log.Warn("TunnelService is invalid; not offering it", "err", invalid)
 		d.drop(key)
-		d.setStatus(ctx, ts, false, "InvalidSpec", `label "namespace" is attached automatically and cannot be set`)
+		d.setStatus(ctx, ts, false, "InvalidSpec", invalid)
 		return
 	}
 	labels["namespace"] = ts.Namespace
 	svc, err := newService(ServiceConfig{
-		Name:   ts.Namespace + "-" + ts.Name,
+		Name:   name,
 		Kind:   ts.Spec.Kind,
 		DSN:    dsn,
 		Labels: labels,
@@ -209,6 +230,23 @@ func (d *Discovery) upsert(ctx context.Context, obj any) {
 	d.sources[key] = source
 	d.mu.Unlock()
 	d.push()
+}
+
+// serviceName returns the name the coordinator knows the resource's service
+// by, or why it cannot have one.
+func (d *Discovery) serviceName(ts *TunnelService, key string) (name, invalid string) {
+	name = ts.Namespace + "-" + ts.Name
+	if d.Namespace != "" && ts.Namespace == d.Namespace {
+		name = ts.Name
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for other, svc := range d.services {
+		if other != key && svc.advert.Name == name {
+			return "", fmt.Sprintf("the service name %q is already taken by the TunnelService %s", name, other)
+		}
+	}
+	return name, ""
 }
 
 func (d *Discovery) remove(obj any) {

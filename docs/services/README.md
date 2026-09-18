@@ -49,6 +49,11 @@ The coordinator knows the service as `<namespace>-<name>`, for example
 `shop-postgres`. Thus two namespaces can each have a service with the name
 `postgres`.
 
+The namespace of the exit node is the exception. It belongs to the person
+who operates tunneler, and a service there keeps its name without the
+namespace, for example `kubernetes`. If two resources give the same service
+name, the second one gets the reason `InvalidSpec`.
+
 The resource contains no secret. For a kind that has a credential, the
 resource says where the credential is.
 
@@ -105,7 +110,7 @@ tunneler services list
 | `Connected` | The service is ready |
 | `CredentialsInvalid` | The exit node cannot read the credential that the resource refers to |
 | `Unreachable` | The exit node has the credential, and the service refuses it or does not answer |
-| `InvalidSpec` | The resource is incorrect. The message says why |
+| `InvalidSpec` | The resource is incorrect, its service name is in use, or its kind is not permitted in its namespace. The message says why |
 
 The coordinator lists a service that is not ready, and refuses connections to
 it with the reason.

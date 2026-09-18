@@ -67,6 +67,12 @@ var kinds = map[string]func(ServiceConfig) (backend, error){
 	},
 }
 
+// clusterKinds are the kinds that offer the cluster itself rather than
+// something a tenant runs in it. Whether to offer those is for whoever
+// operates the exit node to decide, so they may be registered only in the
+// exit node's own namespace.
+var clusterKinds = map[string]bool{"kubernetes": true}
+
 type postgresBackend struct{ *postgres.Server }
 
 func (b postgresBackend) CreateRole(ctx context.Context, r api.Role) error {

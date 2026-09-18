@@ -140,6 +140,8 @@ func newDiscovery(a *exit.Agent, azure *exit.AzureCredential) (*exit.Discovery, 
 	if err != nil {
 		return nil, err
 	}
-	log.Info("discovering services from TunnelService resources", "api_server", cfg.Host)
-	return &exit.Discovery{Agent: a, Dynamic: dyn, Clients: clients, Azure: azure, Log: log}, nil
+	// Outside a pod there is no such file, and no namespace is ours.
+	namespace, _ := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+	log.Info("discovering services from TunnelService resources", "api_server", cfg.Host, "own_namespace", strings.TrimSpace(string(namespace)))
+	return &exit.Discovery{Agent: a, Namespace: strings.TrimSpace(string(namespace)), Dynamic: dyn, Clients: clients, Azure: azure, Log: log}, nil
 }

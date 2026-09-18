@@ -195,7 +195,7 @@ func TestKindKubectl(t *testing.T) {
 	os.WriteFile(kubeconfig, []byte(`apiVersion: v1
 kind: Config
 current-context: tunneler
-clusters: [{name: tunneler, cluster: {server: "`+ingress.URL+`/v1/gateway/kind/tunneler-kubernetes", certificate-authority-data: "`+ca+`"}}]
+clusters: [{name: tunneler, cluster: {server: "`+ingress.URL+`/v1/gateway/kind/kubernetes", certificate-authority-data: "`+ca+`"}}]
 users: [{name: me, user: {token: "`+token+`"}}]
 contexts: [{name: tunneler, context: {cluster: tunneler, user: me, namespace: tunneler}}]
 `), 0o600)

@@ -84,8 +84,9 @@ have version 0.3.0 or later. Upgrade the coordinator first.
    ```
 
    The chart then does two things. It registers the cluster with the exit
-   node, as a `TunnelService` of kind `kubernetes`. It also lets the exit node
-   impersonate all users, and these groups only.
+   node, as a `TunnelService` of kind `kubernetes` with the name
+   `kubernetes`. It also lets the exit node impersonate all users, and these
+   groups only.
 
    NOTE: Helm does not upgrade the custom resource definition of a chart. If
    you installed an earlier version with Helm, apply the definition first:
@@ -157,7 +158,7 @@ The coordinator writes one record for each request, with the message
 
 ```json
 {"msg":"kubernetes request","audit":true,"user":"alice@example.com","subject":"...","cluster":"prod",
- "service":"tunneler-kubernetes","kind":"kubernetes","verb":"delete","resource":"pods",
+ "service":"kubernetes","kind":"kubernetes","verb":"delete","resource":"pods",
  "namespace":"shop","name":"web-0","status":403,"duration":"2ms"}
 ```
 
@@ -188,6 +189,8 @@ impersonator.
   are for nodes, service accounts, and the control plane.
 - The coordinator removes `Authorization` and all `Impersonate-` headers that
   a request contains. A person cannot select their own identity.
+- A `TunnelService` of kind `kubernetes` operates in the namespace of the
+  exit node only. A different namespace cannot offer the API of the cluster.
 - A person without access gets the same answer for a cluster that exists and
   for one that does not. The answer does not show which clusters there are.
 - The coordinator must have an `https://` address. `kubectl` does not send a
