@@ -1,128 +1,106 @@
-// Package tunnel carries raw byte streams over HTTP/1.1 connection upgrades,
-// so that the coordinator needs only a single HTTPS port for its API, client
-// streams and exit node streams.
+// Package tunnel carries byte streams between tunneler's parts over
+// WebSocket connections, so that the coordinator needs only a single HTTPS
+// port for its API, client streams and exit node streams, and so that the
+// streams pass through any proxy, ingress or service mesh without special
+// configuration.
 package tunnel
 
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
-// protocol is the Upgrade token spoken by both ends.
-const protocol = "tunneler"
-
 // Dial connects to rawURL, which must have an http or https scheme, and
-// upgrades the connection to a raw stream. The header is sent with the
-// upgrade request and may be nil.
+// returns a stream to the server. The header is sent with the handshake and
+// may be nil.
 func Dial(ctx context.Context, rawURL string, header http.Header) (net.Conn, error) {
-	u, err := url.Parse(rawURL)
+	ws, resp, err := websocket.Dial(ctx, rawURL, &websocket.DialOptions{HTTPHeader: header})
 	if err != nil {
-		return nil, err
-	}
-	addr := u.Host
-	var d interface {
-		DialContext(ctx context.Context, network, addr string) (net.Conn, error)
-	}
-	switch u.Scheme {
-	case "http":
-		if u.Port() == "" {
-			addr = net.JoinHostPort(u.Hostname(), "80")
+		if resp != nil && resp.StatusCode != http.StatusSwitchingProtocols {
+			msg, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<10))
+			return nil, &StatusError{Code: resp.StatusCode, Body: strings.TrimSpace(string(msg))}
 		}
-		d = &net.Dialer{}
-	case "https":
-		if u.Port() == "" {
-			addr = net.JoinHostPort(u.Hostname(), "443")
-		}
-		// Upgrades do not exist in HTTP/2, so never negotiate it.
-		d = &tls.Dialer{Config: &tls.Config{NextProtos: []string{"http/1.1"}}}
-	default:
-		return nil, fmt.Errorf("tunnel: unsupported scheme %q", u.Scheme)
-	}
-
-	conn, err := d.DialContext(ctx, "tcp", addr)
-	if err != nil {
 		return nil, err
 	}
-	stop := context.AfterFunc(ctx, func() { conn.Close() })
-	c, err := upgrade(conn, u, header)
-	if !stop() && err == nil {
-		err = ctx.Err()
-	}
-	if err != nil {
-		conn.Close()
-		return nil, err
-	}
-	return c, nil
+	return stream(ws), nil
 }
 
-func upgrade(conn net.Conn, u *url.URL, header http.Header) (net.Conn, error) {
-	req := &http.Request{
-		Method: http.MethodGet,
-		URL:    u,
-		Host:   u.Host,
-		Header: header.Clone(),
-	}
-	if req.Header == nil {
-		req.Header = make(http.Header)
-	}
-	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", protocol)
-	if err := req.Write(conn); err != nil {
-		return nil, err
-	}
-
-	br := bufio.NewReader(conn)
-	resp, err := http.ReadResponse(br, req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusSwitchingProtocols {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<10))
-		resp.Body.Close()
-		return nil, &StatusError{Code: resp.StatusCode, Body: strings.TrimSpace(string(msg))}
-	}
-	return &bufferedConn{Conn: conn, r: br}, nil
+// stream adapts a WebSocket to a net.Conn carrying one binary message per
+// Write.
+func stream(ws *websocket.Conn) net.Conn {
+	ws.SetReadLimit(-1) // a stream, not messages: the peer's writes have no meaningful size
+	// The stream's life is governed by Close, not by a context.
+	return &conn{Conn: websocket.NetConn(context.Background(), ws, websocket.MessageBinary)}
 }
 
-// StatusError is returned by Dial when the server answers the upgrade request
-// with an ordinary HTTP response instead.
+// conn makes Close prompt. A WebSocket closes with a handshake, which lets
+// the peer read a clean EOF, but which waits seconds for a peer that has
+// gone away. Callers close streams while holding locks, and to revoke access
+// at once, so the handshake runs in the background.
+type conn struct {
+	net.Conn
+	once sync.Once
+}
+
+func (c *conn) Close() error {
+	c.once.Do(func() { go c.Conn.Close() })
+	return nil
+}
+
+// StatusError is returned by Dial when the server answers the handshake with
+// an ordinary HTTP response instead.
 type StatusError struct {
 	Code int
 	Body string
 }
 
 func (e *StatusError) Error() string {
-	return fmt.Sprintf("tunnel: server refused upgrade: %d %s: %s", e.Code, http.StatusText(e.Code), e.Body)
+	return fmt.Sprintf("tunnel: server refused the stream: %d %s: %s", e.Code, http.StatusText(e.Code), e.Body)
 }
 
-// Accept upgrades an incoming request to a raw stream. On failure it writes
-// an error response and the caller should simply return.
+// Accept turns an incoming request into a stream. On failure it writes an
+// error response and the caller should simply return.
 func Accept(w http.ResponseWriter, r *http.Request) (net.Conn, error) {
-	if !strings.EqualFold(r.Header.Get("Upgrade"), protocol) {
-		http.Error(w, "upgrade required", http.StatusUpgradeRequired)
-		return nil, errors.New("tunnel: not an upgrade request")
+	if strings.EqualFold(r.Header.Get("Upgrade"), legacyProtocol) {
+		return acceptLegacy(w, r)
 	}
+	// The peer is a tunneler binary, never a browser, so the Origin check
+	// that protects cookie-authenticated sites has nothing to protect.
+	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+	if err != nil {
+		return nil, err // Accept has already responded
+	}
+	return stream(ws), nil
+}
+
+// legacyProtocol is the Upgrade token of tunneler builds before the move to
+// WebSocket, which spoke raw bytes after a bare HTTP/1.1 upgrade.
+//
+// ponytail: accepted so that a coordinator can be upgraded ahead of its exit
+// nodes and clients. Delete acceptLegacy once none of those remain.
+const legacyProtocol = "tunneler"
+
+func acceptLegacy(w http.ResponseWriter, r *http.Request) (net.Conn, error) {
 	conn, brw, err := http.NewResponseController(w).Hijack()
 	if err != nil {
 		http.Error(w, "connection cannot be upgraded", http.StatusInternalServerError)
 		return nil, err
 	}
-	_, err = brw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + protocol + "\r\n\r\n")
+	_, err = brw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + legacyProtocol + "\r\n\r\n")
 	if err == nil {
 		err = brw.Flush()
 	}
 	if err == nil {
-		// Drop whatever deadlines the HTTP server had set.
-		err = conn.SetDeadline(time.Time{})
+		err = conn.SetDeadline(time.Time{}) // drop the HTTP server's deadlines
 	}
 	if err != nil {
 		conn.Close()
