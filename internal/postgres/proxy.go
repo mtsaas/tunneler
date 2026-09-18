@@ -78,10 +78,7 @@ func Proxy(ctx context.Context, client net.Conn, dial func(context.Context) (net
 	}
 
 	errc := make(chan error, 2)
-	go func() {
-		_, err := io.Copy(client, upstream)
-		errc <- err
-	}()
+	go func() { errc <- relayBackend(client, upstream) }()
 	go func() { errc <- relay(upstream, client, audit) }()
 	err = <-errc
 	client.Close()
@@ -228,6 +225,84 @@ func relay(dst io.Writer, src io.Reader, audit func(string)) error {
 			}
 		}
 	}
+}
+
+// Authentication request codes carried in 'R' messages.
+const (
+	authOK   = 0
+	authSASL = 10
+)
+
+// relayBackend forwards backend messages from src to dst. Until the server
+// reports that authentication succeeded, it inspects each message and
+// removes SCRAM-SHA-256-PLUS from the SASL mechanisms the server offers.
+//
+// The server offers that mechanism because its hop, from the exit node, is
+// inside TLS. The client's hop is not, and libpq refuses a PLUS offer over a
+// plain connection as a downgrade attack. Channel binding could not work
+// through a proxy in any case: it ties the login to the TLS endpoint, which
+// here is the exit node. Without the offer, clients pick SCRAM-SHA-256 and
+// declare no channel binding support, which the server accepts.
+func relayBackend(dst io.Writer, src io.Reader) error {
+	br := bufio.NewReader(src)
+	for {
+		var hdr [5]byte
+		if _, err := io.ReadFull(br, hdr[:]); err != nil {
+			return err
+		}
+		n := int64(binary.BigEndian.Uint32(hdr[1:])) - 4
+		if n < 0 {
+			return fmt.Errorf("postgres: invalid length in %q message", hdr[0])
+		}
+		if hdr[0] != 'R' || n > maxStartupLen {
+			if _, err := dst.Write(hdr[:]); err != nil {
+				return err
+			}
+			if _, err := io.CopyN(dst, br, n); err != nil {
+				return err
+			}
+			continue
+		}
+
+		body := make([]byte, n)
+		if _, err := io.ReadFull(br, body); err != nil {
+			return err
+		}
+		code := uint32(0)
+		if len(body) >= 4 {
+			code = binary.BigEndian.Uint32(body)
+		}
+		if code == authSASL {
+			body = withoutChannelBinding(body)
+		}
+		pkt := binary.BigEndian.AppendUint32([]byte{'R'}, uint32(len(body)+4))
+		if _, err := dst.Write(append(pkt, body...)); err != nil {
+			return err
+		}
+		if code == authOK {
+			// Authenticated: the rest of the session needs no inspection.
+			_, err := io.Copy(dst, br)
+			return err
+		}
+	}
+}
+
+// withoutChannelBinding returns the body of an AuthenticationSASL message
+// with SCRAM-SHA-256-PLUS removed from its mechanism list.
+func withoutChannelBinding(body []byte) []byte {
+	out := body[:4:4]
+	rest := body[4:]
+	for len(rest) > 1 {
+		mech, tail, ok := bytes.Cut(rest, []byte{0})
+		if !ok {
+			return body // malformed; leave it to the client
+		}
+		rest = tail
+		if string(mech) != "SCRAM-SHA-256-PLUS" {
+			out = append(append(out, mech...), 0)
+		}
+	}
+	return append(out, 0)
 }
 
 // statementText extracts the SQL from the leading bytes of a Query ('Q') or

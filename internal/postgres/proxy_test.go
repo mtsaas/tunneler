@@ -84,3 +84,35 @@ func TestProxyConfinesLogin(t *testing.T) {
 		}
 	}
 }
+
+func TestRelayBackendStripsChannelBinding(t *testing.T) {
+	sasl := func(mechs ...string) []byte {
+		body := binary.BigEndian.AppendUint32(nil, authSASL)
+		for _, m := range mechs {
+			body = append(append(body, m...), 0)
+		}
+		return message('R', string(append(body, 0)))
+	}
+	ok := message('R', "\x00\x00\x00\x00")
+	in := slices.Concat(
+		sasl("SCRAM-SHA-256-PLUS", "SCRAM-SHA-256"),
+		message('R', "\x00\x00\x00\x0bserver-first\x00"), // AuthenticationSASLContinue, untouched
+		ok,
+		message('S', "server_version\x0017\x00"),
+		message('R', "SCRAM-SHA-256-PLUS is just data now"), // after AuthenticationOk nothing is inspected
+	)
+	var out bytes.Buffer
+	if err := relayBackend(&out, bytes.NewReader(in)); err != nil { // io.Copy ends cleanly at EOF
+		t.Fatalf("relayBackend: %v", err)
+	}
+	want := slices.Concat(
+		sasl("SCRAM-SHA-256"),
+		message('R', "\x00\x00\x00\x0bserver-first\x00"),
+		ok,
+		message('S', "server_version\x0017\x00"),
+		message('R', "SCRAM-SHA-256-PLUS is just data now"),
+	)
+	if !bytes.Equal(out.Bytes(), want) {
+		t.Errorf("relayed\n%q\nwant\n%q", out.Bytes(), want)
+	}
+}
