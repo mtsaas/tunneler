@@ -1,12 +1,16 @@
 package coordinator
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"log/slog"
 	"path/filepath"
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/mtsaas/tunneler/internal/api"
 )
 
 func TestAccess(t *testing.T) {
@@ -95,5 +99,37 @@ func TestReload(t *testing.T) {
 	}
 	if c.config().Listen != ":1" {
 		t.Errorf("listen = %q, want the value from start", c.config().Listen)
+	}
+}
+
+// TestAuditFields checks that the records of every kind of service carry
+// the same fields for who and what, at the top level, so that one query
+// covers them all.
+func TestAuditFields(t *testing.T) {
+	render := func(attr slog.Attr) map[string]any {
+		var buf bytes.Buffer
+		slog.New(slog.NewJSONHandler(&buf, nil)).Info("x", attr)
+		var rec map[string]any
+		json.Unmarshal(buf.Bytes(), &rec)
+		return rec
+	}
+	s := &session{subject: "sub-1", info: api.Session{ID: "S1", Owner: "alice@example.com", Cluster: "prod",
+		Service: "shop-postgres", Kind: "postgres", Username: "tnl_alice_x"}}
+	viaSession := render(s.attrs())
+	viaGateway := render(auditSubject("alice@example.com", "sub-1", "prod", "tunneler-kubernetes", "kubernetes"))
+
+	for _, k := range []string{"user", "subject", "cluster", "service", "kind"} {
+		if _, ok := viaSession[k].(string); !ok {
+			t.Errorf("a session's record lacks top-level %q: %v", k, viaSession)
+		}
+		if _, ok := viaGateway[k].(string); !ok {
+			t.Errorf("a gateway record lacks top-level %q: %v", k, viaGateway)
+		}
+	}
+	if viaSession["user"] != viaGateway["user"] || viaSession["kind"] != "postgres" || viaGateway["kind"] != "kubernetes" {
+		t.Errorf("session %v\ngateway %v", viaSession, viaGateway)
+	}
+	if viaSession["session"] != "S1" || viaSession["account"] != "tnl_alice_x" {
+		t.Errorf("a session's record should also name the session and its account: %v", viaSession)
 	}
 }

@@ -19,7 +19,8 @@ cluster. See the [self-hosting guide](../self-hosting.md).
 - [3. Roles](#3-roles)
 - [4. Readiness](#4-readiness)
 - [5. How people connect](#5-how-people-connect)
-- [6. Services from a file](#6-services-from-a-file)
+- [6. The audit trail](#6-the-audit-trail)
+- [7. Services from a file](#7-services-from-a-file)
 
 ## 1. How a service is offered
 
@@ -138,7 +139,31 @@ tunneler connect cluster=prod kind=kubernetes -- kubectl get pods
 Tunneler records all that a person does through it, with the identity of the
 person. `tunneler connect` tells the person so each time.
 
-## 6. Services from a file
+## 6. The audit trail
+
+The coordinator writes an audit record for all that a person does through
+it. Each record is one JSON line in the log of the coordinator, with
+`"audit":true`. Records of all kinds of service have these fields:
+
+| Field | Meaning |
+|---|---|
+| `user` | The person, as the identity provider names them |
+| `subject` | The same person, by the permanent ID from the identity provider |
+| `cluster` | The cluster of the service |
+| `service` | The name of the service |
+| `kind` | `postgres` or `kubernetes` |
+
+Thus one search finds all that a person did, or all that occurred on a
+service, for all kinds. For example, in a log system that has these fields:
+
+```
+audit:true user:alice@example.com cluster:prod
+```
+
+Each kind adds its own fields, for example the SQL statement or the
+Kubernetes verb. See the document of the kind.
+
+## 7. Services from a file
 
 An exit node can also read services from a file. Use this on a laptop, or
 for a cluster without the `TunnelService` resource:

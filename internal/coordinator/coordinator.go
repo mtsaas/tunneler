@@ -202,14 +202,28 @@ func (s *session) interrupt() {
 	}
 }
 
+// auditSubject returns the attributes that every audit record carries,
+// whatever the kind of service: who, and what they reached. They are the
+// same for every kind so that one query answers "what did this person do"
+// or "who touched this service" across all of them. What is particular to a
+// kind, such as a session's account or a request's verb, is added beside.
+//
+// The group has no name, so its attributes appear at the top level.
+func auditSubject(user, subject, cluster, service, kind string) slog.Attr {
+	return slog.Group("",
+		"user", user, // the person, as the identity provider names them
+		"subject", subject, // the same person, by the provider's stable ID
+		"cluster", cluster,
+		"service", service,
+		"kind", kind,
+	)
+}
+
 func (s *session) attrs() slog.Attr {
-	return slog.Group("session",
-		"id", s.info.ID,
-		"subject", s.subject,
-		"owner", s.info.Owner,
-		"cluster", s.info.Cluster,
-		"service", s.info.Service,
-		"username", s.info.Username,
+	return slog.Group("",
+		auditSubject(s.info.Owner, s.subject, s.info.Cluster, s.info.Service, s.info.Kind),
+		"session", s.info.ID,
+		"account", s.info.Username, // the temporary account on the service
 	)
 }
 
@@ -338,7 +352,7 @@ func (c *Coordinator) serveSession(ctx context.Context, s *session, conn net.Con
 	defer conn.Close()
 	proxy := kinds[s.info.Kind].proxy
 	if proxy == nil { // a session resumed from a newer coordinator's database
-		c.log.Error("no proxy for session's kind", s.attrs(), "kind", s.info.Kind)
+		c.log.Error("no proxy for session's kind", s.attrs())
 		return
 	}
 	if !s.track(conn) {

@@ -150,17 +150,19 @@ what it thinks of you, run `kubectl auth whoami`.
 
 ## 4. The audit trail
 
-The coordinator writes one record for each request. The record has
-`"audit":true` and the message `kubernetes request`:
+The coordinator writes one record for each request, with the message
+`kubernetes request`. The record has the
+[fields that all kinds share](README.md#6-the-audit-trail), with
+`"kind":"kubernetes"`, and these:
 
 ```json
-{"msg":"kubernetes request","user":"alice@example.com","cluster":"prod","verb":"delete",
- "resource":"pods","namespace":"shop","name":"web-0","status":403,"duration":"2ms"}
+{"msg":"kubernetes request","audit":true,"user":"alice@example.com","subject":"...","cluster":"prod",
+ "service":"tunneler-kubernetes","kind":"kubernetes","verb":"delete","resource":"pods",
+ "namespace":"shop","name":"web-0","status":403,"duration":"2ms"}
 ```
 
 | Field | Meaning |
-|---|---|
-| `user`, `subject` | The person, from the identity provider |
+|---|
 | `verb` | `get`, `list`, `watch`, `create`, `update`, `patch`, `delete`, or `deletecollection` |
 | `api_group`, `resource`, `subresource`, `namespace`, `name` | What the request was about |
 | `status` | The HTTP status that the API server gave. `403` means that RBAC refused the request |

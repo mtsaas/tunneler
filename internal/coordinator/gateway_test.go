@@ -131,7 +131,7 @@ func TestKubernetesGateway(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	if log := audit.String(); !strings.Contains(log, `"msg":"kubernetes request"`) || !strings.Contains(log, `"user":"alice@example.com"`) ||
-		!strings.Contains(log, `"resource":"pods"`) || !strings.Contains(log, `"namespace":"shop"`) {
+		!strings.Contains(log, `"kind":"kubernetes"`) || !strings.Contains(log, `"resource":"pods"`) || !strings.Contains(log, `"namespace":"shop"`) {
 		t.Errorf("audit trail lacks the request:\n%s", log)
 	}
 

@@ -187,8 +187,19 @@ func TestEndToEnd(t *testing.T) {
 	if err := conn.QueryRow(ctx, "SELECT current_user /* marker */").Scan(&who); err != nil || who != s.Username {
 		t.Fatalf("current_user = %q, %v; want %q", who, err, s.Username)
 	}
-	if log := audit.String(); !strings.Contains(log, "marker") || !strings.Contains(log, "alice@example.com") {
-		t.Errorf("audit log lacks the query or its owner:\n%s", log)
+	// The record of a statement says who ran it, where, and on what kind of
+	// service, in the fields that every kind's records share.
+	var query map[string]any
+	for _, line := range strings.Split(audit.String(), "\n") {
+		if strings.Contains(line, "marker") {
+			json.Unmarshal([]byte(line), &query)
+		}
+	}
+	for k, want := range map[string]any{"msg": "query", "user": "alice@example.com", "subject": "1", "cluster": "prod",
+		"service": "orders", "kind": "postgres", "account": s.Username, "session": s.ID} {
+		if query[k] != want {
+			t.Errorf("audit record of the query: %s = %v, want %v\n%v", k, query[k], want, query)
+		}
 	}
 
 	// A client following the session's events hears about the revocation

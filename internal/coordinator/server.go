@@ -163,7 +163,8 @@ func (c *Coordinator) handleForgetCluster(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	c.audit.Info("cluster name released; the next issuer to present it will bind it", "cluster", name, "by", id.Username)
+	c.audit.Info("cluster name released; the next issuer to present it will bind it",
+		"user", id.Username, "subject", id.Subject, "cluster", name)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -256,7 +257,7 @@ func (c *Coordinator) handleCreateSession(w http.ResponseWriter, r *http.Request
 	switch {
 	case n == 0:
 		c.audit.Warn("access denied: selector matches no service the user's grants reach",
-			"subject", id.Subject, "user", id.Username, "groups", id.Groups, "selector", req.Selector)
+			"user", id.Username, "subject", id.Subject, "groups", id.Groups, "selector", req.Selector)
 		msg := "no service you have access to matches that selector"
 		if len(id.Groups) == 0 {
 			msg += "; your login carries no groups, so only a grant naming you directly could apply (see: tunneler auth status)"

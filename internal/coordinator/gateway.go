@@ -51,12 +51,11 @@ func (c *Coordinator) handleGateway(w http.ResponseWriter, r *http.Request) {
 		refuseGateway(w, http.StatusUnauthorized, "not logged in, or login expired; run: tunneler auth login")
 		return
 	}
-	audit := c.audit.With("user", id.Username, "subject", id.Subject, "cluster", cluster, "service", name, "remote", r.RemoteAddr)
-
 	// Until the caller is known to have access, the answer is the same
 	// whether or not the service exists, and so cannot be in the manner of
 	// the service's kind.
 	svc, found := c.hub.service(cluster, name)
+	audit := c.audit.With(auditSubject(id.Username, id.Subject, cluster, name, svc.Kind), "remote", r.RemoteAddr)
 	var roles []string
 	allowed := found && kinds[svc.Kind].gateway != nil
 	if allowed {

@@ -223,8 +223,10 @@ Postgres uses the `sslmode` of the administrative connection string.
 
 ## 6. The audit trail
 
-The coordinator writes these records, each with `"audit":true` and the
-person, the cluster, the service, and the account:
+The coordinator writes these records. Each has the
+[fields that all kinds share](README.md#6-the-audit-trail), with
+`"kind":"postgres"`. Each also has `session`, the ID of the session, and
+`account`, the temporary database account:
 
 | Message | When |
 |---|---|
@@ -235,8 +237,9 @@ person, the cluster, the service, and the account:
 | `access denied` | No grant gives the person access |
 
 ```json
-{"msg":"query","audit":true,"session":{"owner":"alice@example.com","cluster":"prod",
- "service":"shop-postgres","username":"tnl_alice_example_com_x7k2p9qa"},"sql":"select * from orders"}
+{"msg":"query","audit":true,"user":"alice@example.com","subject":"...","cluster":"prod",
+ "service":"shop-postgres","kind":"postgres","session":"K3Q2XB7HTLW5",
+ "account":"tnl_alice_example_com_x7k2p9qa","sql":"select * from orders"}
 ```
 
 ## 7. Problems and their causes
