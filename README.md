@@ -8,7 +8,7 @@ It is designed to be dead-simple, and easy to host. It has three components:
 2. **Exit nodes.** These are deployed in one or more Kubernetes clusters where you want to expose access to a service.
 3. **Client.** This is a CLI installed on your machine that you can use to access a service.
 
-![](/Users/clarkmccauley/Documents/repos/clustertunnel/docs/architecture.png)
+![](./docs/architecture.png)
 
 ## How can I use it?
 Tunneler exit nodes connect to a tunneler coordinator using OIDC to authenticate. 
