@@ -167,6 +167,7 @@ The coordinator writes one record for each request, with the message
 | `api_group`, `resource`, `subresource`, `namespace`, `name` | What the request was about |
 | `status` | The HTTP status that the API server gave. `403` means that RBAC refused the request |
 | `command` | For `exec` and `attach`, the command that the person started |
+| `aborted` | `true` if the person stopped the request before it was complete, for example with Ctrl-C on `logs -f` |
 
 A request that stays open, such as `exec`, `logs -f`, `port-forward`, or a
 watch, gets a second record when it starts. Its message is `kubernetes request started`.

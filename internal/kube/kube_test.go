@@ -355,9 +355,37 @@ func TestPingReportsBadCredentials(t *testing.T) {
 
 func TestFollowedLogsAreRecordedAtStart(t *testing.T) {
 	c := newCluster(t, []string{"tunneler:view"}, func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "a log line") })
-	c.get("/api/v1/namespaces/shop/pods/web-0/log?follow=true", nil).Body.Close()
+	resp := c.get("/api/v1/namespaces/shop/pods/web-0/log?follow=true", nil)
+	io.Copy(io.Discard, resp.Body) // to its end, so that the request completes rather than aborts
+	resp.Body.Close()
 	rec := c.waitForRecords(2)
 	if len(rec) != 2 || rec[0]["msg"] != "kubernetes request started" || rec[0]["subresource"] != "log" {
 		t.Errorf("audit = %v", rec)
+	}
+}
+
+// TestAbortedRequestIsRecorded checks that a request the client walks away
+// from, as with Ctrl-C on a followed log, still reaches the audit trail. The
+// reverse proxy ends such a request by panicking, which once skipped the
+// record.
+func TestAbortedRequestIsRecorded(t *testing.T) {
+	c := newCluster(t, []string{"tunneler:view"}, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "first line")
+		w.(http.Flusher).Flush()
+		for r.Context().Err() == nil { // a log that never ends, until nobody is listening
+			fmt.Fprintln(w, "another line")
+			w.(http.Flusher).Flush()
+			time.Sleep(time.Millisecond)
+		}
+	})
+	resp := c.get("/api/v1/namespaces/shop/pods/web-0/log?follow=true", nil)
+	if line, _ := bufio.NewReader(resp.Body).ReadString('\n'); line != "first line\n" {
+		t.Fatalf("first line = %q", line)
+	}
+	resp.Body.Close() // Ctrl-C
+
+	rec := c.waitForRecords(2)
+	if len(rec) != 2 || rec[1]["msg"] != "kubernetes request" || rec[1]["aborted"] != true || rec[1]["status"] != float64(200) {
+		t.Errorf("an aborted request should be recorded, as aborted; audit = %v", rec)
 	}
 }

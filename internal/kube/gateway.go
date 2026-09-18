@@ -75,8 +75,22 @@ func (g *Gateway) ServeAs(w http.ResponseWriter, r *http.Request, user string, g
 	}
 	start := time.Now()
 	rec := &statusRecorder{ResponseWriter: w}
+	// Deferred, because the proxy ends a request whose client has gone away
+	// by panicking with http.ErrAbortHandler, which is how a followed log, a
+	// watch or an exec usually ends. Such a request is recorded all the same,
+	// as aborted, and the panic goes on to the server, which expects it.
+	defer func() {
+		aborted := recover()
+		attrs := []any{"status", rec.status, "duration", time.Since(start).Round(time.Millisecond).String()}
+		if aborted != nil {
+			attrs = append(attrs, "aborted", true)
+		}
+		audit.Info("kubernetes request", attrs...)
+		if aborted != nil {
+			panic(aborted)
+		}
+	}()
 	g.proxy.ServeHTTP(rec, r)
-	audit.Info("kubernetes request", "status", rec.status, "duration", time.Since(start).Round(time.Millisecond).String())
 }
 
 // Error answers a request the coordinator will not serve, in the way kubectl
