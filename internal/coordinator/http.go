@@ -26,6 +26,7 @@ func (c *Coordinator) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/sessions", c.user(c.handleCreateSession))
 	mux.HandleFunc("DELETE /v1/sessions/{id}", c.user(c.handleDeleteSession))
 	mux.HandleFunc("GET /v1/sessions/{id}/connect", c.user(c.handleConnect))
+	mux.HandleFunc("GET /v1/sessions/{id}/events", c.user(c.handleSessionEvents))
 	mux.HandleFunc("GET /v1/exit/control", c.exit(c.handleExitControl))
 	mux.HandleFunc("GET /v1/exit/data", c.exit(c.handleExitData))
 	mux.HandleFunc("POST /v1/exit/result", c.exit(c.handleExitResult))
@@ -293,6 +294,51 @@ func (c *Coordinator) handleConnect(w http.ResponseWriter, r *http.Request, id *
 		return
 	}
 	c.serveSession(r.Context(), s, conn)
+}
+
+// handleSessionEvents streams SessionEvents until the session ends, so that
+// a client learns of a revocation at once rather than at its next
+// connection.
+func (c *Coordinator) handleSessionEvents(w http.ResponseWriter, r *http.Request, id *Identity) {
+	s := c.ownSession(w, r, id, false)
+	if s == nil {
+		return
+	}
+	ended, stop := s.watch()
+	defer stop()
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-cache")
+	rc := http.NewResponseController(w)
+	send := func(ev api.SessionEvent) bool {
+		// Streams outlive the server's write timeout by design.
+		rc.SetWriteDeadline(time.Now().Add(30 * time.Second))
+		if json.NewEncoder(w).Encode(ev) != nil {
+			return false
+		}
+		return rc.Flush() == nil
+	}
+	if !send(api.SessionEvent{}) {
+		return
+	}
+	// Keepalives keep idle proxies from cutting the stream.
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case reason, ok := <-ended:
+			if ok {
+				send(api.SessionEvent{Ended: true, Reason: reason})
+			}
+			return
+		case <-ticker.C:
+			if !send(api.SessionEvent{}) {
+				return
+			}
+		case <-r.Context().Done():
+			return
+		}
+	}
 }
 
 func (c *Coordinator) handleExitControl(w http.ResponseWriter, r *http.Request, cluster string) {

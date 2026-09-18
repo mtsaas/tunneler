@@ -99,7 +99,7 @@ func (c *Coordinator) Close() error {
 	defer c.mu.Unlock()
 	for _, s := range c.sessions {
 		s.expiry.Stop()
-		s.closeConns()
+		s.interrupt()
 	}
 	clear(c.sessions)
 	return c.store.db.Close()
@@ -112,9 +112,10 @@ type session struct {
 	labels  map[string]string // of the service, as advertised at creation
 	expiry  *time.Timer
 
-	mu      sync.Mutex
-	conns   map[net.Conn]struct{}
-	revoked bool
+	mu       sync.Mutex
+	conns    map[net.Conn]struct{}
+	watchers map[chan string]struct{} // told the reason when the session ends
+	revoked  bool
 }
 
 // track registers a connection so that revocation closes it. It reports
@@ -135,13 +136,49 @@ func (s *session) untrack(conn net.Conn) {
 	delete(s.conns, conn)
 }
 
-// closeConns closes the session's connections and refuses new ones.
-func (s *session) closeConns() {
+// watch returns a channel that receives the reason once the session ends,
+// and a function to stop watching.
+func (s *session) watch() (<-chan string, func()) {
+	ch := make(chan string, 1)
+	s.mu.Lock()
+	if s.watchers == nil {
+		s.watchers = make(map[chan string]struct{})
+	}
+	s.watchers[ch] = struct{}{}
+	s.mu.Unlock()
+	return ch, func() {
+		s.mu.Lock()
+		delete(s.watchers, ch)
+		s.mu.Unlock()
+	}
+}
+
+// end closes the session's connections, refuses new ones, and tells
+// watchers why.
+func (s *session) end(reason string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.revoked = true
 	for conn := range s.conns {
 		conn.Close()
+	}
+	for ch := range s.watchers {
+		ch <- reason
+		delete(s.watchers, ch)
+	}
+}
+
+// interrupt closes the session's connections and watch streams without
+// ending the session, as at a coordinator shutdown.
+func (s *session) interrupt() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for conn := range s.conns {
+		conn.Close()
+	}
+	for ch := range s.watchers {
+		close(ch)
+		delete(s.watchers, ch)
 	}
 }
 
@@ -218,7 +255,7 @@ func (c *Coordinator) revoke(id, reason string) bool {
 		return false
 	}
 	s.expiry.Stop()
-	s.closeConns()
+	s.end(reason)
 	c.audit.Info("session revoked", s.attrs(), "reason", reason)
 
 	if err := c.dropAccount(s); err != nil {

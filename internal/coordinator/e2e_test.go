@@ -191,8 +191,26 @@ func TestEndToEnd(t *testing.T) {
 		t.Errorf("audit log lacks the query or its owner:\n%s", log)
 	}
 
+	// A client following the session's events hears about the revocation
+	// the moment it happens.
+	events, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"/v1/sessions/"+s.ID+"/events", nil)
+	events.Header.Set("Authorization", "Bearer alice")
+	stream, err := http.DefaultClient.Do(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Body.Close()
+	dec := json.NewDecoder(stream.Body)
+	var ev api.SessionEvent
+	if err := dec.Decode(&ev); err != nil || ev.Ended { // the opening keepalive
+		t.Fatalf("first event = %+v, %v", ev, err)
+	}
+
 	if code := call("DELETE", "/v1/sessions/"+s.ID, "alice", nil, nil); code != http.StatusNoContent {
 		t.Fatalf("revoking: status %d", code)
+	}
+	if err := dec.Decode(&ev); err != nil || !ev.Ended || !strings.Contains(ev.Reason, "alice") {
+		t.Errorf("event after revocation = %+v, %v; want ended by alice", ev, err)
 	}
 	if err := conn.Ping(ctx); err == nil {
 		t.Error("connection survived revocation")

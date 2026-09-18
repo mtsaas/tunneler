@@ -79,6 +79,16 @@ type Session struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+// SessionEvent is one line of the stream at GET /v1/sessions/{id}/events.
+// The stream carries keepalives (an empty event) until the session ends,
+// then one event with Ended set and the reason, and closes. A stream that
+// closes without an Ended event was interrupted, for example by a
+// coordinator restart; the session may well still exist.
+type SessionEvent struct {
+	Ended  bool   `json:"ended,omitempty"`
+	Reason string `json:"reason,omitempty"`
+}
+
 // Error is the body of every non-2xx response.
 type Error struct {
 	Message string `json:"error"`

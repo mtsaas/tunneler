@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -102,10 +103,14 @@ func connect(ctx context.Context, req api.SessionRequest, port int) error {
 		return err
 	}
 	log.Info(fmt.Sprintf("Access granted to %s/%s: temporary account %s is provisioned.", s.Cluster, s.Service, s.Username), "session", s.ID)
+	var ended atomic.Bool
 	defer func() {
 		// ctx is probably cancelled, by Ctrl-C.
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		if ended.Load() {
+			return // the coordinator already ended it
+		}
 		log.Info("Disconnecting and revoking the session...")
 		token, err := c.token(ctx)
 		if err == nil {
@@ -116,6 +121,13 @@ func connect(ctx context.Context, req api.SessionRequest, port int) error {
 			return
 		}
 		log.Info("Session revoked.")
+	}()
+	go func() {
+		reason := c.watchSession(ctx, s.ID)
+		if reason != "" {
+			ended.Store(true)
+			cancel(fmt.Errorf("the coordinator ended the session: %s", reason))
+		}
 	}()
 	printSession(&s, ln.Addr().(*net.TCPAddr))
 	log.Info(fmt.Sprintf("Listening on %s. Press Ctrl-C to disconnect and revoke the session.", ln.Addr()))
@@ -143,6 +155,65 @@ func connect(ctx context.Context, req api.SessionRequest, port int) error {
 		log.Info("The session has reached its expiry.")
 	}
 	return nil
+}
+
+// watchSession follows the session's event stream until the coordinator
+// reports that the session ended, and returns the reason. An interrupted
+// stream is reopened; a session that no longer exists counts as ended.
+// It returns "" only when ctx is done first.
+func (c *client) watchSession(ctx context.Context, sessionID string) string {
+	backoff := time.Second
+	for ctx.Err() == nil {
+		reason, err := c.followEvents(ctx, sessionID)
+		if reason != "" {
+			return reason
+		}
+		if status := (*api.Error)(nil); errors.As(err, &status) {
+			return "it was revoked, or your access was withdrawn" // a 4xx: the session is gone
+		}
+		if ctx.Err() != nil {
+			return ""
+		}
+		log.Debug("session event stream interrupted; reconnecting", "err", err, "in", backoff.String())
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+		}
+		backoff = min(2*backoff, 30*time.Second)
+	}
+	return ""
+}
+
+func (c *client) followEvents(ctx context.Context, sessionID string) (reason string, err error) {
+	token, err := c.token(ctx)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.state.Server+"/v1/sessions/"+sessionID+"/events", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		e := &api.Error{Message: resp.Status}
+		json.NewDecoder(resp.Body).Decode(e)
+		return "", e
+	}
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var ev api.SessionEvent
+		if err := dec.Decode(&ev); err != nil {
+			return "", err
+		}
+		if ev.Ended {
+			return ev.Reason, nil
+		}
+	}
 }
 
 // forward carries one local connection, the n'th, to the coordinator. It
