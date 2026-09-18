@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mtsaas/tunneler/internal/api"
@@ -37,7 +39,7 @@ var proxies = map[string]proxyFunc{
 
 // Coordinator is the central server.
 type Coordinator struct {
-	cfg   *Config
+	cfg   atomic.Pointer[Config] // replaced by Reload
 	auth  Authenticator
 	hub   *hub
 	store *store
@@ -70,7 +72,6 @@ func New(cfg *Config, auth Authenticator, log, audit *slog.Logger) (*Coordinator
 		return nil, err
 	}
 	c := &Coordinator{
-		cfg:      cfg,
 		auth:     auth,
 		hub:      newHub(log),
 		store:    st,
@@ -79,6 +80,7 @@ func New(cfg *Config, auth Authenticator, log, audit *slog.Logger) (*Coordinator
 		audit:    audit,
 		sessions: make(map[string]*session),
 	}
+	c.cfg.Store(cfg)
 	c.hub.onConnect = c.retryDrops
 	log.Info("session database opened", "path", cfg.Database, "saved_sessions", len(sessions))
 	for _, s := range sessions {
@@ -90,6 +92,39 @@ func New(cfg *Config, auth Authenticator, log, audit *slog.Logger) (*Coordinator
 		s.expiry = time.AfterFunc(time.Until(s.info.ExpiresAt), func() { c.revoke(s.info.ID, "expired") })
 	}
 	return c, nil
+}
+
+func (c *Coordinator) config() *Config { return c.cfg.Load() }
+
+// Reload puts a new configuration into effect without disturbing sessions
+// or connections. Grants, admins, the session lifetime and the rules for
+// admitting exit nodes take effect at once: a session whose owner lost
+// access is revoked at its next connection. The listener, the session
+// database, the identity provider and the issuer CA bundle are fixed at
+// start; Reload reports those it found changed, and they keep their old
+// values until a restart.
+func (c *Coordinator) Reload(cfg *Config) (ignored []string) {
+	old := c.config()
+	fixed := []struct {
+		name    string
+		changed bool
+	}{
+		{"listen", old.Listen != cfg.Listen},
+		{"database", old.Database != cfg.Database},
+		{"tls", !reflect.DeepEqual(old.TLS, cfg.TLS)},
+		{"oidc", old.OIDC != cfg.OIDC},
+		{"exit_issuer_ca_file", old.ExitIssuerCAFile != cfg.ExitIssuerCAFile},
+	}
+	merged := *cfg
+	merged.Listen, merged.Database, merged.TLS = old.Listen, old.Database, old.TLS
+	merged.OIDC, merged.ExitIssuerCAFile = old.OIDC, old.ExitIssuerCAFile
+	for _, f := range fixed {
+		if f.changed {
+			ignored = append(ignored, f.name)
+		}
+	}
+	c.cfg.Store(&merged)
+	return ignored
 }
 
 // Close disconnects every session and closes the session database. Sessions
@@ -199,7 +234,7 @@ func (c *Coordinator) createSession(ctx context.Context, id *Identity, cluster s
 	if proxies[svc.Kind] == nil {
 		return nil, fmt.Errorf("this coordinator cannot proxy services of kind %q", svc.Kind)
 	}
-	ttl := time.Duration(c.cfg.SessionTTL)
+	ttl := time.Duration(c.config().SessionTTL)
 	s := &session{
 		info: api.Session{
 			ID:        rand.Text(),

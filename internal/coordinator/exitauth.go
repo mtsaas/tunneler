@@ -21,18 +21,17 @@ import (
 // OIDC issuer matches one of the configured patterns. Each cluster is its own
 // issuer with its own keys, discovered on first sight and cached.
 type kubeVerifier struct {
-	patterns []string // path.Match patterns for the issuer URL
-	audience string
-	client   *http.Client // nil for the default; set to trust private issuer certificates
+	client *http.Client // nil for the default; set to trust private issuer certificates
 
 	mu        sync.Mutex
 	providers map[string]*oidc.Provider // by issuer
 }
 
-// trusts reports whether the token's issuer matches a pattern. It reads the
-// unverified issuer claim, which is safe: it only decides whether to try
-// verifying against that issuer's keys.
-func (v *kubeVerifier) trusts(token string) (issuer string, ok bool) {
+// trusts reports whether the token's issuer matches one of the patterns,
+// which are in path.Match syntax. It reads the unverified issuer claim, which
+// is safe: it only decides whether to try verifying against that issuer's
+// keys.
+func (v *kubeVerifier) trusts(token string, patterns []string) (issuer string, ok bool) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return "", false
@@ -47,7 +46,7 @@ func (v *kubeVerifier) trusts(token string) (issuer string, ok bool) {
 	if json.Unmarshal(payload, &claims) != nil {
 		return "", false
 	}
-	for _, p := range v.patterns {
+	for _, p := range patterns {
 		if ok, _ := path.Match(p, claims.Issuer); ok {
 			return claims.Issuer, true
 		}
@@ -55,9 +54,9 @@ func (v *kubeVerifier) trusts(token string) (issuer string, ok bool) {
 	return claims.Issuer, false
 }
 
-// verify checks the token against its issuer's keys and returns the issuer
-// and subject, such as system:serviceaccount:tunneler:tunneler-exit.
-func (v *kubeVerifier) verify(ctx context.Context, issuer, token string) (subject string, err error) {
+// verify checks the token against its issuer's keys and the audience, and
+// returns the subject, such as system:serviceaccount:tunneler:tunneler-exit.
+func (v *kubeVerifier) verify(ctx context.Context, issuer, audience, token string) (subject string, err error) {
 	if v.client != nil {
 		ctx = oidc.ClientContext(ctx, v.client)
 	}
@@ -73,7 +72,7 @@ func (v *kubeVerifier) verify(ctx context.Context, issuer, token string) (subjec
 		v.providers[issuer] = provider
 		v.mu.Unlock()
 	}
-	idToken, err := provider.VerifierContext(ctx, &oidc.Config{ClientID: v.audience}).Verify(ctx, token)
+	idToken, err := provider.VerifierContext(ctx, &oidc.Config{ClientID: audience}).Verify(ctx, token)
 	if err != nil {
 		return "", err
 	}
@@ -86,7 +85,7 @@ func (v *kubeVerifier) verify(ctx context.Context, issuer, token string) (subjec
 // newKubeVerifier builds the verifier for cfg, loading the CA bundle if one
 // is configured.
 func newKubeVerifier(cfg *Config) (*kubeVerifier, error) {
-	v := &kubeVerifier{patterns: cfg.ExitIssuers, audience: cfg.ExitAudience, providers: make(map[string]*oidc.Provider)}
+	v := &kubeVerifier{providers: make(map[string]*oidc.Provider)}
 	if cfg.ExitIssuerCAFile == "" {
 		return v, nil
 	}

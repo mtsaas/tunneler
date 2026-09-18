@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -50,6 +51,7 @@ func startCoordinator(ctx context.Context, path string) error {
 		return err
 	}
 	defer c.Close()
+	go watchConfig(ctx, path, c)
 	srv := coordinator.NewHTTPServer(cfg.Listen, c.Handler())
 
 	errc := make(chan error, 1)
@@ -72,4 +74,44 @@ func startCoordinator(ctx context.Context, path string) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// watchConfig reloads the configuration file whenever it changes, so that a
+// change of grants takes effect without a restart, which would disconnect
+// everyone. A file that fails to load is logged and ignored.
+//
+// ponytail: polls the modification time. Kubernetes updates a mounted
+// ConfigMap within about a minute anyway.
+func watchConfig(ctx context.Context, path string, c *coordinator.Coordinator) {
+	mtime := func() time.Time {
+		fi, err := os.Stat(path)
+		if err != nil {
+			return time.Time{}
+		}
+		return fi.ModTime()
+	}
+	last := mtime()
+	for {
+		select {
+		case <-time.After(15 * time.Second):
+		case <-ctx.Done():
+			return
+		}
+		now := mtime()
+		if now.IsZero() || now.Equal(last) {
+			continue
+		}
+		last = now
+		cfg, err := coordinator.LoadConfig(path)
+		if err != nil {
+			log.Error("configuration changed but cannot be loaded; keeping the previous one", "err", err)
+			continue
+		}
+		ignored := c.Reload(cfg)
+		log.Info("configuration reloaded; sessions and connections are undisturbed",
+			"grants", len(cfg.Grants), "admin_groups", len(cfg.Admins), "session_ttl", time.Duration(cfg.SessionTTL).String())
+		if len(ignored) > 0 {
+			log.Warn("these settings changed but only take effect after a restart", "settings", ignored)
+		}
+	}
 }

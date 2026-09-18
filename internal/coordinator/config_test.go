@@ -2,8 +2,11 @@ package coordinator
 
 import (
 	"encoding/base64"
+	"log/slog"
+	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 )
 
 func TestAccess(t *testing.T) {
@@ -59,11 +62,38 @@ func TestExitIssuerPattern(t *testing.T) {
 		"https://eastus.oic.prod-aks.azure.com/99999999-8888-7777-6666-555555555555/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/":     false, // another tenant
 		"https://evil.example.com/oic.prod-aks.azure.com/11111111-2222-3333-4444-555555555555/x/":                              false,
 	} {
-		v := &kubeVerifier{patterns: []string{pattern}}
+		v := &kubeVerifier{}
 		// A token whose payload is just the issuer claim.
 		payload := base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"` + issuer + `"}`))
-		if _, got := v.trusts("h." + payload + ".s"); got != want {
+		if _, got := v.trusts("h."+payload+".s", []string{pattern}); got != want {
 			t.Errorf("%s: trusted = %v, want %v", issuer, got, want)
 		}
+	}
+}
+
+func TestReload(t *testing.T) {
+	base := Config{Listen: ":1", Database: filepath.Join(t.TempDir(), "t.db"), SessionTTL: Duration(time.Hour)}
+	c, err := New(&base, nil, slog.New(slog.DiscardHandler), slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	alice := &Identity{Username: "alice@example.com", Groups: []string{"dba"}}
+	labels := map[string]string{"cluster": "prod"}
+	if _, ok := c.config().access(alice, labels); ok {
+		t.Fatal("access before any grant")
+	}
+
+	next := base
+	next.Listen = ":2" // fixed at start
+	next.Grants = []Grant{{Group: "dba", Labels: labels}}
+	if ignored := c.Reload(&next); !slices.Equal(ignored, []string{"listen"}) {
+		t.Errorf("ignored = %v, want [listen]", ignored)
+	}
+	if _, ok := c.config().access(alice, labels); !ok {
+		t.Error("reloaded grant has no effect")
+	}
+	if c.config().Listen != ":1" {
+		t.Errorf("listen = %q, want the value from start", c.config().Listen)
 	}
 }
