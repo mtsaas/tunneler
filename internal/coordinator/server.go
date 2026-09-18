@@ -273,11 +273,9 @@ func (c *Coordinator) handleCreateSession(w http.ResponseWriter, r *http.Request
 	cluster, svc := matches[0].Name, matches[0].Services[0]
 	if kinds[svc.Kind].proxy == nil {
 		// Known, but not reached through sessions.
-		hint := fmt.Sprintf("services of kind %q are not reached with connect", svc.Kind)
-		if svc.Kind == "kubernetes" {
-			hint += fmt.Sprintf("; run: tunneler kube config cluster=%s name=%s", cluster, svc.Name)
-		}
-		writeError(w, http.StatusBadRequest, hint)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf(
+			"services of kind %q have no sessions; they are reached per request at %s, which \"tunneler connect\" arranges",
+			svc.Kind, pathGateway(cluster, svc.Name)))
 		return
 	}
 	if !svc.Ready {

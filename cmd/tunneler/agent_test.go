@@ -177,16 +177,17 @@ func TestKubeCommands(t *testing.T) {
 	kubeconfig := filepath.Join(t.TempDir(), "config")
 	t.Setenv("KUBECONFIG", kubeconfig)
 
-	// The selector need not say kind=kubernetes: the postgres service on the
-	// same cluster is not a candidate.
-	out, errOut, status := cli(t, srv.URL, "kube", "config", "cluster=prod", "-o", "json")
+	// connect reaches whatever the selector names, in the way of its kind.
+	// For a cluster that is a kubeconfig context, and nothing left running.
+	out, errOut, status := cli(t, srv.URL, "connect", "cluster=prod", "kind=kubernetes", "-o", "json")
 	if status != 0 {
-		t.Fatalf("kube config: status %d, %s", status, errOut)
+		t.Fatalf("connect to a cluster: status %d, %s", status, errOut)
 	}
 	var res map[string]string
 	json.Unmarshal([]byte(out), &res)
-	if res["context"] != "tunneler-prod" || res["server"] != srv.URL+"/v1/gateway/prod/kubernetes" || res["notice"] == "" {
-		t.Errorf("kube config result = %v", res)
+	if res["event"] != "configured" || res["context"] != "tunneler-prod" ||
+		res["server"] != srv.URL+"/v1/gateway/prod/kubernetes" || !strings.Contains(res["notice"], "audited") {
+		t.Errorf("connect result = %v", res)
 	}
 	cfg, err := clientcmd.LoadFromFile(kubeconfig)
 	if err != nil {
@@ -202,14 +203,43 @@ func TestKubeCommands(t *testing.T) {
 		t.Errorf("the kubeconfig holds a token:\n%s", raw)
 	}
 
-	// A cluster with no kubernetes service offers nothing to configure.
-	if _, _, status := cli(t, srv.URL, "kube", "config", "cluster=dev"); status != exitDenied {
-		t.Errorf("kube config for an unknown cluster: status %d, want %d", status, exitDenied)
+	// The cluster's database and its API both answer to cluster=prod.
+	if _, _, status := cli(t, srv.URL, "connect", "cluster=prod"); status != exitAmbiguous {
+		t.Errorf("connect cluster=prod: status %d, want %d", status, exitAmbiguous)
+	}
+
+	// With a command, the context lives only as long as the command, in a
+	// file of its own, and the person's kubeconfig is left alone.
+	before, _ := os.ReadFile(kubeconfig)
+	seen := filepath.Join(t.TempDir(), "seen")
+	_, errOut, status = cli(t, srv.URL, "connect", "kind=kubernetes", "--",
+		"sh", "-c", `echo "$KUBECONFIG" > `+seen+`; grep -c "kube" "$KUBECONFIG" >> `+seen)
+	if status != 0 {
+		t.Fatalf("connect -- command: status %d, %s", status, errOut)
+	}
+	lines := strings.Fields(readFile(t, seen))
+	if len(lines) != 2 || lines[0] == kubeconfig || lines[1] == "0" {
+		t.Errorf("the command saw KUBECONFIG %q", lines)
+	} else if _, err := os.Stat(lines[0]); !os.IsNotExist(err) {
+		t.Errorf("the temporary kubeconfig %s outlived the command", lines[0])
+	}
+	if after, _ := os.ReadFile(kubeconfig); string(after) != string(before) {
+		t.Error("connect -- command changed the person's kubeconfig")
+	}
+
+	// Flags of one kind are refused for the other, rather than ignored.
+	if _, _, status := cli(t, srv.URL, "connect", "kind=kubernetes", "--port", "5432"); status != exitUsage {
+		t.Errorf("--port with a cluster: status %d, want %d", status, exitUsage)
+	}
+	if _, _, status := cli(t, srv.URL, "connect", "kind=postgres", "--context", "x"); status != exitUsage {
+		t.Errorf("--context with a database: status %d, want %d", status, exitUsage)
 	}
 
 	// kubectl sends no credentials over plain HTTP; say so now, not later.
-	if _, errOut, status := cli(t, "http://coordinator.example", "kube", "config", "cluster=prod"); status == 0 || !strings.Contains(errOut, "https") {
-		t.Errorf("kube config against an http coordinator: status %d, %q", status, errOut)
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { json.NewEncoder(w).Encode(services) }))
+	defer plain.Close()
+	if _, errOut, status := cli(t, plain.URL, "connect", "kind=kubernetes"); status == 0 || !strings.Contains(errOut, "https") {
+		t.Errorf("connect to a cluster through an http coordinator: status %d, %q", status, errOut)
 	}
 
 	// The plugin hands kubectl the login, and when to ask again.
@@ -222,4 +252,13 @@ func TestKubeCommands(t *testing.T) {
 		!strings.HasPrefix(cred.Status.Token, "h.") || time.Until(cred.Status.ExpirationTimestamp) < 50*time.Minute {
 		t.Errorf("credential = %+v", cred)
 	}
+}
+
+func readFile(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

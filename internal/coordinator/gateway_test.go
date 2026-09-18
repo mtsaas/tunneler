@@ -166,7 +166,7 @@ func TestKubernetesGateway(t *testing.T) {
 
 	// The API is not reached through sessions, and says how it is.
 	_, err = alice.CreateSession(ctx, map[string]string{"kind": "kubernetes"})
-	if apiErr := (*api.Error)(nil); !errors.As(err, &apiErr) || apiErr.Status != 400 || !strings.Contains(apiErr.Message, "tunneler kube config") {
+	if apiErr := (*api.Error)(nil); !errors.As(err, &apiErr) || apiErr.Status != 400 || !strings.Contains(apiErr.Message, "/v1/gateway/prod/kubernetes") {
 		t.Errorf("connect to a kubernetes service: %v", err)
 	}
 }

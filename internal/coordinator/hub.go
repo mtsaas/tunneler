@@ -144,6 +144,7 @@ func (h *hub) serveControl(cluster string, conn net.Conn) error {
 		svc.Labels["cluster"] = cluster
 		svc.Labels["kind"] = svc.Kind
 		svc.Labels["name"] = svc.Name
+		svc.Access = kinds[svc.Kind].access() // ours to say: it is how this coordinator fronts the kind
 		e.services[svc.Name] = svc
 	}
 

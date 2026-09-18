@@ -135,12 +135,19 @@ TUNNELER_SERVER: the coordinator's URL. Overrides "tunneler config --server".
 
 TUNNELER_CLUSTER: for "start exit", the name of the cluster.
 
-Set by "tunneler connect -- COMMAND" for the command it runs:
+Set by "tunneler connect -- COMMAND" for the command it runs.
+
+For a postgres service:
 
 PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE, PGSSLMODE: the connection,
 as libpq and most Postgres tools read it.
 
-DATABASE_URL: the same connection as a URL.`),
+DATABASE_URL: the same connection as a URL.
+
+For a kubernetes service:
+
+KUBECONFIG: a kubeconfig holding one context, for the cluster. The file is
+removed when the command exits.`),
 
 		topic("exit-codes", "Exit codes", `
 0: success
@@ -165,10 +172,13 @@ service_unavailable, error. See "tunneler help exit-codes".
 "matches" accompanies ambiguous_selector: the services that matched. Add
 name=SERVICE to the selector and try again.
 
-"tunneler connect" writes one object once it accepts connections:
+"tunneler connect" writes one object once the service can be used.
+For postgres, once it accepts connections:
   {"event": "listening", "host", "port", "url", "session", "notice"}
-"notice" says that the session is audited; show it to the person.
-Then it reports connections to stderr, one JSON object per line.
+and it then reports connections to stderr, one JSON object per line.
+For kubernetes, once the kubeconfig context is written, and it exits:
+  {"event": "configured", "context", "kubeconfig", "server", "notice"}
+"notice" says that access is audited; show it to the person.
 
 "tunneler auth login" needs a person. It writes
   {"event": "device_code", "verification_uri", "user_code"}
@@ -181,7 +191,7 @@ has to be parsed and no credentials are shown.`),
 
 Every service has these labels, besides those its owners gave it:
 - cluster: the cluster it runs in
-- kind: postgres (see "tunneler connect") or kubernetes (see "tunneler kube")
+- kind: postgres or kubernetes
 - name: its name, unique in its cluster
 - namespace: for services registered in Kubernetes
 

@@ -2,57 +2,71 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"hash/fnv"
-	"log/slog"
-	"net"
-	"net/http"
-	"net/url"
 	"os"
-	"os/exec"
 	"strings"
-	"sync"
-	"sync/atomic"
-	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
 	"github.com/mtsaas/tunneler/internal/api"
-	"github.com/mtsaas/tunneler/internal/tunnel"
+	"github.com/mtsaas/tunneler/internal/coordinator"
 )
+
+// connectOptions are connect's flags. Which apply depends on the kind of
+// the service the selector turns out to match.
+type connectOptions struct {
+	command []string // after "--"
+	port    int      // session kinds
+	context string   // kubernetes
+	noUse   bool     // kubernetes
+}
+
+// connectors says how connect reaches a service of each kind. It is the
+// CLI's part of a kind, beside the coordinator's and the exit node's.
+var connectors = map[string]func(ctx context.Context, c *client, cluster string, svc api.Service, opts connectOptions) error{
+	"postgres":   connectSession,
+	"kubernetes": connectKubernetes,
+}
 
 func connectCmd() *cobra.Command {
 	var cluster, name string
-	var port int
+	var opts connectOptions
+	use := true
 	cmd := &cobra.Command{
 		Use:   "connect [LABEL=VALUE...] [-- COMMAND [ARG...]]",
 		Short: "Connect to a service",
 		Long: `Connect to a service.
 
-Creates a temporary account for you on the service, and opens a local port
-for your database tool. Ctrl-C disconnects and removes the account. The
-port for a service is the same every time.
+What connecting means depends on the kind of service.
 
-Every query in the session is logged with your identity.
+postgres: creates a temporary account for you, and opens a local port for
+your database tool. Ctrl-C disconnects and removes the account. The port for
+a service is the same every time.
+
+kubernetes: adds a context to your kubeconfig, and exits. kubectl and other
+tools then reach the cluster through the coordinator, as you. The context
+holds no credential; kubectl gets your login from tunneler when it needs it.
 
 With "-- COMMAND", runs the command with the connection in its environment
-instead, and removes the account when the command exits.`,
+instead, and leaves nothing behind when it exits.
+
+Everything you do is logged with your identity.`,
 		Annotations: map[string]string{
 			helpArguments: selectorArguments + `
 
 After "--": a command to run. See "tunneler help environment".`,
-			helpJSON: `{"event": "listening", "host", "port", "url", "session", "notice"}`,
+			helpJSON: `postgres:   {"event": "listening", "host", "port", "url", "session", "notice"}
+kubernetes: {"event": "configured", "context", "kubeconfig", "server", "notice"}`,
 		},
 		Example: `$ tunneler connect cluster=prod team=shop
 $ tunneler connect env=preview-123 -- psql
-$ tunneler connect name=orders-db -- pg_dump --schema-only -f schema.sql
+$ tunneler connect cluster=prod kind=kubernetes
+$ tunneler connect cluster=prod kind=kubernetes -- kubectl get pods
 $ tunneler connect`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var command []string
 			if n := cmd.ArgsLenAtDash(); n >= 0 {
-				args, command = args[:n], args[n:]
+				args, opts.command = args[:n], args[n:]
 			}
 			selector, err := parseSelector(args)
 			if err != nil {
@@ -65,12 +79,15 @@ $ tunneler connect`,
 			if name != "" {
 				selector["name"] = name
 			}
-			return connect(cmd.Context(), selector, port, command)
+			opts.noUse = !use
+			return connect(cmd.Context(), selector, opts)
 		},
 	}
 	cmd.Flags().StringVar(&cluster, "cluster", "", "Same as the label cluster=NAME")
 	cmd.Flags().StringVar(&name, "service", "", "Same as the label name=NAME")
-	cmd.Flags().IntVar(&port, "port", 0, "Local port to listen on (default: fixed per service)")
+	cmd.Flags().IntVar(&opts.port, "port", 0, "postgres: local port to listen on (default: fixed per service)")
+	cmd.Flags().StringVar(&opts.context, "context", "", "kubernetes: name of the context (default: tunneler-CLUSTER)")
+	cmd.Flags().BoolVar(&use, "use", true, "kubernetes: make the context current")
 	return cmd
 }
 
@@ -81,274 +98,87 @@ func parseSelector(args []string) (map[string]string, error) {
 	for _, pair := range strings.FieldsFunc(strings.Join(args, ","), func(r rune) bool { return r == ',' }) {
 		k, v, ok := strings.Cut(pair, "=")
 		if !ok || k == "" || v == "" {
-			return nil, fmt.Errorf("malformed selector %q: want LABEL=VALUE", pair)
+			return nil, usageError{fmt.Errorf("malformed selector %q: want LABEL=VALUE", pair)}
 		}
 		selector[strings.TrimSpace(k)] = strings.TrimSpace(v)
 	}
 	return selector, nil
 }
 
-func connect(ctx context.Context, selector map[string]string, port int, command []string) error {
-	if len(command) > 0 {
-		// Ctrl-C belongs to the command, which shares our terminal and gets
-		// the signal too: psql uses it to cancel a query. The session ends
-		// when the command does.
-		ctx = context.WithoutCancel(ctx)
-		if !log.Enabled(ctx, slog.LevelDebug) {
-			log = slog.New(statusHandler{w: os.Stderr, mu: new(sync.Mutex), min: slog.LevelWarn})
-		}
-	}
-	parent := ctx // done when the person interrupts us, which is not a failure
-	ctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(nil)
-
+// connect finds the one service the selector names and reaches it in the
+// way of its kind.
+func connect(ctx context.Context, selector map[string]string, opts connectOptions) error {
 	c, err := authed(ctx)
 	if err != nil {
 		return err
 	}
-	// An explicit port is claimed before provisioning, so that finding it
-	// busy costs nothing upstream.
-	var ln net.Listener
-	if port != 0 {
-		if ln, err = net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port)); err != nil {
-			return err
-		}
-		defer ln.Close()
-	}
-
-	s, err := c.createSession(ctx, selector)
+	clusters, err := c.Services(ctx)
 	if err != nil {
 		return err
 	}
-	log.Info(fmt.Sprintf("Access granted to %s/%s: temporary account %s is provisioned.", s.Cluster, s.Service, s.Username), "session", s.ID)
-	var ended atomic.Bool
-	defer func() {
-		// ctx is probably cancelled, by Ctrl-C.
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if ended.Load() {
-			return // the coordinator already ended it
-		}
-		log.Info("Disconnecting and revoking the session...")
-		if err := c.RevokeSession(ctx, s.ID); err != nil {
-			log.Warn("Could not revoke the session; it will end on its own at "+s.ExpiresAt.Local().Format(time.TimeOnly), "err", err)
-			return
-		}
-		log.Info("Session revoked.")
-	}()
-	go func() {
-		reason := c.watchSession(ctx, s.ID)
-		if reason != "" {
-			ended.Store(true)
-			cancel(fmt.Errorf("the coordinator ended the session: %s", reason))
-		}
-	}()
-
-	if ln == nil {
-		if ln, err = listenStable(s); err != nil {
-			return err
-		}
-		defer ln.Close()
-	}
-	addr := ln.Addr().(*net.TCPAddr)
-	go func() {
-		var n atomic.Int64
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				if err := c.forward(ctx, conn, s.ID, n.Add(1)); err != nil {
-					cancel(err)
-				}
-			}()
-		}
-	}()
-
-	if len(command) > 0 {
-		if !outputJSON {
-			fmt.Fprintf(os.Stderr, "%s\n\n", auditNotice(s))
-		}
-		return runCommand(ctx, command, s, addr)
-	}
-	if outputJSON {
-		// One object, once connections are accepted: the signal to proceed.
-		result(map[string]any{
-			"event": "listening", "session": s, "host": addr.IP.String(), "port": addr.Port, "url": sessionURL(s, addr),
-			"notice": auditNotice(s),
-		}, "")
-	} else {
-		printSession(s, addr)
-	}
-	log.Info(fmt.Sprintf("Listening on %s. Press Ctrl-C to disconnect and revoke the session.", addr))
-	select {
-	case <-ctx.Done():
-		if parent.Err() == nil {
-			return context.Cause(ctx) // the session ended under us, and this says why
-		}
-	case <-time.After(time.Until(s.ExpiresAt)):
-		log.Info("The session has reached its expiry.")
-	}
-	return nil
-}
-
-// createSession asks for a session on the service the selector matches. If
-// it matches several and there is a person to ask, they pick one.
-func (c *client) createSession(ctx context.Context, selector map[string]string) (*api.Session, error) {
-	for {
-		what := "the service labelled " + formatLabels(selector)
-		if len(selector) == 0 {
-			what = "the only service you can reach"
-		}
-		log.Info(fmt.Sprintf("Requesting access to %s...", what))
-		s, err := c.CreateSession(ctx, selector)
-		ambiguous := (*api.Error)(nil)
-		if !errors.As(err, &ambiguous) || len(ambiguous.Matches) == 0 {
-			return s, err
-		}
-
-		var choices []map[string]string
-		for _, cl := range ambiguous.Matches {
-			for _, svc := range cl.Services {
-				choices = append(choices, map[string]string{"cluster": cl.Name, "name": svc.Name})
-			}
-		}
-		if !outputJSON {
-			fmt.Fprintf(os.Stderr, "\nMore than one service matches:\n\n")
-			printServices(os.Stderr, ambiguous.Matches, true)
-		}
-		// A person can only be asked on a terminal. A character device is not
-		// enough of a test: /dev/null, the usual stdin of scripts, is one.
-		ambiguous.Message += "; add labels until it matches one (name=... always will)"
-		if outputJSON || !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stderr.Fd())) {
-			return nil, ambiguous // it carries the matches, for JSON output
-		}
-		fmt.Fprintf(os.Stderr, "\nWhich one? [1-%d]: ", len(choices))
-		var n int
-		if _, err := fmt.Fscanln(os.Stdin, &n); err != nil || n < 1 || n > len(choices) {
-			return nil, ambiguous // no usable answer leaves the selector ambiguous
-		}
-		selector = choices[n-1]
-	}
-}
-
-// listenStable listens on the loopback port derived from the service's
-// name, so that the endpoint is the same from one session to the next, or on
-// any free port if that one is taken.
-func listenStable(s *api.Session) (net.Listener, error) {
-	h := fnv.New32a()
-	h.Write([]byte(s.Cluster + "/" + s.Service))
-	port := 49152 + h.Sum32()%16384 // the dynamic range, where nothing is registered
-	if ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port)); err == nil {
-		return ln, nil
-	}
-	log.Warn(fmt.Sprintf("The usual port for this service, %d, is in use; using another.", port))
-	return net.Listen("tcp", "127.0.0.1:0")
-}
-
-// runCommand runs a command with the session in its environment, until it
-// exits or the session ends.
-func runCommand(ctx context.Context, command []string, s *api.Session, addr *net.TCPAddr) error {
-	child := exec.CommandContext(ctx, command[0], command[1:]...)
-	child.Stdin, child.Stdout, child.Stderr = os.Stdin, os.Stdout, os.Stderr
-	child.Env = append(os.Environ(),
-		"PGHOST="+addr.IP.String(),
-		fmt.Sprintf("PGPORT=%d", addr.Port),
-		"PGUSER="+s.Username,
-		"PGPASSWORD="+s.Password,
-		"PGDATABASE="+s.Database,
-		"PGSSLMODE=disable", // the hop to the coordinator is TLS; the loopback hop has no need
-		"DATABASE_URL="+sessionURL(s, addr),
-	)
-	err := child.Run()
-	if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
-		return cause // the session ended under the command
-	}
-	return err
-}
-
-// watchSession follows the session's events until the coordinator reports
-// that the session ended, and returns the reason. An interrupted stream is
-// reopened; a session that no longer exists counts as ended. It returns ""
-// only when ctx is done first.
-func (c *client) watchSession(ctx context.Context, sessionID string) string {
-	backoff := time.Second
-	for ctx.Err() == nil {
-		reason, err := c.WatchSession(ctx, sessionID)
-		if reason != "" {
-			return reason
-		}
-		if gone := (*api.Error)(nil); errors.As(err, &gone) {
-			return "it was revoked, or your access was withdrawn"
-		}
-		if ctx.Err() != nil {
-			return ""
-		}
-		log.Debug("session event stream interrupted; reconnecting", "err", err, "in", backoff.String())
-		select {
-		case <-time.After(backoff):
-		case <-ctx.Done():
-		}
-		backoff = min(2*backoff, 30*time.Second)
-	}
-	return ""
-}
-
-// forward carries one local connection, the n'th, to the coordinator. It
-// returns an error only if the session as a whole is over.
-func (c *client) forward(ctx context.Context, local net.Conn, sessionID string, n int64) error {
-	defer local.Close()
-	log.Info(fmt.Sprintf("Connection %d: opened by a local client; tunneling to the coordinator.", n), "local", local.RemoteAddr())
-
-	start := time.Now()
-	stream, err := c.DialSession(ctx, sessionID)
-	if refused := (*api.Error)(nil); errors.As(err, &refused) &&
-		(refused.Status == http.StatusNotFound || refused.Status == http.StatusForbidden) {
-		return errors.New("the coordinator no longer honors this session: it was revoked, or your access was withdrawn")
-	}
+	cluster, svc, err := selectService(clusters, selector)
 	if err != nil {
-		log.Error(fmt.Sprintf("Connection %d: could not reach the coordinator", n), "err", err)
-		return nil
+		return err
 	}
-	log.Debug("tunnel established", "connection", n, "took", time.Since(start).Round(time.Millisecond).String())
-	tunnel.Splice(local, stream)
-	log.Info(fmt.Sprintf("Connection %d: closed after %s.", n, time.Since(start).Round(time.Second)))
-	return nil
+	if !svc.Ready {
+		return &api.Error{Status: 503, Message: fmt.Sprintf("%s/%s is registered but its exit node cannot reach it: %s", cluster, svc.Name, svc.Status)}
+	}
+	connector := connectors[svc.Kind]
+	if connector == nil {
+		return fmt.Errorf("this version of tunneler cannot connect to services of kind %q; upgrade it", svc.Kind)
+	}
+	return connector(ctx, c, cluster, svc, opts)
 }
 
-// auditNotice tells the person, every time a session starts, that what they
-// do in it is recorded under their name.
-func auditNotice(s *api.Session) string {
-	return fmt.Sprintf("NOTICE: This session is audited. Every query you run is logged with your identity (%s).", s.Owner)
-}
-
-// printSession writes what a client program needs in order to connect.
-func printSession(s *api.Session, addr *net.TCPAddr) {
-	fmt.Printf("\n%s\n", auditNotice(s))
-	fmt.Printf("\n  Host:      %s\n  Port:      %d\n", addr.IP, addr.Port)
-	if s.Database != "" {
-		fmt.Printf("  Database:  %s\n", s.Database)
+// selectService returns the one service the selector matches. If it matches
+// several, a person at a terminal is asked to pick; otherwise the error
+// lists the matches, as the coordinator's own does.
+func selectService(clusters []api.Cluster, selector map[string]string) (cluster string, svc api.Service, err error) {
+	var matches []api.Cluster
+	var choices []api.Service
+	var owners []string
+	for _, cl := range clusters {
+		var services []api.Service
+		for _, s := range cl.Services {
+			if (coordinator.Grant{Labels: selector}).Matches(s.Labels) {
+				services = append(services, s)
+				choices, owners = append(choices, s), append(owners, cl.Name)
+			}
+		}
+		if len(services) > 0 {
+			matches = append(matches, api.Cluster{Name: cl.Name, Services: services})
+		}
 	}
-	fmt.Printf("  User:      %s\n  Password:  %s\n  Expires:   %s\n",
-		s.Username, s.Password, s.ExpiresAt.Local().Format(time.DateTime))
-
-	if s.Kind == "postgres" {
-		dsn := sessionURL(s, addr)
-		fmt.Printf("\n  URL:       %s\n  psql:      psql '%s'\n", dsn, dsn)
+	switch len(choices) {
+	case 0:
+		what := "matches " + formatLabels(selector)
+		if len(selector) == 0 {
+			what = "is connected"
+		}
+		return "", api.Service{}, &api.Error{Status: 403, Message: "no service you have access to " + what + "; see: tunneler services list"}
+	case 1:
+		return owners[0], choices[0], nil
 	}
-	fmt.Println()
-}
 
-// sessionURL returns the connection URL for the session's local endpoint.
-func sessionURL(s *api.Session, addr *net.TCPAddr) string {
-	u := url.URL{
-		Scheme: s.Kind,
-		User:   url.UserPassword(s.Username, s.Password),
-		Host:   addr.String(),
-		Path:   "/" + s.Database,
-		// The hop to the coordinator is TLS; the loopback hop has no need.
-		RawQuery: "sslmode=disable",
+	ambiguous := &api.Error{
+		Status:  409,
+		Message: fmt.Sprintf("the selector matches %d services; add labels until it matches one (name=... always will)", len(choices)),
+		Matches: matches,
 	}
-	return u.String()
+	if !outputJSON {
+		fmt.Fprintf(os.Stderr, "More than one service matches:\n\n")
+		printServices(os.Stderr, matches, true)
+		fmt.Fprintln(os.Stderr)
+	}
+	// A person can only be asked on a terminal. A character device is not
+	// enough of a test: /dev/null, the usual stdin of scripts, is one.
+	if outputJSON || !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stderr.Fd())) {
+		return "", api.Service{}, ambiguous
+	}
+	fmt.Fprintf(os.Stderr, "Which one? [1-%d]: ", len(choices))
+	var n int
+	if _, err := fmt.Fscanln(os.Stdin, &n); err != nil || n < 1 || n > len(choices) {
+		return "", api.Service{}, ambiguous // no usable answer leaves the selector ambiguous
+	}
+	return owners[n-1], choices[n-1], nil
 }

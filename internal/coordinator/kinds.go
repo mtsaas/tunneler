@@ -47,6 +47,17 @@ type gatewayHandler interface {
 	Error(w http.ResponseWriter, code int, message string)
 }
 
+// access returns the api.Service.Access of the kind.
+func (k kind) access() string {
+	switch {
+	case k.proxy != nil:
+		return api.AccessSession
+	case k.gateway != nil:
+		return api.AccessGateway
+	}
+	return ""
+}
+
 var kinds = map[string]kind{
 	"postgres": {
 		proxy: func(ctx context.Context, client net.Conn, dial dialFunc, s *api.Session, audit *slog.Logger) error {

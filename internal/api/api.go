@@ -58,6 +58,12 @@ type Cluster struct {
 type Service struct {
 	Name     string            `json:"name"`
 	Kind     string            `json:"kind"`
+	// Access says how the service is reached, which follows from its kind:
+	// AccessSession, through a session on which a temporary account is
+	// provisioned, or AccessGateway, per request through the coordinator's
+	// gateway. It is empty for a kind the coordinator does not know, and
+	// from coordinators that predate it, which knew only session kinds.
+	Access   string            `json:"access,omitempty"`
 	Database string            `json:"database,omitempty"` // Postgres: the one database sessions may use
 	Labels   map[string]string `json:"labels"`
 	// Ready reports whether the exit node can reach the service with its
@@ -66,6 +72,12 @@ type Service struct {
 	Ready  bool   `json:"ready"`
 	Status string `json:"status,omitempty"`
 }
+
+// How a service is reached; see Service.Access.
+const (
+	AccessSession = "session"
+	AccessGateway = "gateway"
+)
 
 // SessionRequest asks the coordinator to provision access to the one service,
 // among those the caller may reach, that carries every label in Selector.

@@ -42,7 +42,7 @@ func TestRunCommandEnvironment(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "env")
 	s := &api.Session{Kind: "postgres", Username: "tnl_me", Password: "s3cret", Database: "orders"}
 	addr := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5555}
-	err := runCommand(context.Background(),
+	err := runSessionCommand(context.Background(),
 		[]string{"sh", "-c", `echo "$PGHOST $PGPORT $PGUSER $PGPASSWORD $PGDATABASE $PGSSLMODE $DATABASE_URL" > ` + out}, s, addr)
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +54,7 @@ func TestRunCommandEnvironment(t *testing.T) {
 	}
 
 	// The command's own exit status comes back, for main to exit with.
-	if err := runCommand(context.Background(), []string{"sh", "-c", "exit 3"}, s, addr); err == nil || !strings.Contains(err.Error(), "3") {
+	if err := runSessionCommand(context.Background(), []string{"sh", "-c", "exit 3"}, s, addr); err == nil || !strings.Contains(err.Error(), "3") {
 		t.Errorf("exit status 3: err = %v", err)
 	}
 }

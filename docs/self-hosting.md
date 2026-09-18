@@ -502,15 +502,21 @@ coordinator. This works differently from a database.
    {"group": "<group-id>", "labels": {"cluster": "prod", "kind": "kubernetes"}, "roles": ["tunneler:view"]}
    ```
 
-4. Each person adds the cluster to their kubeconfig one time:
+4. Each person connects to the cluster one time. For a `kubernetes`
+   service, `tunneler connect` adds a context to the kubeconfig and stops:
 
    ```bash
-   tunneler kube config cluster=prod
+   tunneler connect cluster=prod kind=kubernetes
    kubectl get pods
    ```
 
    The kubeconfig contains no credential. `kubectl` gets the login from
-   `tunneler kube token` when it needs it.
+   tunneler when it needs it. To run one command and keep nothing, put the
+   command after `--`:
+
+   ```bash
+   tunneler connect cluster=prod kind=kubernetes -- kubectl get pods
+   ```
 
 The coordinator must have an `https://` address. `kubectl` does not send a
 login to an `http://` address.
@@ -579,7 +585,9 @@ Each person installs the `tunneler` command. See
    and the services that you can reach. If the groups list is empty, the app
    registration does not emit groups. See [section 3](#3-the-entra-app-registration).
 
-4. Connect to a service. Give labels that match exactly one service:
+4. Connect to a service. Give labels that match exactly one service. The
+   same command connects to a database and to a cluster
+   (see [section 5.7](#57-offer-the-cluster-to-kubectl)):
 
    ```bash
    tunneler connect cluster=prod team=shop

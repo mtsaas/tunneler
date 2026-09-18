@@ -24,8 +24,8 @@ func kubeTokenCmd() *cobra.Command {
 		Short: "Print your login as a kubectl credential",
 		Long: `Print your login as a kubectl credential.
 
-kubectl runs this itself, from the context that "tunneler kube config"
-writes. It prints an ExecCredential holding your ID token, renewing the token
+kubectl runs this itself, from the context that "tunneler connect" writes
+for a kubernetes service. It prints an ExecCredential holding your ID token, renewing the token
 first if it can. kubectl asks again when the token expires.
 
 Exits with 3 if you are not logged in.`,

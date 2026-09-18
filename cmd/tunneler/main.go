@@ -77,13 +77,16 @@ $ tunneler connect cluster=prod team=shop -- psql`
 		group(groupCore, "auth", "Log in and check your access", authLoginCmd(), authStatusCmd()),
 		config,
 		connect,
-		group(groupCore, "kube", "Use kubectl through the coordinator", kubeConfigCmd(), kubeTokenCmd()),
 		group(groupCore, "services", "List services you can reach", servicesListCmd()),
 		group(groupCore, "sessions", "List and revoke sessions", sessionsListCmd(), sessionsRevokeCmd()),
 		group(groupServer, "start", "Run the coordinator or an exit node", startCoordinatorCmd(), startExitCmd()),
 		group("", "clusters", "Manage cluster names (admins)", clustersListCmd(), clustersForgetCmd()),
 		versionCmd(),
 	)
+	// Run by kubectl, from the context that connect writes; not by people.
+	kube := group("", "kube", "Plumbing for kubectl", kubeTokenCmd())
+	kube.Hidden = true
+	root.AddCommand(kube)
 	root.AddCommand(helpTopics()...)
 	root.InitDefaultCompletionCmd()
 	if completion, _, err := root.Find([]string{"completion"}); err == nil {
