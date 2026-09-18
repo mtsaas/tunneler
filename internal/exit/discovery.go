@@ -37,10 +37,12 @@ type TunnelService struct {
 }
 
 type TunnelServiceSpec struct {
-	Kind        string      `json:"kind"`
-	Credentials Credentials `json:"credentials"`
-	// GrantableRoles are the roles the coordinator may grant to accounts it
-	// provisions here.
+	Kind string `json:"kind"`
+	// Credentials say where the administrative DSN is kept, for kinds that
+	// have one.
+	Credentials *Credentials `json:"credentials,omitempty"`
+	// GrantableRoles are what the coordinator may grant a user here:
+	// database roles for postgres, groups to impersonate for kubernetes.
 	GrantableRoles []string `json:"grantableRoles"`
 	// Labels select the service in grants and on the command line, besides
 	// the automatic cluster, kind, name and namespace.
@@ -151,7 +153,12 @@ func (d *Discovery) upsert(ctx context.Context, obj any) {
 	key := ts.Namespace + "/" + ts.Name
 	log := d.Log.With("tunnelservice", key)
 
-	dsn, err := d.resolveDSN(ctx, ts)
+	// Only some kinds have credentials to fetch; a kubernetes service is
+	// reached with the exit node's own service account.
+	var dsn string
+	if ts.Spec.Credentials != nil {
+		dsn, err = d.resolveDSN(ctx, ts)
+	}
 	if err != nil {
 		log.Warn("TunnelService credentials cannot be resolved; not offering it", "err", err)
 		d.drop(key)

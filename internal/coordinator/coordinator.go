@@ -20,23 +20,6 @@ import (
 	"github.com/mtsaas/tunneler/internal/postgres"
 )
 
-// A proxyFunc serves one client connection to a service of some kind. It
-// speaks the service's protocol with the client, admits only the session's
-// account, obtains its upstream connection from dial, reports everything the
-// client does to audit, and closes client before returning.
-type proxyFunc func(ctx context.Context, client net.Conn, dial func(context.Context) (net.Conn, error), s *api.Session, audit *slog.Logger) error
-
-// proxies maps the kind a service is advertised with to the proxy that
-// understands its protocol. Supporting a new kind of service means an entry
-// here and a backend in package exit.
-var proxies = map[string]proxyFunc{
-	"postgres": func(ctx context.Context, client net.Conn, dial func(context.Context) (net.Conn, error), s *api.Session, audit *slog.Logger) error {
-		return postgres.Proxy(ctx, client, dial, s.Username, s.Database, func(query string) {
-			audit.Info("query", "sql", query)
-		})
-	},
-}
-
 // Coordinator is the central server.
 type Coordinator struct {
 	cfg   atomic.Pointer[Config] // replaced by Reload
@@ -45,7 +28,9 @@ type Coordinator struct {
 	store *store
 	kube  *kubeVerifier
 	log   *slog.Logger
-	audit *slog.Logger
+	// gateways serve the services of per-request kinds; see gateway.go.
+	gateways gateways
+	audit    *slog.Logger
 
 	mu       sync.Mutex
 	sessions map[string]*session
@@ -231,8 +216,8 @@ func (s *session) attrs() slog.Attr {
 // createSession has an exit node provision an account for id on svc, and
 // returns the session including its password.
 func (c *Coordinator) createSession(ctx context.Context, id *Identity, cluster string, svc api.Service, roles []string) (*api.Session, error) {
-	if proxies[svc.Kind] == nil {
-		return nil, fmt.Errorf("this coordinator cannot proxy services of kind %q", svc.Kind)
+	if kinds[svc.Kind].proxy == nil {
+		return nil, fmt.Errorf("this coordinator cannot open sessions on services of kind %q", svc.Kind)
 	}
 	ttl := time.Duration(c.config().SessionTTL)
 	s := &session{
@@ -351,7 +336,7 @@ func (c *Coordinator) retryDrops(cluster string) {
 // closes conn before returning.
 func (c *Coordinator) serveSession(ctx context.Context, s *session, conn net.Conn) {
 	defer conn.Close()
-	proxy := proxies[s.info.Kind]
+	proxy := kinds[s.info.Kind].proxy
 	if proxy == nil { // a session resumed from a newer coordinator's database
 		c.log.Error("no proxy for session's kind", s.attrs(), "kind", s.info.Kind)
 		return

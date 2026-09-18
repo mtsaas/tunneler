@@ -22,7 +22,7 @@ import (
 
 	"github.com/mtsaas/tunneler/internal/api"
 	"github.com/mtsaas/tunneler/internal/coordinator"
-	"github.com/mtsaas/tunneler/internal/postgres"
+	"github.com/mtsaas/tunneler/internal/kube"
 	"github.com/mtsaas/tunneler/internal/tunnel"
 )
 
@@ -34,54 +34,23 @@ type Config struct {
 // ServiceConfig describes one service the exit node offers.
 type ServiceConfig struct {
 	Name string `json:"name"` // unique within the cluster
-	Kind string `json:"kind"` // only "postgres" so far
-	// DSN is the administrative connection string, using in-cluster DNS.
-	// $VAR references are expanded from the environment, so credentials can
-	// come from a Secret via secretKeyRef rather than sit in the file.
-	DSN string `json:"dsn"`
+	Kind string `json:"kind"` // "postgres" or "kubernetes"; see kinds
+	// DSN is the administrative connection string of a postgres service,
+	// using in-cluster DNS. $VAR references are expanded from the
+	// environment, so credentials can come from a Secret via secretKeyRef
+	// rather than sit in the file.
+	DSN string `json:"dsn,omitempty"`
+	// Kubernetes says how to reach the API server of a kubernetes service.
+	// The zero value, the cluster the exit node runs in, is nearly always
+	// right.
+	Kubernetes kube.Config `json:"kubernetes,omitzero"`
 	// Labels are what grants match and what users select services by. The
 	// labels "cluster", "kind" and "name" are attached automatically.
 	Labels map[string]string `json:"labels"`
-	// Roles are the database roles the coordinator may grant to provisioned
-	// accounts. Anything else is refused, which bounds what a compromised
-	// coordinator can give itself.
+	// Roles are what the coordinator may grant a user here: database roles
+	// for postgres, groups to impersonate for kubernetes. Anything else is
+	// refused, which bounds what a compromised coordinator can give itself.
 	Roles []string `json:"roles"`
-}
-
-// A backend manages one service of some kind from inside its cluster.
-type backend interface {
-	// Addr is the service's address, for logs.
-	Addr() string
-	// Ping checks that the service is reachable with the administrative
-	// credentials.
-	Ping(ctx context.Context) error
-	// Database is the single database sessions are confined to, if the kind
-	// has such a notion.
-	Database() string
-	// Connect opens a connection ready for the coordinator's proxy of this
-	// kind to speak over, with any transport security already negotiated.
-	Connect(ctx context.Context) (net.Conn, error)
-	// CreateRole provisions an account; DropRole removes one and whatever
-	// connections it has; Reap removes accounts past their expiry that were
-	// never dropped.
-	CreateRole(ctx context.Context, r api.Role) error
-	DropRole(ctx context.Context, name string) error
-	Reap(ctx context.Context) (dropped []string, err error)
-}
-
-// backends maps the kind a service declares to what can manage it. The kind
-// is advertised to the coordinator, which picks its protocol proxy by it.
-var backends = map[string]func(dsn string) (backend, error){
-	"postgres": func(dsn string) (backend, error) {
-		s, err := postgres.NewServer(dsn)
-		return postgresBackend{s}, err
-	},
-}
-
-type postgresBackend struct{ *postgres.Server }
-
-func (b postgresBackend) CreateRole(ctx context.Context, r api.Role) error {
-	return b.Server.CreateRole(ctx, postgres.Role(r))
 }
 
 type service struct {
@@ -319,19 +288,23 @@ func newService(sc ServiceConfig) (*service, error) {
 			return nil, fmt.Errorf("label %q is attached automatically and cannot be set", reserved)
 		}
 	}
-	open := backends[sc.Kind]
+	open := kinds[sc.Kind]
 	if open == nil {
 		return nil, fmt.Errorf("unsupported kind %q", sc.Kind)
 	}
-	b, err := open(sc.DSN)
+	b, err := open(sc)
 	if err != nil {
 		return nil, err
 	}
-	return &service{
-		advert:  api.Service{Name: sc.Name, Kind: sc.Kind, Database: b.Database(), Labels: sc.Labels},
+	svc := &service{
+		advert:  api.Service{Name: sc.Name, Kind: sc.Kind, Labels: sc.Labels},
 		roles:   sc.Roles,
 		backend: b,
-	}, nil
+	}
+	if d, ok := b.(describer); ok {
+		d.describe(&svc.advert)
+	}
+	return svc, nil
 }
 
 // Run keeps a control stream open to the coordinator, reconnecting with
@@ -365,7 +338,11 @@ func (a *Agent) Run(ctx context.Context) error {
 
 // reap drops the service's accounts that are past their expiry.
 func (s *service) reap(ctx context.Context, log *slog.Logger) {
-	dropped, err := s.backend.Reap(ctx)
+	accts, ok := s.backend.(accounts)
+	if !ok {
+		return // a kind without accounts leaves nothing behind
+	}
+	dropped, err := accts.Reap(ctx)
 	if len(dropped) > 0 {
 		log.Info("dropped expired accounts that were never revoked", "service", s.advert.Name, "accounts", dropped)
 	}
@@ -465,8 +442,14 @@ func (a *Agent) do(ctx context.Context, req api.ExitRequest, log *slog.Logger) e
 	if svc == nil {
 		return fmt.Errorf("no such service %q", req.Service)
 	}
-	if req.Op != api.OpDial && req.Role == nil {
-		return errors.New("request has no role")
+	accts, _ := svc.backend.(accounts)
+	if req.Op != api.OpDial {
+		switch {
+		case accts == nil:
+			return fmt.Errorf("services of kind %q have no accounts to manage", svc.advert.Kind)
+		case req.Role == nil:
+			return errors.New("request has no role")
+		}
 	}
 
 	switch req.Op {
@@ -499,11 +482,11 @@ func (a *Agent) do(ctx context.Context, req api.ExitRequest, log *slog.Logger) e
 		// because this node was down when they ended.
 		svc.reap(ctx, a.Log)
 		log.Info("provisioning account", "account", req.Role.Name, "member_of", req.Role.MemberOf, "valid_until", req.Role.ValidUntil)
-		return svc.backend.CreateRole(ctx, *req.Role)
+		return accts.CreateRole(ctx, *req.Role)
 
 	case api.OpDropRole:
 		log.Info("dropping account and disconnecting it", "account", req.Role.Name)
-		return svc.backend.DropRole(ctx, req.Role.Name)
+		return accts.DropRole(ctx, req.Role.Name)
 	}
 	return fmt.Errorf("unknown operation %q", req.Op)
 }

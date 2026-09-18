@@ -108,6 +108,18 @@ func (h *hub) services(cluster string) []api.Service {
 	return slices.SortedFunc(maps.Values(byName), func(a, b api.Service) int { return cmp.Compare(a.Name, b.Name) })
 }
 
+// service returns one of the cluster's advertised services.
+func (h *hub) service(cluster, name string) (api.Service, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for e := range h.exits[cluster] {
+		if svc, ok := e.services[name]; ok {
+			return svc, true
+		}
+	}
+	return api.Service{}, false
+}
+
 // serveControl registers conn as the control stream of one of the cluster's
 // exit nodes and blocks until the stream fails.
 func (h *hub) serveControl(cluster string, conn net.Conn) error {

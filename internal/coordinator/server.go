@@ -33,6 +33,7 @@ func (c *Coordinator) Handler() http.Handler {
 	mux.HandleFunc(routeRevokeSession, c.user(c.handleDeleteSession))
 	mux.HandleFunc(routeSessionConnect, c.user(c.handleConnect))
 	mux.HandleFunc(routeSessionEvents, c.user(c.handleSessionEvents))
+	mux.HandleFunc(routeGateway, c.handleGateway) // authenticates for itself, to answer in the kind's manner
 	mux.HandleFunc(routeExitControl, c.exit(c.handleExitControl))
 	mux.HandleFunc(routeExitData, c.exit(c.handleExitData))
 	mux.HandleFunc(routeExitResult, c.exit(c.handleExitResult))
@@ -270,6 +271,15 @@ func (c *Coordinator) handleCreateSession(w http.ResponseWriter, r *http.Request
 		return
 	}
 	cluster, svc := matches[0].Name, matches[0].Services[0]
+	if kinds[svc.Kind].proxy == nil {
+		// Known, but not reached through sessions.
+		hint := fmt.Sprintf("services of kind %q are not reached with connect", svc.Kind)
+		if svc.Kind == "kubernetes" {
+			hint += fmt.Sprintf("; run: tunneler kube config cluster=%s name=%s", cluster, svc.Name)
+		}
+		writeError(w, http.StatusBadRequest, hint)
+		return
+	}
 	if !svc.Ready {
 		writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("%s/%s is registered but its exit node cannot reach it: %s",
 			cluster, svc.Name, svc.Status))
