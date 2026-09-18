@@ -24,13 +24,6 @@ The client is a single Go binary. Install it with Go 1.26 or later:
 go install github.com/mtsaas/tunneler/cmd/tunneler@latest
 ```
 
-While the repository is private, tell Go to fetch it with git instead of the
-public module proxy:
-
-```shell
-GOPRIVATE=github.com/mtsaas go install github.com/mtsaas/tunneler/cmd/tunneler@latest
-```
-
 The coordinator and the exit nodes run from one container image. CI publishes
 it on every merge to `main`:
 
@@ -38,10 +31,7 @@ it on every merge to `main`:
 ghcr.io/mtsaas/tunneler:latest
 ```
 
-The same image serves both roles: `start coordinator` and `start exit`. See
-[deploy/](deploy/) for the manifests.
-
-## How can I use it?
+## How do you use it?
 Tunneler exit nodes connect to a tunneler coordinator using OIDC to authenticate. 
 These exit nodes running within Kubernetes clusters look for CRDs like this that allow your application
 to "register" a service with the tunneler.
