@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -88,6 +89,9 @@ type service struct {
 	advert  api.Service
 	roles   []string
 	backend backend
+	// report, if set, is told whenever the service's readiness is decided,
+	// for example to write status on the TunnelService it came from.
+	report func(ctx context.Context, ready bool, reason, message string)
 }
 
 // A TokenFunc returns the bearer token that proves to the coordinator which
@@ -102,19 +106,156 @@ type Agent struct {
 	Token   TokenFunc // nil sends no credentials, which only a coordinator in insecure_exit_auth mode accepts
 	Log     *slog.Logger
 
-	services  atomic.Pointer[map[string]*service]
-	connected atomic.Bool // a control stream is up
-	control   atomic.Pointer[net.Conn]
+	mu      sync.Mutex
+	sources map[string]map[string]*service // desired services, by the source that defined them
+	ready   map[*service]bool              // desired services already proven reachable
+	kick    chan struct{}                  // wakes reconcile early
+
+	advertised atomic.Pointer[map[string]*service] // desired and reachable: what the coordinator is told
+	connected  atomic.Bool                         // a control stream is up
+	control    atomic.Pointer[net.Conn]
 }
 
 // Healthy reports whether the agent is connected to the coordinator, for
 // readiness probes.
 func (a *Agent) Healthy() bool { return a.connected.Load() }
 
-// LoadConfig reads the services the agent offers from the file at path.
-//
-// ponytail: read once at startup. Roll the Deployment when the file changes
-// (a checksum annotation does it), or add a watcher here.
+// SetServices replaces the services defined by one source, such as "file" or
+// "kubernetes". Sources are merged; a name defined twice is an error logged
+// and the later definition ignored. Nothing is advertised until reconcile
+// has reached it.
+func (a *Agent) SetServices(source string, services map[string]*service) {
+	a.mu.Lock()
+	if a.sources == nil {
+		a.sources = make(map[string]map[string]*service)
+		a.ready = make(map[*service]bool)
+		a.kick = make(chan struct{}, 1)
+	}
+	a.sources[source] = services
+	a.mu.Unlock()
+	select {
+	case a.kick <- struct{}{}:
+	default:
+	}
+}
+
+// desired merges every source's services.
+func (a *Agent) desired() map[string]*service {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make(map[string]*service)
+	for src, services := range a.sources {
+		for name, svc := range services {
+			if _, dup := out[name]; dup {
+				a.Log.Error("service defined by more than one source; ignoring one", "service", name, "source", src)
+				continue
+			}
+			out[name] = svc
+		}
+	}
+	return out
+}
+
+// reconcileInterval is how often unreachable services are tried again.
+const reconcileInterval = 30 * time.Second
+
+// reconcileLoop keeps the advertised set equal to the desired services that
+// are reachable, until ctx is done.
+func (a *Agent) reconcileLoop(ctx context.Context) {
+	for {
+		a.reconcile(ctx)
+		select {
+		case <-a.kick:
+		case <-time.After(reconcileInterval):
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// reconcile tries every desired service not yet known to be reachable, then
+// advertises the reachable ones. A service is never advertised before its
+// credentials have worked: a session on it could only fail. If the advertised
+// set changed, the control stream is dropped so that reconnecting publishes
+// it; connections in flight are unaffected.
+func (a *Agent) reconcile(ctx context.Context) {
+	desired := a.desired()
+
+	var wg sync.WaitGroup
+	results := make(map[*service]error)
+	var mu sync.Mutex
+	for _, svc := range desired {
+		a.mu.Lock()
+		known := a.ready[svc]
+		a.mu.Unlock()
+		if known {
+			continue
+		}
+		wg.Go(func() {
+			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			err := svc.backend.Ping(ctx)
+			mu.Lock()
+			results[svc] = err
+			mu.Unlock()
+		})
+	}
+	wg.Wait()
+	for svc, err := range results {
+		log := a.Log.With("service", svc.advert.Name, "addr", svc.backend.Addr())
+		if err != nil {
+			log.Warn("service is not reachable with its credentials; not advertising it until it is", "err", err)
+			if svc.report != nil {
+				svc.report(ctx, false, "Unreachable", err.Error())
+			}
+			continue
+		}
+		log.Info("service reachable; advertising it")
+		if svc.report != nil {
+			svc.report(ctx, true, "Connected", "reachable with its credentials; advertised to the coordinator")
+		}
+		a.mu.Lock()
+		a.ready[svc] = true
+		a.mu.Unlock()
+	}
+
+	advertised := make(map[string]*service)
+	a.mu.Lock()
+	for name, svc := range desired {
+		if a.ready[svc] {
+			advertised[name] = svc
+		}
+	}
+	for svc := range a.ready { // forget services no longer desired
+		if s, ok := desired[svc.advert.Name]; !ok || s != svc {
+			delete(a.ready, svc)
+		}
+	}
+	a.mu.Unlock()
+
+	if prev := a.advertised.Swap(&advertised); prev != nil && !sameAdverts(*prev, advertised) {
+		a.Log.Info("advertised services changed; republishing to the coordinator",
+			"services", slices.Sorted(maps.Keys(advertised)))
+		if conn := a.control.Load(); conn != nil {
+			(*conn).Close() // Run reconnects with the new set
+		}
+	}
+}
+
+func sameAdverts(a, b map[string]*service) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for name, svc := range a {
+		other, ok := b[name]
+		if !ok || other != svc {
+			return false
+		}
+	}
+	return true
+}
+
+// LoadConfig defines the services in the file at path as the "file" source.
 func (a *Agent) LoadConfig(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -133,6 +274,7 @@ func (a *Agent) LoadConfig(path string) error {
 
 	services := make(map[string]*service)
 	for i, sc := range cfg.Services {
+		sc.DSN = os.ExpandEnv(sc.DSN)
 		svc, err := newService(sc)
 		if err == nil && services[sc.Name] != nil {
 			err = errors.New("duplicate name")
@@ -145,32 +287,12 @@ func (a *Agent) LoadConfig(path string) error {
 		a.Log.Info("service loaded", "service", sc.Name, "kind", sc.Kind, "addr", svc.backend.Addr(),
 			"database", svc.advert.Database, "labels", sc.Labels, "grantable_roles", sc.Roles)
 	}
-	a.services.Store(&services)
+	a.SetServices("file", services)
 	return nil
 }
 
-// CheckServices tries the administrative credentials of every service and
-// logs the outcome, so that a bad password or address shows up at startup
-// rather than at the first user's session. It does not fail: the database
-// may simply not be up yet.
-func (a *Agent) CheckServices(ctx context.Context) {
-	for name, svc := range *a.services.Load() {
-		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		err := svc.backend.Ping(ctx)
-		cancel()
-		if err != nil {
-			a.Log.Warn("service is not reachable with its administrative credentials; sessions on it will fail until it is",
-				"service", name, "addr", svc.backend.Addr(), "err", err)
-			continue
-		}
-		a.Log.Info("service reachable", "service", name, "addr", svc.backend.Addr())
-	}
-}
-
 // WatchConfig reloads the configuration file whenever it changes, until ctx
-// is done. On a change the control stream is dropped so that reconnecting
-// advertises the new services; connections in flight are unaffected. A file
-// that fails to load is logged and ignored.
+// is done. A file that fails to load is logged and ignored.
 //
 // ponytail: polls the modification time. Kubernetes updates a mounted
 // ConfigMap within about a minute anyway.
@@ -194,11 +316,6 @@ func (a *Agent) WatchConfig(ctx context.Context, path string) {
 			a.Log.Info("configuration file changed; reloading", "file", path)
 			if err := a.LoadConfig(path); err != nil {
 				a.Log.Error("configuration reload failed; keeping the previous services", "err", err)
-				continue
-			}
-			a.CheckServices(ctx)
-			if conn := a.control.Load(); conn != nil {
-				(*conn).Close() // Run reconnects and advertises the new set
 			}
 		}
 	}
@@ -217,7 +334,7 @@ func newService(sc ServiceConfig) (*service, error) {
 	if open == nil {
 		return nil, fmt.Errorf("unsupported kind %q", sc.Kind)
 	}
-	b, err := open(os.ExpandEnv(sc.DSN))
+	b, err := open(sc.DSN)
 	if err != nil {
 		return nil, err
 	}
@@ -231,6 +348,11 @@ func newService(sc ServiceConfig) (*service, error) {
 // Run keeps a control stream open to the coordinator, reconnecting with
 // backoff, until ctx is done.
 func (a *Agent) Run(ctx context.Context) error {
+	if a.sources == nil {
+		a.SetServices("none", nil) // initialize even with no source
+	}
+	a.reconcile(ctx) // so that the first hello already carries reachable services
+	go a.reconcileLoop(ctx)
 	go a.reapLoop(ctx)
 	backoff := time.Second
 	for {
@@ -271,7 +393,7 @@ const reapInterval = time.Hour
 // crashed or lost its state, no account outlives its expiry by much.
 func (a *Agent) reapLoop(ctx context.Context) {
 	for {
-		for _, svc := range *a.services.Load() {
+		for _, svc := range *a.advertised.Load() {
 			svc.reap(ctx, a.Log)
 		}
 		select {
@@ -321,7 +443,7 @@ func (a *Agent) serve(ctx context.Context) error {
 	defer context.AfterFunc(ctx, func() { conn.Close() })()
 	a.control.Store(&conn)
 
-	services := *a.services.Load()
+	services := *a.advertised.Load()
 	var hello api.Hello
 	for _, svc := range services {
 		hello.Services = append(hello.Services, svc.advert)
@@ -382,7 +504,7 @@ func (a *Agent) handle(ctx context.Context, req api.ExitRequest) {
 }
 
 func (a *Agent) do(ctx context.Context, req api.ExitRequest, log *slog.Logger) error {
-	svc := (*a.services.Load())[req.Service]
+	svc := (*a.advertised.Load())[req.Service]
 	if svc == nil {
 		return fmt.Errorf("no such service %q", req.Service)
 	}

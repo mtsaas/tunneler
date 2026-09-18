@@ -36,7 +36,7 @@ func TestAzureWorkloadIdentity(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	if _, err := AzureWorkloadIdentity(srv.URL); err == nil {
+	if _, err := NewAzureCredential(); err == nil {
 		t.Fatal("no error outside a workload identity environment")
 	}
 
@@ -47,10 +47,11 @@ func TestAzureWorkloadIdentity(t *testing.T) {
 	t.Setenv("AZURE_AUTHORITY_HOST", srv.URL+"/")
 	t.Setenv("AZURE_FEDERATED_TOKEN_FILE", file)
 
-	token, err := AzureWorkloadIdentity(srv.URL)
+	cred, err := NewAzureCredential()
 	if err != nil {
 		t.Fatal(err)
 	}
+	token := AzureWorkloadIdentity(cred, srv.URL)
 	for range 3 {
 		got, err := token(context.Background())
 		if err != nil || got != "entra-access-token" {
