@@ -74,14 +74,18 @@ func New(cfg *Config, auth Authenticator, log *slog.Logger, audit slog.Handler) 
 	c.hub.onOffer = c.retryDrops
 	c.hub.onWithdraw = c.gateways.drop
 	log.Info("session database opened", "path", cfg.Database, "saved_sessions", len(sessions))
+	// A session that expired while the coordinator was down fires at once,
+	// possibly before the rest are resumed. Its revoke waits for c.mu, as in
+	// createSession, so it finds the map complete and the session's timer set.
+	c.mu.Lock()
 	for _, s := range sessions {
 		if s.revoked {
 			continue // awaiting retryDrops
 		}
-		// A session that expired while the coordinator was down fires at once.
 		c.sessions[s.info.ID] = s
 		s.expiry = time.AfterFunc(time.Until(s.info.ExpiresAt), func() { c.revoke(s.info.ID, "expired") })
 	}
+	c.mu.Unlock()
 	return c, nil
 }
 
