@@ -7,9 +7,11 @@ import "time"
 // AuthConfig tells a client how to authenticate against the coordinator's
 // identity provider.
 type AuthConfig struct {
-	Issuer   string   `json:"issuer"`
-	ClientID string   `json:"client_id"`
-	Scopes   []string `json:"scopes"`
+	Issuer   string `json:"issuer"`
+	ClientID string `json:"client_id"`
+	// Scopes are for older clients. The CLI now asks for the scopes it
+	// needs itself, so that a coordinator cannot widen them.
+	Scopes []string `json:"scopes"`
 }
 
 // AuthStatus is the caller as the coordinator sees them, and what that
