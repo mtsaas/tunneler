@@ -366,8 +366,14 @@ Some rules:
 
 The coordinator reads the configuration file again when the file changes.
 A restart is not necessary, and open connections stay open. New grants apply
-to the next request. If a person loses access, the coordinator revokes their
-session at their next connection.
+to the next request. At each new connection, the coordinator examines the
+session again, with the current grants and the current labels of the
+service. It revokes the session if no grant of the person selects the
+service, or if the grants no longer give a role that the account of the
+session has. The person then runs `tunneler connect` again, and gets a
+session with the current roles. While no exit node offers the service, for
+example while an exit node restarts, the coordinator refuses new
+connections and keeps the session.
 
 The keys `listen`, `database`, `tls`, `oidc`, and `exit_issuer_ca_file` are
 the exception. A change to those applies after a restart. The log names them.
@@ -489,6 +495,18 @@ kubectl get tunnelservices -A -o jsonpath='{range .items[?(@.spec.credentials.ds
 
 Add each secret under its namespace. Examine the list first. Do not list a
 secret for a namespace that does not own it.
+
+CAUTION: Coordinators after version 0.4.0 record the roles of each session.
+When you upgrade the coordinator past 0.4.0, it drops the sessions that the
+earlier coordinator saved. Their clients stop, and people run
+`tunneler connect` again. The accounts of the dropped sessions cannot be
+reached. The exit node removes them after their expiry time. To remove them
+at once, revoke the sessions before you upgrade:
+
+```bash
+tunneler sessions list
+tunneler sessions revoke <id>
+```
 
 ### A rebuilt cluster
 

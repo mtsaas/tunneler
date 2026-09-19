@@ -354,9 +354,28 @@ func (c *Coordinator) handleConnect(w http.ResponseWriter, r *http.Request, id *
 	if s == nil {
 		return
 	}
-	// Group membership may have changed since the session was created.
-	if _, ok := c.config().access(id, s.labels); !ok {
-		c.revoke(s.info.ID, "owner's groups no longer grant access")
+	// The owner's groups, the grants and the service's labels may all have
+	// changed since the session was created. The session goes on only while
+	// the grants reach the service as it is offered now, and still give
+	// every role its account was given.
+	svc, offered := c.hub.service(s.info.Cluster, s.info.Service)
+	if !offered {
+		// Nothing reaches the service until an exit node offers it again,
+		// and the session is checked then. Revoking here would end every
+		// session on a cluster whose exit node merely reconnects.
+		// ponytail: a service withdrawn for good leaves its sessions to
+		// expire.
+		writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("no connected exit node in cluster %q offers service %q", s.info.Cluster, s.info.Service))
+		return
+	}
+	roles, ok := c.config().access(id, svc.Labels)
+	lost := slices.DeleteFunc(slices.Clone(s.roles), func(role string) bool { return slices.Contains(roles, role) })
+	if !ok || len(lost) > 0 {
+		reason := "owner's grants no longer reach the service"
+		if ok {
+			reason = fmt.Sprintf("owner's grants no longer give the roles %q", lost)
+		}
+		c.revoke(s.info.ID, reason)
 		writeError(w, http.StatusForbidden, "access withdrawn")
 		return
 	}
