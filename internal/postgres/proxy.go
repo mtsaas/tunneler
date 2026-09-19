@@ -21,8 +21,8 @@ const (
 )
 
 const (
-	maxStartupLen = 10000    // same bound the Postgres server applies
-	maxAuditLen   = 64 << 10 // query text beyond this is forwarded but not logged
+	maxStartupLen   = 10000   // same bound the Postgres server applies
+	maxStatementLen = 1 << 20 // longest Query or Parse message forwarded, so each is recorded in full
 )
 
 // Proxy serves one client connection: it completes the startup negotiation,
@@ -30,7 +30,9 @@ const (
 // upstream connection from dial, and relays traffic until either side
 // disconnects. Every SQL statement the client sends is passed to audit before
 // it is forwarded; if audit returns an error, the statement is not forwarded
-// and the connection ends.
+// and the connection ends. What audit could not be given in full, a statement
+// longer than maxStatementLen or a fast-path function call, is not forwarded
+// either: the client is told why, and the connection ends.
 //
 // Authentication itself is end-to-end between the client and Postgres; the
 // proxy only observes it. Proxy closes client before returning.
@@ -82,8 +84,19 @@ func Proxy(ctx context.Context, client net.Conn, dial func(context.Context) (net
 	go func() { errc <- relayBackend(client, upstream) }()
 	go func() { errc <- relay(upstream, client, audit) }()
 	err = <-errc
-	client.Close()
 	upstream.Close()
+	if r := (*refusal)(nil); errors.As(err, &r) {
+		// The client is told only once relayBackend, its other writer, stops.
+		//
+		// ponytail: a reply the server was still sending is cut short, and a
+		// client that pipelines may misread the error behind it. One that
+		// waits for each reply, as psql and libpq's large-object calls do,
+		// reads it cleanly.
+		<-errc
+		writeFatal(client, r.sqlstate, r.msg)
+		return err
+	}
+	client.Close()
 	<-errc
 	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
 		err = nil
@@ -187,8 +200,26 @@ func parseStartup(pkt []byte) (map[string]string, error) {
 	return params, nil
 }
 
+// A refusal is relay's reason for not forwarding a message whose work the
+// audit trail could not show in full. Proxy tells the client, then ends the
+// connection.
+type refusal struct{ sqlstate, msg string }
+
+func (r *refusal) Error() string { return "postgres: refused: " + r.msg }
+
+var (
+	errFunctionCall = &refusal{"0A000", "this session only permits SQL statements, not fast-path function calls"}
+	errTooLong      = &refusal{"54000", fmt.Sprintf("this session only permits statements of up to %d MiB, so that each is recorded in full", maxStatementLen>>20)}
+)
+
 // relay forwards frontend messages from src to dst, reporting the text of
 // each Query and Parse message to audit before it is forwarded.
+//
+// Those two are the only messages that carry SQL. Of the rest, only a
+// FunctionCall runs anything that a recorded statement did not prepare: the
+// legacy fast path runs a function the client names by its OID. relay
+// refuses it, and refuses a statement longer than maxStatementLen rather
+// than record part of it.
 //
 // ponytail: Bind parameter values are not audited, only statement text.
 // Decode 'B' messages here if the values matter.
@@ -204,22 +235,31 @@ func relay(dst io.Writer, src io.Reader, audit func(string) error) error {
 		if n < 0 {
 			return fmt.Errorf("postgres: invalid length in %q message", hdr[0])
 		}
-		var head []byte
-		if hdr[0] == 'Q' || hdr[0] == 'P' {
-			head = make([]byte, min(n, maxAuditLen))
-			if _, err := io.ReadFull(br, head); err != nil {
+		// Not a byte of a statement goes on until its record is kept.
+		// What was recorded before it still goes, pipelined or not.
+		var body []byte
+		var refused error
+		switch {
+		case hdr[0] == 'F':
+			refused = errFunctionCall
+		case (hdr[0] == 'Q' || hdr[0] == 'P') && n > maxStatementLen:
+			refused = errTooLong
+		case hdr[0] == 'Q' || hdr[0] == 'P':
+			body = make([]byte, n)
+			if _, err := io.ReadFull(br, body); err != nil {
 				return err
 			}
-			// Not a byte of a statement goes on until its record is kept.
-			// What was recorded before it still goes, pipelined or not.
-			if err := audit(statementText(hdr[0], head, n > maxAuditLen)); err != nil {
-				bw.Flush()
-				return fmt.Errorf("postgres: statement not forwarded: %w", err)
+			if err := audit(statementText(hdr[0], body)); err != nil {
+				refused = fmt.Errorf("postgres: statement not forwarded: %w", err)
 			}
 		}
+		if refused != nil {
+			bw.Flush()
+			return refused
+		}
 		bw.Write(hdr[:])
-		bw.Write(head)
-		if _, err := io.CopyN(bw, br, n-int64(len(head))); err != nil {
+		bw.Write(body)
+		if _, err := io.CopyN(bw, br, n-int64(len(body))); err != nil {
 			return err
 		}
 		// Flush only once the client has nothing more queued, so pipelined
@@ -310,16 +350,13 @@ func withoutChannelBinding(body []byte) []byte {
 	return append(out, 0)
 }
 
-// statementText extracts the SQL from the leading bytes of a Query ('Q') or
-// Parse ('P') message body.
-func statementText(typ byte, body []byte, truncated bool) string {
+// statementText extracts the SQL from a Query ('Q') or Parse ('P') message
+// body. The server, too, ends the statement at its first NUL.
+func statementText(typ byte, body []byte) string {
 	if typ == 'P' { // skip the prepared statement's name
 		_, body, _ = bytes.Cut(body, []byte{0})
 	}
 	body, _, _ = bytes.Cut(body, []byte{0})
-	if truncated {
-		return string(body) + " [truncated]"
-	}
 	return string(body)
 }
 
