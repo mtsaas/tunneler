@@ -539,6 +539,33 @@ do not change:
 kubectl get tunnelservices -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}'
 ```
 
+CAUTION: Exit nodes after version 0.4.0 take nothing from their own
+environment or files for the connection string of a `TunnelService`. The
+string must be a `postgres://` URL with the host, the user, and the
+password, and after the `?` it can set only `sslmode` and
+`connect_timeout`. Earlier exit nodes also accepted the `key=value` form,
+and filled in what was missing from `PGPASSWORD`, `~/.pgpass`, and the
+like. Before you upgrade, make sure that each connection string is
+complete. Otherwise the coordinator stops offering its database, and its
+`TunnelService` shows `InvalidSpec`. See
+[the connection string](services/postgres.md#2-prepare-the-database).
+A service from a file is not affected.
+
+CAUTION: Exit nodes after version 0.4.0 drop the objects that a session
+made, such as tables, when they remove its account. Earlier exit nodes gave
+those objects to the administrative role. If people keep work in tables
+that a session made, tell them before you upgrade. The objects that earlier
+exit nodes gave to the administrative role stay with it, and a function or
+a view among them runs with the privileges of that role. Examine them, and
+drop the ones that you do not need.
+
+CAUTION: Coordinators after version 0.4.0 refuse a statement longer than
+1 MiB, and fast-path function calls. Earlier coordinators recorded only the
+first 64 KiB of a statement, and did not record fast-path calls. Tools that
+send very large statements, or that use the large-object functions of libpq
+or of the JDBC driver, get an error. For example, `pg_dump` of a database
+that has large objects fails. See [Limits](services/postgres.md#8-limits).
+
 ### A rebuilt cluster
 
 A rebuilt AKS cluster has a new issuer URL. The coordinator refuses its exit
