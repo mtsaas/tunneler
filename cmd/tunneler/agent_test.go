@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -149,7 +150,7 @@ func TestExpiredLogin(t *testing.T) {
 	var srv *httptest.Server
 	var mu sync.Mutex
 	var signIns int
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/v1/auth/config":
@@ -179,7 +180,9 @@ func TestExpiredLogin(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	expired := map[string]string{"server": srv.URL, "id_token": idToken(time.Now().Add(-time.Hour)), "refresh_token": "stale"}
+	trust(t, srv)
+	expired := map[string]string{"server": srv.URL, "issuer": srv.URL, "client_id": "tunneler",
+		"id_token": idToken(time.Now().Add(-time.Hour)), "refresh_token": "stale"}
 	t.Cleanup(func() { interactive = func() bool { return false } })
 
 	interactive = func() bool { return false }
@@ -211,6 +214,198 @@ func TestExpiredLogin(t *testing.T) {
 	dir, _ := os.UserConfigDir()
 	if saved, _ := os.ReadFile(filepath.Join(dir, "tunneler", "config.json")); !strings.Contains(string(saved), `"renewed"`) {
 		t.Errorf("the new login was not saved: %s", saved)
+	}
+}
+
+// fakeProvider is an identity provider for tests. It signs anyone in with
+// the device flow, renews any refresh token, and remembers every request
+// made of it, with its form.
+type fakeProvider struct {
+	*httptest.Server
+	tokenURL string // the token endpoint that discovery names; its own if empty
+
+	mu       sync.Mutex
+	requests []string
+}
+
+// newFakeProvider starts a fakeProvider with serve, which is
+// httptest.NewServer or httptest.NewTLSServer.
+func newFakeProvider(t *testing.T, serve func(http.Handler) *httptest.Server, tokenURL string) *fakeProvider {
+	p := &fakeProvider{tokenURL: tokenURL}
+	p.Server = serve(p)
+	t.Cleanup(p.Close)
+	return p
+}
+
+func (p *fakeProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	r.ParseForm()
+	p.mu.Lock()
+	p.requests = append(p.requests, r.URL.Path+"?"+r.Form.Encode())
+	p.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	switch r.URL.Path {
+	case "/.well-known/openid-configuration":
+		tokenURL := p.tokenURL
+		if tokenURL == "" {
+			tokenURL = p.URL + "/token"
+		}
+		json.NewEncoder(w).Encode(map[string]string{"issuer": p.URL, "authorization_endpoint": p.URL + "/authorize",
+			"device_authorization_endpoint": p.URL + "/device", "token_endpoint": tokenURL, "jwks_uri": p.URL + "/keys"})
+	case "/device":
+		json.NewEncoder(w).Encode(map[string]any{"device_code": "d", "user_code": "WXYZ-1234",
+			"verification_uri": "https://login.example.com/device", "expires_in": 60, "interval": 1})
+	case "/token":
+		json.NewEncoder(w).Encode(map[string]any{"access_token": "a", "token_type": "Bearer", "expires_in": 3600,
+			"id_token": idToken(time.Now().Add(time.Hour)), "refresh_token": "renewed"})
+	}
+}
+
+// requested returns every request made of p, as its path and form.
+func (p *fakeProvider) requested() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.requests)
+}
+
+// sent reports whether any request made of p carried s.
+func (p *fakeProvider) sent(s string) bool {
+	return slices.ContainsFunc(p.requested(), func(req string) bool { return strings.Contains(req, s) })
+}
+
+// trust makes the CLI, which uses the default transport, trust srv. Every
+// httptest TLS server has the same certificate, so it trusts them all.
+func trust(t *testing.T, srv *httptest.Server) {
+	defaultTransport := http.DefaultTransport
+	http.DefaultTransport = srv.Client().Transport
+	t.Cleanup(func() { http.DefaultTransport = defaultTransport })
+}
+
+// fakeCoordinator serves the coordinator's auth config, naming the identity
+// provider that issuer returns and asking for more scopes than the CLI
+// needs, and an empty list of clusters.
+func fakeCoordinator(t *testing.T, issuer func() string) *httptest.Server {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/auth/config":
+			json.NewEncoder(w).Encode(api.AuthConfig{Issuer: issuer(), ClientID: "tunneler", Scopes: []string{"openid", "Mail.Read"}})
+		case "/v1/clusters":
+			json.NewEncoder(w).Encode([]api.Cluster{})
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestLoginKeepsItsIssuer holds a login's refresh token to the identity
+// provider that issued it. The coordinator says which identity provider to
+// sign in with, unauthenticated; one that was compromised could otherwise
+// name its own and be sent everyone's refresh token as their ID tokens
+// expired.
+func TestLoginKeepsItsIssuer(t *testing.T) {
+	idp := newFakeProvider(t, httptest.NewTLSServer, "")
+	trust(t, idp.Server)
+	var mu sync.Mutex
+	issuer := idp.URL
+	coord := fakeCoordinator(t, func() string { mu.Lock(); defer mu.Unlock(); return issuer })
+	t.Cleanup(func() { interactive = func() bool { return false } })
+	interactive = func() bool { return false }
+	expired := idToken(time.Now().Add(-time.Hour))
+	login := map[string]string{"server": coord.URL, "issuer": idp.URL, "client_id": "tunneler", "id_token": expired, "refresh_token": "secret"}
+
+	// An expired ID token is renewed where the login was made.
+	if _, errOut, status := cliAs(t, login, "services", "list"); status != 0 || !idp.sent("refresh_token=secret") {
+		t.Fatalf("renewing with the same identity provider: status %d, %s", status, errOut)
+	}
+
+	// Once the coordinator names another, the refresh token is not sent
+	// there. The login is dropped, and a script is told to log in.
+	evil := newFakeProvider(t, httptest.NewTLSServer, "")
+	mu.Lock()
+	issuer = evil.URL
+	mu.Unlock()
+	_, errOut, status := cliAs(t, login, "services", "list")
+	if status != exitNotLoggedIn || !strings.Contains(errOut, "identity provider has changed") || !strings.Contains(errOut, "tunneler auth login") {
+		t.Errorf("from a script: status %d, stderr %q; want %d saying why", status, errOut, exitNotLoggedIn)
+	}
+	dir, _ := os.UserConfigDir()
+	if saved := readFile(t, filepath.Join(dir, "tunneler", "config.json")); strings.Contains(saved, "secret") {
+		t.Errorf("the login was kept: %s", saved)
+	}
+
+	// A person at a terminal is told why and signed in with the new one,
+	// asking for no more than the CLI needs, whatever the coordinator asks.
+	interactive = func() bool { return true }
+	r, w, _ := os.Pipe()
+	stderr := os.Stderr
+	os.Stderr = w
+	_, _, status = cliAs(t, login, "services", "list")
+	w.Close()
+	os.Stderr = stderr
+	told, _ := io.ReadAll(r)
+	if status != 0 || !strings.Contains(string(told), "identity provider has changed") || !strings.Contains(string(told), "Signed in.") {
+		t.Errorf("at a terminal: status %d, stderr:\n%s", status, told)
+	}
+	if !evil.sent("scope=openid+profile+offline_access") || evil.sent("Mail.Read") {
+		t.Errorf("signing in asked for other scopes: %q", evil.requested())
+	}
+	dir, _ = os.UserConfigDir()
+	var saved map[string]string
+	json.Unmarshal([]byte(readFile(t, filepath.Join(dir, "tunneler", "config.json"))), &saved)
+	if saved["issuer"] != evil.URL || saved["refresh_token"] != "renewed" {
+		t.Errorf("the new login was not saved with its issuer: %v", saved)
+	}
+	if evil.sent("secret") {
+		t.Error("the refresh token was sent to the identity provider that the coordinator now names")
+	}
+
+	// A login saved by an earlier version, without its issuer, is not
+	// renewed at all: nothing says where its refresh token may safely go.
+	interactive = func() bool { return false }
+	legacy := map[string]string{"server": coord.URL, "id_token": expired, "refresh_token": "legacy"}
+	if _, errOut, status := cliAs(t, legacy, "services", "list"); status != exitNotLoggedIn {
+		t.Errorf("a login without an issuer: status %d, stderr %q; want %d", status, errOut, exitNotLoggedIn)
+	}
+	if idp.sent("legacy") || evil.sent("legacy") {
+		t.Error("the refresh token of a login without an issuer was sent")
+	}
+}
+
+// TestInsecureIssuer refuses an identity provider that is not https, where
+// the device code and the refresh token would cross the network in plain
+// text. Nothing is sent to it.
+func TestInsecureIssuer(t *testing.T) {
+	plain := newFakeProvider(t, httptest.NewServer, "")
+	downgraded := newFakeProvider(t, httptest.NewTLSServer, plain.URL+"/token")
+	trust(t, downgraded.Server)
+	var mu sync.Mutex
+	issuer := plain.URL
+	coord := fakeCoordinator(t, func() string { mu.Lock(); defer mu.Unlock(); return issuer })
+	expired := idToken(time.Now().Add(-time.Hour))
+
+	if _, errOut, status := cliAs(t, map[string]string{"server": coord.URL}, "auth", "login"); status == 0 || !strings.Contains(errOut, "https") {
+		t.Errorf("logging in with an http issuer: status %d, stderr %q", status, errOut)
+	}
+	login := map[string]string{"server": coord.URL, "issuer": plain.URL, "client_id": "tunneler", "id_token": expired, "refresh_token": "secret"}
+	if _, errOut, status := cliAs(t, login, "services", "list"); status == 0 || !strings.Contains(errOut, "https") {
+		t.Errorf("renewing with an http issuer: status %d, stderr %q", status, errOut)
+	}
+	if got := plain.requested(); len(got) > 0 {
+		t.Errorf("the http issuer was asked %q", got)
+	}
+
+	// An https issuer is refused too if it names an http token endpoint.
+	mu.Lock()
+	issuer = downgraded.URL
+	mu.Unlock()
+	login["issuer"] = downgraded.URL
+	if _, errOut, status := cliAs(t, login, "services", "list"); status == 0 || !strings.Contains(errOut, "https") {
+		t.Errorf("renewing with an http token endpoint: status %d, stderr %q", status, errOut)
+	}
+	if got := plain.requested(); len(got) > 0 {
+		t.Errorf("the http token endpoint was sent %q", got)
 	}
 }
 

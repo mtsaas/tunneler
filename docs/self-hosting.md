@@ -165,7 +165,7 @@ Each key has one purpose.
 | `exit_subject` | The only Kubernetes service account that an exit node can run as. |
 | `exit_issuer_ca_file` | A CA bundle for issuers with private certificates. AKS does not need it. |
 | `trusted_proxies` | The networks of the proxies in front of the coordinator, for example `["10.244.0.0/16"]` for the pods of an ingress. The coordinator then records the address of the person, from `X-Forwarded-For`, and not the address of the proxy. It reads that header only on connections from these networks. |
-| `oidc` | The identity provider from [section 3](#3-the-entra-app-registration). |
+| `oidc` | The identity provider from [section 3](#3-the-entra-app-registration). The issuer must be an `https://` URL. If you change the issuer or the client ID, every person must sign in again. |
 | `admins` | Groups or people who can see and revoke all sessions. |
 | `grants` | Who can reach what. See [section 6](#6-grants-who-can-reach-what). |
 
@@ -369,6 +369,16 @@ Each person installs the `tunneler` command. See
    The login renews itself. When it can no longer renew, for example
    because a sign-in frequency policy requires a new sign-in, the next
    command that you run at a terminal tells you so and signs you in again.
+
+   The client renews the login only with the identity provider that you
+   signed in with. If the coordinator changes to a different identity
+   provider or app registration, the client discards the login and you
+   sign in again. The client does not send your login to an identity
+   provider that does not use `https://`.
+
+   Earlier versions of the client did not record the identity provider.
+   After you upgrade, a login from one of them does not renew, so you
+   sign in once more.
 
 3. Make sure that the coordinator knows you:
 
