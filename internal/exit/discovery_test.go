@@ -1,6 +1,7 @@
 package exit
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -150,6 +152,95 @@ func TestDiscovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, ctx, func() bool { _, ok := agent.desired()["preview-1-postgres"]; return !ok })
+}
+
+// TestDiscoveryQuotesNoSecret points TunnelServices at every key of a Secret,
+// as someone may who can write TunnelServices but not read the Secret, and
+// checks that nothing the keys hold reaches a status, an advertisement or the
+// log.
+func TestDiscoveryQuotesNoSecret(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// A Secret with many keys, as a database operator writes them. Each
+	// value hides the marker wherever an error could quote it. Only "uri" is
+	// a DSN, and its password must not show once it fails to connect.
+	const marker = "zq7x"
+	values := map[string]string{
+		"password":        "zq7x-Adm1n-Passw0rd-zq7x",
+		"pgpass":          "orders-rw:5432:orders:app:zq7x",
+		"jdbc-uri":        "jdbc:postgresql://orders-rw:5432/orders?user=app&password=zq7x",
+		"query-key":       "postgres://app:pw@orders-rw/orders?zq7x=1",
+		"connect-timeout": "postgres://app:pw@orders-rw/orders?connect_timeout=zq7x",
+		"sslmode":         "postgres://app:pw@orders-rw/orders?sslmode=zq7x",
+		// A backtick, colon and space in the database, which is how pgx's
+		// error ends its quote of the conninfo, and then a setting that fails.
+		"cut": "postgres://app:pw@orders-rw/x%60%3A%20zq7x?sslmode=zq7x",
+		"nul": "postgres://app:pw@orders-rw/orders%00zq7x",
+		"uri": "postgres://app:zq7x@127.0.0.1:1/orders?sslmode=disable",
+	}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "orders-app", Namespace: "shop"}, Data: map[string][]byte{}}
+	for key, value := range values {
+		secret.Data[key] = []byte(value)
+	}
+
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{TunnelServiceGVR: "TunnelServiceList"})
+	var out syncBuffer
+	log := slog.New(slog.NewTextHandler(&out, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	agent := &Agent{Log: log}
+	d := &Discovery{Agent: agent, Namespace: "tunneler", Dynamic: dyn, Clients: k8sfake.NewSimpleClientset(secret), Log: log}
+	go d.Run(ctx)
+
+	for key := range values {
+		ts := tunnelService("shop", key, map[string]any{
+			"kind":        "postgres",
+			"credentials": map[string]any{"dsnRef": map[string]any{"kubernetesSecret": map[string]any{"name": "orders-app", "key": key}}},
+		})
+		if _, err := dyn.Resource(TunnelServiceGVR).Namespace("shop").Create(ctx, ts, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor(t, ctx, func() bool { _, ok := agent.desired()["shop-uri"]; return ok })
+	agent.reconcile(ctx)
+
+	for key := range values {
+		want := "InvalidSpec"
+		if key == "uri" {
+			want = "Unreachable"
+		}
+		waitFor(t, ctx, func() bool { c := condition(t, ctx, dyn, "shop", key); return c != nil && c.Reason == want })
+		if c := condition(t, ctx, dyn, "shop", key); strings.Contains(c.Message, marker) {
+			t.Errorf("the status for key %q quotes the Secret: %s", key, c.Message)
+		}
+	}
+	for _, advert := range *agent.adverts.Load() {
+		if strings.Contains(advert.Status, marker) {
+			t.Errorf("the advertisement of %s quotes the Secret: %s", advert.Name, advert.Status)
+		}
+	}
+	if strings.Contains(out.String(), marker) {
+		t.Errorf("the log quotes the Secret:\n%s", out.String())
+	}
+}
+
+// syncBuffer is a log that the test reads while the exit node's goroutines
+// write to it.
+type syncBuffer struct {
+	mu sync.Mutex
+	bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Buffer.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Buffer.String()
 }
 
 func TestDiscoveryKeyVault(t *testing.T) {

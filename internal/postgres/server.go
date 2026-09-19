@@ -52,6 +52,11 @@ var untrustedQuery = []string{"sslmode", "connect_timeout"}
 // operator's credentials, and the DSN's author chooses the server that they
 // would be sent to. So the DSN must give its own host, user and password.
 //
+// Its errors quote nothing of the DSN. A TunnelService's status shows them to
+// anyone who may read the resource, who need not be allowed to read the
+// Secret that the DSN came from, and what arrives as the DSN need not be one:
+// the Secret's key may hold a bare password.
+//
 // ponytail: the DSN must be a postgres:// URL, the form the docs give.
 // libpq's keyword/value form would need a parser of its own here, since pgx's
 // is what merges the environment in.
@@ -86,7 +91,8 @@ func NewUntrustedServer(dsn string) (*Server, error) {
 	}
 	for key, values := range query {
 		if !slices.Contains(untrustedQuery, key) {
-			return nil, fmt.Errorf("the dsn may not set %q: nothing but %s", key, strings.Join(untrustedQuery, " and "))
+			// Not the key, which is the DSN's own text.
+			return nil, fmt.Errorf("the dsn's query may set only %s", strings.Join(untrustedQuery, " and "))
 		}
 		settings[key] = values[len(values)-1]
 	}
@@ -97,13 +103,12 @@ func NewUntrustedServer(dsn string) (*Server, error) {
 	}
 	cfg, err := pgx.ParseConfig(conninfo.String())
 	if err != nil {
-		// Without the conninfo that the error quotes, which the DSN's author
-		// never wrote.
-		why := err.Error()
-		if _, after, ok := strings.Cut(why, "`: "); ok {
-			why = after
-		}
-		return nil, fmt.Errorf("the dsn is not valid: %s", why)
+		// Nothing of err: it quotes the conninfo, and what it wraps can quote
+		// a setting, as strconv does a connect_timeout. Given the checks
+		// above, what pgx can still refuse is a port out of range, an unknown
+		// sslmode, a connect_timeout that is not a number of seconds, a NUL
+		// byte, or a PGSERVICE in the exit node's environment.
+		return nil, errors.New("the dsn is not valid: check its port, sslmode and connect_timeout")
 	}
 	// The password is set only now, so that no parse error can quote it.
 	cfg.Password = password

@@ -118,12 +118,23 @@ subjects:
   - {kind: ServiceAccount, name: tunneler-exit, namespace: tunneler}
 ```
 
+The Role is also what lets the `TunnelService` resources of the namespace
+use the Secret. A person who can create a `TunnelService` there can name
+any key of the Secret, even if that person cannot read the Secret. The exit
+node does not show the value of the key. But it offers a service for any
+key that holds a complete connection string, and the status of that
+service can show the host, the port, the user, and the database of the
+string. So give the exit node a Secret that holds only the connection
+string. Do not give it a Secret with other keys, such as one that a
+database operator makes.
+
 On a development cluster, you can skip the Role and the RoleBinding. Install
 the exit node chart with `--set secretAccess=cluster`. The exit node can then
 read every Secret in the cluster.
 
 CAUTION: Do not use `secretAccess=cluster` on a production cluster. It gives
-the exit node access to all Secrets.
+the exit node access to all Secrets. Then a person who can create a
+`TunnelService` in a namespace can use every Secret of that namespace.
 
 **Option B: Azure Key Vault.** The exit node reads the secret through a
 workload identity. This is the better option for credentials that Terraform
@@ -210,8 +221,10 @@ manages.
    column tells you why. `CredentialsInvalid` means that the exit node
    cannot read the Secret. `InvalidSpec` means that the resource or the
    connection string is not correct, for example a Key Vault secret that is
-   not listed for the namespace, and the message says why. `Unreachable`
-   means that the connection string does not work.
+   not listed for the namespace, and the message says why. The message
+   does not quote the connection string. Compare the string with the form
+   in step 4 of [section 2](#2-prepare-the-database). `Unreachable` means
+   that the connection string does not work.
 
 The coordinator knows this service as `shop-postgres`. It has the labels
 `cluster`, `kind`, `name`, `namespace`, and `team`. When you delete the
@@ -281,7 +294,8 @@ The coordinator writes these records. Each has the
 | The `TunnelService` shows `CredentialsInvalid`: `no answer within 10s` | Key Vault or Entra ID did not answer in time. The exit node stops waiting, so that the other resources are not held up | Make sure that the exit node can reach the vault and Entra ID. The exit node tries again within 5 minutes |
 | The `TunnelService` shows `InvalidSpec`, and the message names a Key Vault secret | The secret is not listed for the namespace | Add the secret to `workloadIdentity.keyVaultSecrets` for the namespace. The message gives the exact value |
 | The `TunnelService` shows `InvalidSpec`: `the dsn must give its own host, user and password` | The connection string does not include one of them. The exit node does not take them from its own environment | Put the complete connection string in the Secret |
-| The `TunnelService` shows `InvalidSpec`: `the dsn may not set "..."` | The connection string sets a parameter that names a file on the exit node, such as `passfile` or `sslkey`, or another parameter that it cannot set | Remove the parameter |
+| The `TunnelService` shows `InvalidSpec`: `the dsn's query may set only sslmode and connect_timeout` | The connection string sets another parameter after the `?`, such as `passfile` or `sslkey`, which name files on the exit node | Remove the parameter |
+| The `TunnelService` shows `InvalidSpec`: `the dsn is not valid: check its port, sslmode and connect_timeout` | The port, `sslmode`, or `connect_timeout` has a value that is not valid. Or the exit node has `PGSERVICE` in its environment | Correct the value. The port is 1 to 65535. `sslmode` is `disable`, `allow`, `prefer`, `require`, `verify-ca`, or `verify-full`. `connect_timeout` is a number of seconds |
 | The `TunnelService` shows `InvalidSpec`: `the dsn is not a URL ...` | The connection string has the `key=value` form, or is not a valid URL | Write it as a `postgres://` URL. Encode special characters in the password |
 | `provisioning access failed: ... role "x" is not grantable` | A grant gives a role that `grantableRoles` does not list | Add the role to `grantableRoles`, or remove it from the grant |
 | `provisioning access failed: ... permission denied to grant role` | The administrative role cannot grant that role | `GRANT x TO tunneler_admin WITH ADMIN OPTION` |
