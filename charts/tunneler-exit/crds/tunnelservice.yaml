@@ -63,8 +63,12 @@ spec:
                   properties:
                     dsnRef:
                       description: >-
-                        Where the complete administrative connection string is
-                        kept. Exactly one of kubernetesSecret and azureKeyVault.
+                        Where the administrative connection string is kept. It
+                        must be a postgres:// URL that gives the host, the user
+                        and the password; after the "?" it can set only
+                        sslmode and connect_timeout. The exit node adds nothing
+                        from its own environment or files. Exactly one of
+                        kubernetesSecret and azureKeyVault.
                       type: object
                       oneOf:
                         - required: [kubernetesSecret]
