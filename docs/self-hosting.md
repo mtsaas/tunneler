@@ -508,6 +508,37 @@ tunneler sessions list
 tunneler sessions revoke <id>
 ```
 
+CAUTION: Exit nodes after version 0.4.0 name the service of a
+`TunnelService` `<namespace>/<name>`, for example `shop/postgres`. Earlier
+exit nodes named it `shop-postgres`. With a hyphen, a namespace could give
+its service the name of a service in a different namespace, and get the
+grants and the connections for that name. A service in the namespace of the
+exit node keeps its name, and so does a service from a file. A `kubernetes`
+service is in the namespace of the exit node, so kubeconfig contexts do not
+change. For each service that has a new name:
+
+- A grant that selects the old name, for example
+  `"name": "shop-postgres"`, stops reaching the service. Before you
+  upgrade, add a grant with the new name. After the upgrade, remove the old
+  grant. A grant that selects by `namespace` or by your own labels needs no
+  change.
+- People and scripts that use `name=shop-postgres` or
+  `--service shop-postgres` must use `shop/postgres`.
+- The local port of the service changes, because the client calculates it
+  from the name. Change the port of saved connections in database tools.
+- A session that is open during the upgrade stops working. Run
+  `tunneler connect` again. The exit node removes the old account after it
+  expires.
+- The `service` field of the audit trail has the old name before the
+  upgrade and the new name after it. Search for both.
+
+This command prints the new names. Names in the namespace of the exit node
+do not change:
+
+```bash
+kubectl get tunnelservices -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}'
+```
+
 ### A rebuilt cluster
 
 A rebuilt AKS cluster has a new issuer URL. The coordinator refuses its exit

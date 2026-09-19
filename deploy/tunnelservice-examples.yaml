@@ -1,5 +1,5 @@
 # A preview environment: the DSN already rendered by the platform chart into
-# a Secret in the same namespace. Advertised as preview-pr-123-postgres.
+# a Secret in the same namespace. Advertised as preview-pr-123/postgres.
 apiVersion: tunneler.marconet.com/v1alpha1
 kind: TunnelService
 metadata:
@@ -27,7 +27,7 @@ spec:
 #       platform-acme:
 #         - https://kv-platform-acme.vault.azure.net/secrets/tunneler-db-uri
 #
-# Advertised as platform-acme-postgres.
+# Advertised as platform-acme/postgres.
 apiVersion: tunneler.marconet.com/v1alpha1
 kind: TunnelService
 metadata:

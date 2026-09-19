@@ -93,9 +93,8 @@ type Agent struct {
 func (a *Agent) Healthy() bool { return a.connected.Load() }
 
 // SetServices replaces the services defined by one source, such as "file" or
-// "kubernetes". Sources are merged; a name defined twice is an error logged
-// and the later definition ignored. Nothing is advertised until reconcile
-// has reached it.
+// "kubernetes". Sources are merged by desired. Nothing is advertised until
+// reconcile has reached it.
 func (a *Agent) SetServices(source string, services map[string]*service) {
 	a.mu.Lock()
 	if a.sources == nil {
@@ -112,15 +111,23 @@ func (a *Agent) SetServices(source string, services map[string]*service) {
 	}
 }
 
-// desired merges every source's services.
+// desired merges every source's services. Where two define the same name,
+// the file's definition wins, for it is the operator's and a TunnelService
+// may be a tenant's. Other sources are taken in order of name, so that the
+// same definition wins on every reconcile. A definition that loses is
+// logged and ignored.
 func (a *Agent) desired() map[string]*service {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	out := make(map[string]*service)
-	for src, services := range a.sources {
-		for name, svc := range services {
+	maps.Copy(out, a.sources["file"])
+	for _, src := range slices.Sorted(maps.Keys(a.sources)) {
+		if src == "file" {
+			continue
+		}
+		for name, svc := range a.sources[src] {
 			if _, dup := out[name]; dup {
-				a.Log.Error("service defined by more than one source; ignoring one", "service", name, "source", src)
+				a.Log.Error("service defined by more than one source; ignoring this one", "service", name, "source", src)
 				continue
 			}
 			out[name] = svc
