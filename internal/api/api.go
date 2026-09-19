@@ -39,9 +39,12 @@ type Grant struct {
 // ClusterBinding is a cluster name and the cluster that owns it, for admins.
 type ClusterBinding struct {
 	Name string `json:"name"`
-	// Issuer is the OIDC issuer the name is bound to: only a cluster with
-	// this issuer may use the name. It is empty for a cluster whose exit
-	// nodes authenticate some other way, which binds nothing.
+	// Issuer is what the name is bound to, and only that may use the name.
+	// For exit nodes that present a service account token, it is their
+	// cluster's OIDC issuer. For exit nodes that present a token from the
+	// identity provider, it is the role they hold, exit:<name>. It is empty
+	// for a name with exit nodes but no binding: under insecure_exit_auth,
+	// which binds nothing, or just after the name was released.
 	Issuer    string `json:"issuer,omitempty"`
 	ExitNodes int    `json:"exit_nodes"` // connected right now
 }

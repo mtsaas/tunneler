@@ -6,6 +6,8 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+
+	"github.com/mtsaas/tunneler/internal/coordinator"
 )
 
 func clustersListCmd() *cobra.Command {
@@ -14,10 +16,12 @@ func clustersListCmd() *cobra.Command {
 		Short: "List cluster names and the clusters that own them",
 		Long: `List cluster names and the clusters that own them.
 
-A cluster name belongs to the first cluster that uses it, identified by its
-OIDC issuer. Exit nodes from any other issuer are refused the name. If a
-rebuilt cluster is refused, compare its issuer with the one listed here, then
-release the name with "tunneler clusters forget".`,
+A cluster name belongs to the first cluster that uses it. Exit nodes that
+present a service account token bind the name to their cluster's OIDC
+issuer. Exit nodes that present a token from the identity provider bind it
+to the role they hold, exit:NAME. Any other exit node is refused the name.
+If a rebuilt cluster is refused, compare its issuer with the one listed
+here, then release the name with "tunneler clusters forget".`,
 		Args: usage(cobra.NoArgs),
 		Example: `$ tunneler clusters list
 $ tunneler clusters list --output json`,
@@ -38,8 +42,11 @@ $ tunneler clusters list --output json`,
 			fmt.Fprintln(w, "CLUSTER\tEXIT NODES\tOWNED BY ISSUER")
 			for _, b := range bindings {
 				issuer := b.Issuer
-				if issuer == "" {
-					issuer = "(not bound: its exit nodes do not use a cluster token)"
+				switch issuer {
+				case "":
+					issuer = "(not bound)"
+				case coordinator.ExitRole(b.Name):
+					issuer = "(no issuer: the identity provider's role " + issuer + ")"
 				}
 				fmt.Fprintf(w, "%s\t%d\t%s\n", b.Name, b.ExitNodes, issuer)
 			}

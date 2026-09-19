@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -135,5 +136,84 @@ func TestKubeExitAuth(t *testing.T) {
 	}
 	if admitted(h, "prod", prodA.token(t, sa, "tunneler")) {
 		t.Error("old issuer admitted after rebind")
+	}
+}
+
+// TestRoleBindsClusterName checks that a name held by exit nodes with the
+// identity provider's role is refused to every issuer, and the reverse, so
+// that neither kind of exit node can join a cluster of the other kind.
+func TestRoleBindsClusterName(t *testing.T) {
+	aks := newFakeIssuer(t) // any cluster of the tenant: its issuer matches exit_issuers
+	const sa = "system:serviceaccount:tunneler:tunneler-exit"
+
+	var logs syncBuffer
+	log := slog.New(slog.NewTextHandler(&logs, nil))
+	cfg := &coordinator.Config{
+		Database:     filepath.Join(t.TempDir(), "t.db"),
+		SessionTTL:   coordinator.Duration(time.Hour),
+		ExitAudience: "tunneler",
+		ExitSubject:  sa,
+		ExitIssuers:  []string{aks.url},
+		Admins:       []string{"admins"},
+	}
+	c, err := coordinator.New(cfg, func(_ context.Context, token string) (*coordinator.Identity, error) {
+		switch token {
+		case "workload.prod.jwt":
+			return &coordinator.Identity{Subject: "mi-prod", Roles: []string{coordinator.ExitRole("prod")}}, nil
+		case "workload.dev.jwt":
+			return &coordinator.Identity{Subject: "mi-dev", Roles: []string{coordinator.ExitRole("dev")}}, nil
+		case "admin":
+			return &coordinator.Identity{Subject: "a", Username: "admin@example.com", Groups: []string{"admins"}}, nil
+		}
+		return nil, errors.New("bad token")
+	}, log, log.Handler())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	h := c.Handler()
+
+	for _, tt := range []struct {
+		name, cluster, token string
+		admitted             bool
+	}{
+		{"the role binds the name", "prod", "workload.prod.jwt", true},
+		{"the role again", "prod", "workload.prod.jwt", true},
+		{"an issuer claiming the role's name", "prod", aks.token(t, sa, "tunneler"), false},
+		{"an issuer binds another name", "dev", aks.token(t, sa, "tunneler"), true},
+		{"the role claiming the issuer's name", "dev", "workload.dev.jwt", false},
+	} {
+		if got := admitted(h, tt.cluster, tt.token); got != tt.admitted {
+			t.Errorf("%s: admitted = %v, want %v", tt.name, got, tt.admitted)
+		}
+	}
+	// The refusal names the owner, which an admin needs to act on it.
+	if want := `cluster \"dev\" is bound to issuer ` + aks.url; !strings.Contains(logs.String(), want) {
+		t.Errorf("log lacks %q:\n%s", want, logs.String())
+	}
+
+	do := func(method, path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, nil)
+		req.Header.Set("Authorization", "Bearer admin")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	var bindings []api.ClusterBinding
+	json.NewDecoder(do("GET", "/v1/clusters/bindings").Body).Decode(&bindings)
+	if len(bindings) != 2 || bindings[0].Name != "dev" || bindings[0].Issuer != aks.url ||
+		bindings[1].Name != "prod" || bindings[1].Issuer != coordinator.ExitRole("prod") {
+		t.Errorf("bindings = %+v", bindings)
+	}
+
+	// Forgetting a name the role holds releases it like any other.
+	if rec := do("DELETE", "/v1/clusters/prod/binding"); rec.Code != http.StatusNoContent {
+		t.Fatalf("forget: status %d", rec.Code)
+	}
+	if !admitted(h, "prod", aks.token(t, sa, "tunneler")) {
+		t.Error("issuer not admitted after the role's name was released")
+	}
+	if admitted(h, "prod", "workload.prod.jwt") {
+		t.Error("role admitted after an issuer bound the released name")
 	}
 }
