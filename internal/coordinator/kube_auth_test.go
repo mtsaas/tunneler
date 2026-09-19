@@ -4,13 +4,18 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,27 +26,49 @@ import (
 	"github.com/mtsaas/tunneler/internal/coordinator"
 )
 
-// fakeIssuer stands in for a Kubernetes cluster's OIDC issuer.
+// fakeIssuer stands in for a Kubernetes cluster's OIDC issuer. Like a
+// forger's, it serves its discovery document at every path but /keys, and it
+// counts the requests it is sent.
 type fakeIssuer struct {
-	url string
-	key *rsa.PrivateKey
+	url      string // where it serves
+	issuer   string // what its tokens and discovery document name; url, unless forged
+	cert     *x509.Certificate
+	key      *rsa.PrivateKey
+	requests atomic.Int32
 }
 
 func newFakeIssuer(t *testing.T) *fakeIssuer {
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
 	iss := &fakeIssuer{key: key}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{"issuer": iss.url, "jwks_uri": iss.url + "/keys",
+	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"issuer": iss.issuer, "jwks_uri": iss.url + "/keys",
 			"id_token_signing_alg_values_supported": []string{"RS256"}})
 	})
 	mux.HandleFunc("GET /keys", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &key.PublicKey, KeyID: "k", Algorithm: "RS256"}}})
 	})
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		iss.requests.Add(1)
+		mux.ServeHTTP(w, r)
+	}))
 	t.Cleanup(srv.Close)
-	iss.url = srv.URL
+	iss.url, iss.issuer, iss.cert = srv.URL, srv.URL, srv.Certificate()
 	return iss
+}
+
+// caFile writes the issuers' certificates to a PEM bundle, for
+// exit_issuer_ca_file.
+func caFile(t *testing.T, issuers ...*fakeIssuer) string {
+	var bundle []byte
+	for _, iss := range issuers {
+		bundle = append(bundle, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: iss.cert.Raw})...)
+	}
+	file := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(file, bundle, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return file
 }
 
 func (iss *fakeIssuer) token(t *testing.T, subject, audience string) string {
@@ -51,7 +78,7 @@ func (iss *fakeIssuer) token(t *testing.T, subject, audience string) string {
 		t.Fatal(err)
 	}
 	raw, err := jwt.Signed(signer).Claims(jwt.Claims{
-		Issuer: iss.url, Subject: subject, Audience: jwt.Audience{audience},
+		Issuer: iss.issuer, Subject: subject, Audience: jwt.Audience{audience},
 		Expiry: jwt.NewNumericDate(time.Now().Add(time.Hour)),
 	}).Serialize()
 	if err != nil {
@@ -73,7 +100,8 @@ func TestKubeExitAuth(t *testing.T) {
 		ExitSubject:  sa,
 		// Trust the two "AKS" issuers, but not the stranger. (Real patterns
 		// have wildcards; test servers differ only by port, so name them.)
-		ExitIssuers: []string{prodA.url, prodB.url},
+		ExitIssuers:      []string{prodA.url, prodB.url},
+		ExitIssuerCAFile: caFile(t, prodA, prodB, stranger),
 	}
 	c, err := coordinator.New(cfg, func(context.Context, string) (*coordinator.Identity, error) {
 		return nil, errors.New("not an identity provider token")
@@ -135,5 +163,45 @@ func TestKubeExitAuth(t *testing.T) {
 	}
 	if admitted(h, "prod", prodA.token(t, sa, "tunneler")) {
 		t.Error("old issuer admitted after rebind")
+	}
+}
+
+// TestForgedExitIssuer checks that an issuer that matches a pattern as text,
+// but names another host as a URL, is refused without that host being
+// contacted. Each forger's discovery document names the forged issuer, so a
+// coordinator that fetched it would admit the forger's token.
+func TestForgedExitIssuer(t *testing.T) {
+	const tenant = "11111111-2222-3333-4444-555555555555"
+	const sa = "system:serviceaccount:tunneler:tunneler-exit"
+	var forgers []*fakeIssuer
+	for _, delim := range []string{"?x=", "#"} {
+		f := newFakeIssuer(t)
+		f.issuer = f.url + delim + ".oic.prod-aks.azure.com/" + tenant + "/y/"
+		forgers = append(forgers, f)
+	}
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	c, err := coordinator.New(&coordinator.Config{
+		Database:         filepath.Join(t.TempDir(), "t.db"),
+		SessionTTL:       coordinator.Duration(time.Hour),
+		ExitAudience:     "tunneler",
+		ExitSubject:      sa,
+		ExitIssuers:      []string{"https://*.oic.prod-aks.azure.com/" + tenant + "/*/"},
+		ExitIssuerCAFile: caFile(t, forgers...),
+	}, func(context.Context, string) (*coordinator.Identity, error) {
+		return nil, errors.New("not an identity provider token")
+	}, log, log.Handler())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	for i, f := range forgers {
+		if admitted(c.Handler(), fmt.Sprint("forged-", i), f.token(t, sa, "tunneler")) {
+			t.Errorf("%s: admitted", f.issuer)
+		}
+		if n := f.requests.Load(); n != 0 {
+			t.Errorf("%s: coordinator sent %d requests to %s", f.issuer, n, f.url)
+		}
 	}
 }
