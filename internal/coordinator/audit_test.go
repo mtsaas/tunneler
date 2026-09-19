@@ -3,11 +3,15 @@ package coordinator_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,7 +32,7 @@ func TestAuditRecordsShareFields(t *testing.T) {
 	auth := func(context.Context, string) (*coordinator.Identity, error) {
 		return &coordinator.Identity{Subject: "1", Username: "alice@example.com", Groups: []string{"admins"}}, nil
 	}
-	c, err := coordinator.New(cfg, auth, quiet, slog.New(slog.NewJSONHandler(&audit, nil)))
+	c, err := coordinator.New(cfg, auth, quiet, slog.NewJSONHandler(&audit, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,6 +54,53 @@ func TestAuditRecordsShareFields(t *testing.T) {
 	if denied := records[0]; denied["cluster"] != "prod" || denied["service"] != "orders" {
 		t.Errorf("a refusal should name what the person asked for: %v", denied)
 	}
+}
+
+// TestUnrecordedGatewayRequests has the audit sink fail. A Kubernetes
+// request that stays open, such as a watch or an exec, is refused: it could
+// run for hours with nothing on the trail. One that completes at once goes
+// ahead, and the record it loses is reported on the operational log.
+func TestUnrecordedGatewayRequests(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var failing atomic.Bool
+	r := newGatewayRig(t, failingSink{slog.DiscardHandler, &failing},
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "{}") }))
+	r.startExit(ctx, t, "kubernetes")
+	r.await(ctx, t, "kubernetes")
+
+	failing.Store(true)
+	if code, body := r.fetch(ctx, t, "kubernetes", "/api/v1/pods?watch=true"); code != http.StatusServiceUnavailable || !strings.Contains(body, "audit trail") {
+		t.Errorf("a watch the trail cannot record: status %d, body %s; want 503 saying why", code, body)
+	}
+	if code, body := r.fetch(ctx, t, "kubernetes", "/api/v1/pods"); code != http.StatusOK {
+		t.Errorf("a request that completes at once: status %d, body %s; want it served", code, body)
+	}
+	if !strings.Contains(r.ops.String(), "the audit sink failed to take a record") {
+		t.Errorf("the lost record is not on the operational log:\n%s", r.ops.String())
+	}
+}
+
+// failingSink is an audit sink that refuses every record while fail is set,
+// as a sink on a full disk would.
+type failingSink struct {
+	slog.Handler
+	fail *atomic.Bool
+}
+
+func (s failingSink) Handle(ctx context.Context, r slog.Record) error {
+	if s.fail.Load() {
+		return errors.New("no space left on device")
+	}
+	return s.Handler.Handle(ctx, r)
+}
+
+func (s failingSink) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return failingSink{s.Handler.WithAttrs(attrs), s.fail}
+}
+
+func (s failingSink) WithGroup(name string) slog.Handler {
+	return failingSink{s.Handler.WithGroup(name), s.fail}
 }
 
 // auditRecords parses an audit trail of one JSON record per line.

@@ -71,7 +71,13 @@ func (g *Gateway) ServeAs(w http.ResponseWriter, r *http.Request, user string, g
 	// of exec, attach and port-forward.
 	longLived := info.Verb == "watch" || r.Header.Get("Upgrade") != "" || r.URL.Query().Get("follow") == "true"
 	if longLived {
-		audit.Info("kubernetes request started")
+		// It may stay open for hours, so it goes ahead only once it is on the
+		// trail.
+		started := slog.NewRecord(time.Now(), slog.LevelInfo, "kubernetes request started", 0)
+		if err := audit.Handler().Handle(r.Context(), started); err != nil {
+			WriteStatus(w, http.StatusServiceUnavailable, "tunneler: the audit trail could not record this request, so it was refused")
+			return
+		}
 	}
 	start := time.Now()
 	rec := &statusRecorder{ResponseWriter: w}

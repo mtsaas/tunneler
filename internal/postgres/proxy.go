@@ -29,11 +29,12 @@ const (
 // checks that the client is logging in as role to database, obtains an
 // upstream connection from dial, and relays traffic until either side
 // disconnects. Every SQL statement the client sends is passed to audit before
-// it is forwarded.
+// it is forwarded; if audit returns an error, the statement is not forwarded
+// and the connection ends.
 //
 // Authentication itself is end-to-end between the client and Postgres; the
 // proxy only observes it. Proxy closes client before returning.
-func Proxy(ctx context.Context, client net.Conn, dial func(context.Context) (net.Conn, error), role, database string, audit func(query string)) error {
+func Proxy(ctx context.Context, client net.Conn, dial func(context.Context) (net.Conn, error), role, database string, audit func(query string) error) error {
 	defer client.Close()
 
 	pkt, err := readStartup(client)
@@ -191,7 +192,7 @@ func parseStartup(pkt []byte) (map[string]string, error) {
 //
 // ponytail: Bind parameter values are not audited, only statement text.
 // Decode 'B' messages here if the values matter.
-func relay(dst io.Writer, src io.Reader, audit func(string)) error {
+func relay(dst io.Writer, src io.Reader, audit func(string) error) error {
 	br := bufio.NewReader(src)
 	bw := bufio.NewWriter(dst)
 	for {
@@ -203,18 +204,22 @@ func relay(dst io.Writer, src io.Reader, audit func(string)) error {
 		if n < 0 {
 			return fmt.Errorf("postgres: invalid length in %q message", hdr[0])
 		}
-		bw.Write(hdr[:])
-
+		var head []byte
 		if hdr[0] == 'Q' || hdr[0] == 'P' {
-			head := make([]byte, min(n, maxAuditLen))
+			head = make([]byte, min(n, maxAuditLen))
 			if _, err := io.ReadFull(br, head); err != nil {
 				return err
 			}
-			audit(statementText(hdr[0], head, n > maxAuditLen))
-			bw.Write(head)
-			n -= int64(len(head))
+			// Not a byte of a statement goes on until its record is kept.
+			// What was recorded before it still goes, pipelined or not.
+			if err := audit(statementText(hdr[0], head, n > maxAuditLen)); err != nil {
+				bw.Flush()
+				return fmt.Errorf("postgres: statement not forwarded: %w", err)
+			}
 		}
-		if _, err := io.CopyN(bw, br, n); err != nil {
+		bw.Write(hdr[:])
+		bw.Write(head)
+		if _, err := io.CopyN(bw, br, n-int64(len(head))); err != nil {
 			return err
 		}
 		// Flush only once the client has nothing more queued, so pipelined

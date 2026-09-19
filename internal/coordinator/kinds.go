@@ -28,7 +28,8 @@ type kind struct {
 	// session, an exit node provisions them a temporary account, and each
 	// connection of theirs is handed to proxy, which speaks the service's
 	// protocol with the client, admits only the session's account, records
-	// what the client does on audit, and closes client before returning.
+	// what the client does on audit, refusing what is not recorded first
+	// (see mustAudit), and closes client before returning.
 	proxy func(ctx context.Context, client net.Conn, dial dialFunc, s *api.Session, audit *slog.Logger) error
 
 	// gateway is set for kinds reached per request, over HTTP. There is no
@@ -40,7 +41,8 @@ type kind struct {
 // A gatewayHandler serves one service of a per-request kind.
 type gatewayHandler interface {
 	// ServeAs serves r, whose path is the service's own, on behalf of user,
-	// who holds roles. It records what the request did on audit.
+	// who holds roles. It records what the request did on audit, and refuses
+	// a request that stays open unless its start is recorded first.
 	ServeAs(w http.ResponseWriter, r *http.Request, user string, roles []string, audit *slog.Logger)
 	// Error answers a request that will not be served, in the manner the
 	// kind's clients expect.
@@ -61,8 +63,8 @@ func (k kind) access() string {
 var kinds = map[string]kind{
 	"postgres": {
 		proxy: func(ctx context.Context, client net.Conn, dial dialFunc, s *api.Session, audit *slog.Logger) error {
-			return postgres.Proxy(ctx, client, dial, s.Username, s.Database, func(query string) {
-				audit.Info("query", "sql", query)
+			return postgres.Proxy(ctx, client, dial, s.Username, s.Database, func(query string) error {
+				return mustAudit(ctx, audit, "query", "sql", query)
 			})
 		},
 	},

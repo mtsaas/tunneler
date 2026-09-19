@@ -294,6 +294,11 @@ func (c *Coordinator) handleCreateSession(w http.ResponseWriter, r *http.Request
 	roles, _ := c.config().access(id, svc.Labels)
 
 	s, err := c.createSession(r.Context(), id, cluster, svc, roles)
+	if errors.Is(err, errUnaudited) {
+		// The sink's own error is for the operator, who has it on the log.
+		writeError(w, http.StatusServiceUnavailable, errUnaudited.Error())
+		return
+	}
 	if err != nil {
 		c.log.Error("creating session", "user", id.Username, "cluster", cluster, "service", svc.Name, "err", err)
 		writeError(w, http.StatusBadGateway, "provisioning access failed: "+err.Error())
