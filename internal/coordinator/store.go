@@ -38,7 +38,7 @@ func openStore(path string) (*store, error) {
 	if err == nil {
 		_, err = db.Exec(`CREATE TABLE IF NOT EXISTS clusters (
 			name   TEXT PRIMARY KEY,
-			issuer TEXT NOT NULL -- the OIDC issuer whose tokens may claim this name
+			issuer TEXT NOT NULL -- the OIDC issuer whose tokens may claim this name, or the role exit:<name> that may
 		) STRICT`)
 	}
 	if err != nil {
@@ -48,17 +48,19 @@ func openStore(path string) (*store, error) {
 	return &store{db}, nil
 }
 
-// bindCluster binds a cluster name to an issuer if it is not yet bound, and
-// returns the issuer the name is bound to afterwards.
-func (st *store) bindCluster(name, issuer string) (bound string, err error) {
-	if _, err := st.db.Exec(`INSERT OR IGNORE INTO clusters VALUES (?, ?)`, name, issuer); err != nil {
+// bindCluster binds a cluster name to owner, an issuer or the role
+// exit:<name>, if it is not yet bound, and returns the name's owner
+// afterwards.
+func (st *store) bindCluster(name, owner string) (bound string, err error) {
+	if _, err := st.db.Exec(`INSERT OR IGNORE INTO clusters VALUES (?, ?)`, name, owner); err != nil {
 		return "", err
 	}
 	err = st.db.QueryRow(`SELECT issuer FROM clusters WHERE name = ?`, name).Scan(&bound)
 	return bound, err
 }
 
-// clusterBindings returns the issuer each bound cluster name belongs to.
+// clusterBindings returns the issuer or role each bound cluster name
+// belongs to.
 func (st *store) clusterBindings() (map[string]string, error) {
 	rows, err := st.db.Query(`SELECT name, issuer FROM clusters`)
 	if err != nil {
@@ -76,7 +78,7 @@ func (st *store) clusterBindings() (map[string]string, error) {
 	return bindings, rows.Err()
 }
 
-// unbindCluster releases a cluster name so that another issuer may claim it.
+// unbindCluster releases a cluster name so that another owner may claim it.
 func (st *store) unbindCluster(name string) error {
 	_, err := st.db.Exec(`DELETE FROM clusters WHERE name = ?`, name)
 	return err

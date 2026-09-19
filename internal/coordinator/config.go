@@ -42,8 +42,9 @@ type Config struct {
 	//
 	//	https://*.oic.prod-aks.azure.com/<tenant-id>/*/
 	//
-	// A cluster name is bound to the first issuer that presents it, and other
-	// issuers are then refused that name. Nothing is configured per cluster.
+	// A cluster name is bound to the first issuer that presents it, or to
+	// ExitRole if a workload identity holding that role presents it first,
+	// and is then refused to every other. Nothing is configured per cluster.
 	ExitIssuers []string `json:"exit_issuers"`
 	// ExitAudience is the audience such tokens must carry; default "tunneler".
 	ExitAudience string `json:"exit_audience"`

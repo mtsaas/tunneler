@@ -291,6 +291,10 @@ token and rotates it. The exit node presents it to the coordinator.
 
    CAUTION: Use each cluster name once. The coordinator binds a name to the
    first cluster that presents it, and refuses the name to other clusters.
+   An exit node that presents a service account token binds the name to the
+   issuer URL of its cluster. An exit node that presents an Entra token with
+   the app role `exit:<name>` binds the name to that role. The two types of
+   exit node cannot share a name.
 
    NOTE: The coordinator configuration names the service account
    `system:serviceaccount:tunneler:tunneler-exit` in `exit_subject`. If you
@@ -452,6 +456,11 @@ tunneler clusters forget prod
 ```
 
 The next cluster to present the name `prod` then owns it.
+
+Do the same when the exit nodes of a cluster change how they authenticate:
+from a service account token to the app role `exit:<name>`, or back. First
+remove the old exit nodes. Exit nodes that are still connected bind the
+name again. `tunneler clusters list` shows what owns each name.
 
 ### Removal of accounts after a fault
 
