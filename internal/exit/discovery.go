@@ -224,11 +224,12 @@ func (d *Discovery) upsert(ctx context.Context, obj any) {
 	}
 	labels["namespace"] = ts.Namespace
 	svc, err := newService(ServiceConfig{
-		Name:   name,
-		Kind:   ts.Spec.Kind,
-		DSN:    dsn,
-		Labels: labels,
-		Roles:  ts.Spec.GrantableRoles,
+		Name:      name,
+		Kind:      ts.Spec.Kind,
+		DSN:       dsn,
+		Labels:    labels,
+		Roles:     ts.Spec.GrantableRoles,
+		untrusted: true,
 	})
 	if err != nil {
 		log.Warn("TunnelService is invalid; not offering it", "err", err)

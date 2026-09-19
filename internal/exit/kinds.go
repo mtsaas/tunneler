@@ -55,7 +55,11 @@ var kinds = map[string]func(ServiceConfig) (backend, error){
 		if sc.DSN == "" {
 			return nil, errors.New("a postgres service needs a dsn")
 		}
-		s, err := postgres.NewServer(sc.DSN)
+		newServer := postgres.NewServer
+		if sc.untrusted {
+			newServer = postgres.NewUntrustedServer
+		}
+		s, err := newServer(sc.DSN)
 		return postgresBackend{s}, err
 	},
 	"kubernetes": func(sc ServiceConfig) (backend, error) {

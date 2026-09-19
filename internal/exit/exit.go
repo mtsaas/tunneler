@@ -38,7 +38,8 @@ type ServiceConfig struct {
 	// DSN is the administrative connection string of a postgres service,
 	// using in-cluster DNS. $VAR references are expanded from the
 	// environment, so credentials can come from a Secret via secretKeyRef
-	// rather than sit in the file.
+	// rather than sit in the file. Being the operator's, it is also completed
+	// from the PG* variables and ~/.pgpass, as libpq would.
 	DSN string `json:"dsn,omitempty"`
 	// Kubernetes says how to reach the API server of a kubernetes service.
 	// The zero value, the cluster the exit node runs in, is nearly always
@@ -51,6 +52,11 @@ type ServiceConfig struct {
 	// for postgres, groups to impersonate for kubernetes. Anything else is
 	// refused, which bounds what a compromised coordinator can give itself.
 	Roles []string `json:"roles"`
+	// untrusted marks a service defined by a TunnelService, in any
+	// namespace, rather than by the operator's file. Whoever can create one
+	// may have written its DSN, so nothing from the exit node's environment
+	// completes it.
+	untrusted bool
 }
 
 type service struct {
