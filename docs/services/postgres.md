@@ -72,6 +72,12 @@ creates and removes the temporary accounts. It does not need superuser.
    For a server with more databases, register one `TunnelService` per
    database.
 
+   The string must be complete. It must be a URL, and it must give the
+   host, the user, and the password. The exit node adds nothing from its
+   own environment or files, such as `PGPASSWORD` or `~/.pgpass`. After the
+   `?`, the string can set only `sslmode` and `connect_timeout`. Encode
+   special characters in the password, for example `@` as `%40`.
+
 ## 3. Store the connection string
 
 Put the connection string where the `TunnelService` can refer to it. There
@@ -180,8 +186,9 @@ manages.
 
    The `READY` column must show `True`. If it shows `False`, the `REASON`
    column tells you why. `CredentialsInvalid` means that the exit node
-   cannot read the Secret. `Unreachable` means that the connection string
-   does not work.
+   cannot read the Secret. `InvalidSpec` means that the resource or the
+   connection string is not correct, and the message says why.
+   `Unreachable` means that the connection string does not work.
 
 The coordinator knows this service as `shop-postgres`. It has the labels
 `cluster`, `kind`, `name`, `namespace`, and `team`. When you delete the
@@ -248,6 +255,9 @@ The coordinator writes these records. Each has the
 |---|---|---|
 | `tunneler services list` shows `unreachable` | The exit node cannot log in with the administrative connection string | Read the reason in the list. Correct the Secret or the database role |
 | The `TunnelService` shows `CredentialsInvalid` | The exit node cannot read the Secret or the Key Vault secret | Add the Role and the RoleBinding, or the Key Vault role assignment |
+| The `TunnelService` shows `InvalidSpec`: `the dsn must give its own host, user and password` | The connection string does not include one of them. The exit node does not take them from its own environment | Put the complete connection string in the Secret |
+| The `TunnelService` shows `InvalidSpec`: `the dsn may not set "..."` | The connection string sets a parameter that names a file on the exit node, such as `passfile` or `sslkey`, or another parameter that it cannot set | Remove the parameter |
+| The `TunnelService` shows `InvalidSpec`: `the dsn is not a URL ...` | The connection string has the `key=value` form, or is not a valid URL | Write it as a `postgres://` URL. Encode special characters in the password |
 | `provisioning access failed: ... role "x" is not grantable` | A grant gives a role that `grantableRoles` does not list | Add the role to `grantableRoles`, or remove it from the grant |
 | `provisioning access failed: ... permission denied to grant role` | The administrative role cannot grant that role | `GRANT x TO tunneler_admin WITH ADMIN OPTION` |
 | `this session only permits logging in as ...` | The database tool used a different user | Use the user that `tunneler connect` printed |
@@ -261,3 +271,6 @@ The coordinator writes these records. Each has the
   values of parameters that the database tool sends separately.
 - If the log of the Postgres server includes statements that create roles,
   that log contains the temporary passwords.
+- The connection string of a `TunnelService` cannot give a CA certificate
+  or a client certificate. With `sslmode=verify-ca` or `verify-full`, the
+  certificate of the server must come from a public CA.
