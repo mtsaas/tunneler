@@ -110,7 +110,7 @@ tunneler services list
 | `Connected` | The service is ready |
 | `CredentialsInvalid` | The exit node cannot read the credential that the resource refers to |
 | `Unreachable` | The exit node has the credential, and the service refuses it or does not answer |
-| `InvalidSpec` | The resource is incorrect, its service name is in use, or its kind is not permitted in its namespace. The message says why |
+| `InvalidSpec` | The resource or its credential is incorrect, its service name is in use, or its kind is not permitted in its namespace. The message says why |
 
 The coordinator lists a service that is not ready, and refuses connections to
 it with the reason.
@@ -226,3 +226,9 @@ tunneler start exit --cluster dev --server http://localhost:8443 --config exit.j
 `roles` in the file is the same as `grantableRoles` in the resource. The
 exit node reads the file again when it changes. An exit node can use the file
 and the resources at the same time.
+
+A connection string in the file belongs to the person who operates the exit
+node. As with `psql`, the exit node completes it from its `PG*` environment
+variables and from `~/.pgpass`. A connection string from a `TunnelService`
+is different. The exit node adds nothing to it, because a namespace can put
+any server in it. See [Postgres](postgres.md#2-prepare-the-database).

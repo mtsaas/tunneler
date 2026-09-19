@@ -6,7 +6,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
+	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -26,11 +29,87 @@ type Server struct {
 
 // NewServer returns a Server for the administrative DSN. The DSN's role must
 // be allowed to create roles and to grant every role handed to CreateRole.
+//
+// As in libpq, whatever the DSN leaves out is taken from the PG* environment
+// variables and from files such as ~/.pgpass, so the DSN must be the
+// operator's own. For any other, use NewUntrustedServer.
 func NewServer(dsn string) (*Server, error) {
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		return nil, err
 	}
+	return &Server{cfg: cfg}, nil
+}
+
+// untrustedQuery is what the query of a DSN given to NewUntrustedServer may
+// set. Anything else would name a file on the exit node, such as a passfile
+// or a client key, or is simply not needed.
+var untrustedQuery = []string{"sslmode", "connect_timeout"}
+
+// NewUntrustedServer is NewServer for a DSN that someone other than the
+// operator may have written, such as a TunnelService's. Nothing is taken from
+// the environment or the files that NewServer would consult: they hold the
+// operator's credentials, and the DSN's author chooses the server that they
+// would be sent to. So the DSN must give its own host, user and password.
+//
+// ponytail: the DSN must be a postgres:// URL, the form the docs give.
+// libpq's keyword/value form would need a parser of its own here, since pgx's
+// is what merges the environment in.
+func NewUntrustedServer(dsn string) (*Server, error) {
+	u, err := url.Parse(dsn)
+	var query url.Values
+	if err == nil {
+		query, err = url.ParseQuery(u.RawQuery)
+	}
+	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
+		// Not err, which quotes the DSN, password and all.
+		return nil, errors.New("the dsn is not a URL of the form postgres://user:password@host:port/database")
+	}
+	password, _ := u.User.Password()
+	switch {
+	case strings.Contains(u.Host, ","):
+		return nil, errors.New("the dsn may name only one host")
+	case u.Hostname() == "", u.User.Username() == "", password == "":
+		return nil, errors.New("the dsn must give its own host, user and password: nothing is taken from the exit node's environment or files")
+	}
+
+	// Every setting that pgx would otherwise take from the environment or a
+	// default file is given, if only as empty, so that pgx looks no further.
+	// PGSERVICE cannot be overridden this way. With servicefile empty, it
+	// fails the parse instead of reading the operator's service file.
+	settings := map[string]string{
+		"host": u.Hostname(), "port": u.Port(), "dbname": strings.TrimPrefix(u.Path, "/"), "user": u.User.Username(),
+		"password": "", "passfile": "", "servicefile": "",
+		"sslmode": "", "sslcert": "", "sslkey": "", "sslpassword": "", "sslrootcert": "", "sslsni": "", "sslnegotiation": "",
+		"connect_timeout": "0", "target_session_attrs": "any", "channel_binding": "", "require_auth": "",
+		"min_protocol_version": "", "max_protocol_version": "",
+	}
+	for key, values := range query {
+		if !slices.Contains(untrustedQuery, key) {
+			return nil, fmt.Errorf("the dsn may not set %q: nothing but %s", key, strings.Join(untrustedQuery, " and "))
+		}
+		settings[key] = values[len(values)-1]
+	}
+	var conninfo strings.Builder
+	quote := strings.NewReplacer(`\`, `\\`, `'`, `\'`)
+	for _, key := range slices.Sorted(maps.Keys(settings)) {
+		fmt.Fprintf(&conninfo, "%s='%s' ", key, quote.Replace(settings[key]))
+	}
+	cfg, err := pgx.ParseConfig(conninfo.String())
+	if err != nil {
+		// Without the conninfo that the error quotes, which the DSN's author
+		// never wrote.
+		why := err.Error()
+		if _, after, ok := strings.Cut(why, "`: "); ok {
+			why = after
+		}
+		return nil, fmt.Errorf("the dsn is not valid: %s", why)
+	}
+	// The password is set only now, so that no parse error can quote it.
+	cfg.Password = password
+	// And PGAPPNAME, PGOPTIONS and PGTZ arrive as run-time parameters, which
+	// the DSN has no way to set.
+	cfg.RuntimeParams = map[string]string{}
 	return &Server{cfg: cfg}, nil
 }
 

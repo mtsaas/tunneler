@@ -39,6 +39,13 @@ func TestDiscovery(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "tunneler"},
 		Data:       map[string][]byte{"dsn": []byte("postgres://admin:pw@127.0.0.1:1/shared?sslmode=disable")},
 	}
+	// A DSN that leaves its password to the exit node's environment, which
+	// holds the operator's.
+	t.Setenv("PGPASSWORD", "operator-secret")
+	passwordless := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "preview-3"},
+		Data:       map[string][]byte{"dsn": []byte("postgres://admin@127.0.0.1:1/orders?sslmode=disable")},
+	}
 	good := tunnelService("preview-1", "postgres", map[string]any{
 		"kind":           "postgres",
 		"credentials":    map[string]any{"dsnRef": map[string]any{"kubernetesSecret": map[string]any{"name": "orders-secrets", "key": "database_uri"}}},
@@ -55,7 +62,7 @@ func TestDiscovery(t *testing.T) {
 		map[schema.GroupVersionResource]string{TunnelServiceGVR: "TunnelServiceList"}, good)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	agent := &Agent{Log: log}
-	d := &Discovery{Agent: agent, Namespace: "tunneler", Dynamic: dyn, Clients: k8sfake.NewSimpleClientset(secret, ownSecret), Log: log}
+	d := &Discovery{Agent: agent, Namespace: "tunneler", Dynamic: dyn, Clients: k8sfake.NewSimpleClientset(secret, ownSecret, passwordless), Log: log}
 	go d.Run(ctx)
 
 	// The pre-existing resource is discovered and named <namespace>-<name>.
@@ -116,6 +123,14 @@ func TestDiscovery(t *testing.T) {
 	// Which makes a clash possible, and the later resource loses.
 	create("tunneler", "preview-1-postgres", ownDB)
 	invalid("tunneler", "preview-1-postgres", "already taken by the TunnelService preview-1/postgres")
+
+	// A tenant's DSN is not completed from the exit node's environment, so
+	// one without a password is refused.
+	create("preview-3", "postgres", map[string]any{
+		"kind":        "postgres",
+		"credentials": map[string]any{"dsnRef": map[string]any{"kubernetesSecret": map[string]any{"name": "db", "key": "dsn"}}},
+	})
+	invalid("preview-3", "postgres", "password")
 
 	// A tenant cannot offer the cluster's own API.
 	create("preview-2", "kubernetes", map[string]any{"kind": "kubernetes", "grantableRoles": []any{"system:masters"}})
