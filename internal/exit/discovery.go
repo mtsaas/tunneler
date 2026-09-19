@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -68,7 +69,8 @@ type SecretKeyRef struct {
 }
 
 // KeyVaultRef names a secret in an Azure Key Vault that the exit node's
-// workload identity can read.
+// workload identity can read, and that Discovery.KeyVaultSecrets allows the
+// resource's namespace.
 type KeyVaultRef struct {
 	VaultURI   string `json:"vaultUri"`
 	SecretName string `json:"secretName"`
@@ -95,6 +97,12 @@ type Discovery struct {
 	Dynamic dynamic.Interface
 	Clients kubernetes.Interface
 	Azure   *AzureCredential // nil outside a workload identity pod; Key Vault references then fail
+	// KeyVaultSecrets are the Key Vault secrets each namespace may use, by
+	// namespace, from ParseKeyVaultSecrets. A namespace not listed may use
+	// none. The workload identity reads every namespace's secrets alike, so
+	// Azure cannot keep a namespace to its own; this list does, as reading
+	// Secrets only from the resource's own namespace does for Kubernetes.
+	KeyVaultSecrets map[string][]string
 	// Resync is how often every resource is re-examined regardless of
 	// events, which is what picks up a rotated Secret. Default 5m.
 	//
@@ -163,6 +171,15 @@ func (d *Discovery) upsert(ctx context.Context, obj any) {
 	}
 	key := ts.Namespace + "/" + ts.Name
 	log := d.Log.With("tunnelservice", key)
+
+	// Checked before anything is fetched: the workload identity could read
+	// another namespace's secret.
+	if invalid := d.keyVaultRefused(ts); invalid != "" {
+		log.Warn("TunnelService is invalid; not offering it", "err", invalid)
+		d.drop(key)
+		d.setStatus(ctx, ts, false, "InvalidSpec", invalid)
+		return
+	}
 
 	// Only some kinds have credentials to fetch; a kubernetes service is
 	// reached with the exit node's own service account.
@@ -284,6 +301,25 @@ func (d *Discovery) push() {
 	}
 	d.mu.Unlock()
 	d.Agent.SetServices("kubernetes", services)
+}
+
+// keyVaultRefused returns why the resource may not use the Key Vault secret
+// it names, or "" if it names none or may use it.
+func (d *Discovery) keyVaultRefused(ts *TunnelService) string {
+	if ts.Spec.Credentials == nil || ts.Spec.Credentials.DSNRef.AzureKeyVault == nil {
+		return ""
+	}
+	r := ts.Spec.Credentials.DSNRef.AzureKeyVault
+	id, err := keyVaultSecretID(r.VaultURI, r.SecretName)
+	if err != nil {
+		return err.Error()
+	}
+	if slices.Contains(d.KeyVaultSecrets[ts.Namespace], id) {
+		return ""
+	}
+	return fmt.Sprintf("namespace %q may not use the Key Vault secret %s; the exit node's operator allows it "+
+		"by listing it under workloadIdentity.keyVaultSecrets.%s in the exit node chart (--key-vault-secret %s=%s)",
+		ts.Namespace, id, ts.Namespace, ts.Namespace, id)
 }
 
 // resolveDSN fetches the administrative DSN the resource refers to.

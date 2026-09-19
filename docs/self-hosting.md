@@ -475,6 +475,21 @@ upgrade the coordinator past 0.3.1, the old exit nodes disconnect. A
 cluster is available again when its first new exit node connects. If you
 upgraded the exit nodes first, that is within 30 seconds.
 
+CAUTION: Exit nodes after version 0.4.0 read a Key Vault secret for a
+namespace only if `workloadIdentity.keyVaultSecrets` lists it for that
+namespace. Earlier exit nodes read any secret that a `TunnelService` named.
+Before you upgrade, list the secrets that are in use. Otherwise the
+coordinator stops offering their databases after the upgrade, and their
+`TunnelService` resources show `InvalidSpec`. This command prints each
+secret in use, as `NAMESPACE=SECRET`:
+
+```bash
+kubectl get tunnelservices -A -o jsonpath='{range .items[?(@.spec.credentials.dsnRef.azureKeyVault)]}{.metadata.namespace}={.spec.credentials.dsnRef.azureKeyVault.vaultUri}/secrets/{.spec.credentials.dsnRef.azureKeyVault.secretName}{"\n"}{end}'
+```
+
+Add each secret under its namespace. Examine the list first. Do not list a
+secret for a namespace that does not own it.
+
 ### A rebuilt cluster
 
 A rebuilt AKS cluster has a new issuer URL. The coordinator refuses its exit
