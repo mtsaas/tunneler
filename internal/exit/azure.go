@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
@@ -70,7 +72,10 @@ func (c *AzureCredential) Token(ctx context.Context, scope string) (string, erro
 	source, ok := c.sources[scope]
 	if !ok {
 		// The exchange runs whenever the cached token nears expiry. The
-		// kubelet rotates the file, so it is read afresh each time.
+		// kubelet rotates the file, so it is read afresh each time. The
+		// source outlives any one caller, so the exchange cannot use a
+		// caller's context; it has 10 seconds of its own instead, so that
+		// an Entra that does not answer cannot hold up its callers forever.
 		source = oauth2.ReuseTokenSource(nil, tokenSourceFunc(func() (*oauth2.Token, error) {
 			assertion, err := os.ReadFile(c.file)
 			if err != nil {
@@ -86,7 +91,9 @@ func (c *AzureCredential) Token(ctx context.Context, scope string) (string, erro
 					"client_assertion":      {strings.TrimSpace(string(assertion))},
 				},
 			}
-			return conf.Token(context.Background())
+			ctx, cancel := context.WithTimeoutCause(context.Background(), 10*time.Second, errors.New("no answer within 10s"))
+			defer cancel()
+			return conf.Token(ctx)
 		}))
 		c.sources[scope] = source
 	}
@@ -119,6 +126,11 @@ func AzureWorkloadIdentity(cred *AzureCredential, audience string) coordinator.T
 	}
 }
 
+// maxKeyVaultResponse is the most of a response from Key Vault that is read.
+// Key Vault limits a secret's value to 25 KB; this leaves room for JSON
+// escaping and for the rest of the response.
+const maxKeyVaultResponse = 256 << 10
+
 // keyVaultSecret reads a secret's current value from Azure Key Vault.
 func keyVaultSecret(ctx context.Context, cred *AzureCredential, vaultURI, name string) (string, error) {
 	if cred == nil {
@@ -142,6 +154,13 @@ func keyVaultSecret(ctx context.Context, cred *AzureCredential, vaultURI, name s
 		return "", err
 	}
 	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxKeyVaultResponse+1))
+	if err != nil {
+		return "", fmt.Errorf("key vault: %s: %w", resp.Status, err)
+	}
+	if len(b) > maxKeyVaultResponse {
+		return "", fmt.Errorf("key vault: %s: the response is over %d KiB, larger than any secret", resp.Status, maxKeyVaultResponse>>10)
+	}
 	var body struct {
 		Value string `json:"value"`
 		Error *struct {
@@ -149,7 +168,7 @@ func keyVaultSecret(ctx context.Context, cred *AzureCredential, vaultURI, name s
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.Unmarshal(b, &body); err != nil {
 		return "", fmt.Errorf("key vault: %s: %w", resp.Status, err)
 	}
 	if body.Error != nil {

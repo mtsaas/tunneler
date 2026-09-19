@@ -241,6 +241,105 @@ func TestDiscoveryKeyVault(t *testing.T) {
 	}
 }
 
+// A vault that never answers, or answers with more than any secret, fails
+// only the resource that names it, and holds up the others' events for no
+// longer than the timeout.
+func TestDiscoveryKeyVaultBounded(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	azure, _ := fakeEntra(t)
+
+	// A vault that takes the request and never answers, and one whose answer
+	// goes on for 256 MiB, as long as the exit node's memory limit.
+	asked := make(chan struct{}, 1)
+	silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case asked <- struct{}{}:
+		default:
+		}
+		select {
+		case <-r.Context().Done():
+		case <-ctx.Done():
+		}
+	}))
+	t.Cleanup(silent.Close)
+	var sent atomic.Int64
+	endless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"value":"`)
+		chunk := []byte(strings.Repeat("A", 64<<10))
+		for written := 0; written < 256<<20; {
+			n, err := w.Write(chunk)
+			written += n
+			sent.Add(int64(n))
+			if err != nil {
+				return
+			}
+		}
+		io.WriteString(w, `"}`)
+	}))
+	t.Cleanup(endless.Close)
+	allowed, err := ParseKeyVaultSecrets([]string{
+		"team-a=" + silent.URL + "/secrets/tunneler-db-uri",
+		"team-b=" + endless.URL + "/secrets/tunneler-db-uri",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyVault := func(vaultURI string) map[string]any {
+		return map[string]any{
+			"kind": "postgres",
+			"credentials": map[string]any{"dsnRef": map[string]any{
+				"azureKeyVault": map[string]any{"vaultUri": vaultURI, "secretName": "tunneler-db-uri"},
+			}},
+		}
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "team-c"},
+		Data:       map[string][]byte{"dsn": []byte("postgres://admin:pw@127.0.0.1:1/c?sslmode=disable")},
+	}
+
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{TunnelServiceGVR: "TunnelServiceList"},
+		tunnelService("team-a", "postgres", keyVault(silent.URL)),
+		tunnelService("team-b", "postgres", keyVault(endless.URL)))
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	agent := &Agent{Log: log}
+	d := &Discovery{Agent: agent, Namespace: "tunneler", Dynamic: dyn, Clients: k8sfake.NewSimpleClientset(secret),
+		Azure: azure, KeyVaultSecrets: allowed, Log: log, credentialTimeout: time.Second}
+	go d.Run(ctx)
+
+	// Another team's resource, created while the exit node waits on the
+	// silent vault, is still defined and withdrawn.
+	select {
+	case <-asked:
+	case <-ctx.Done():
+		t.Fatal("the silent vault was never asked")
+	}
+	if _, err := dyn.Resource(TunnelServiceGVR).Namespace("team-c").Create(ctx, tunnelService("team-c", "postgres", map[string]any{
+		"kind":        "postgres",
+		"credentials": map[string]any{"dsnRef": map[string]any{"kubernetesSecret": map[string]any{"name": "db", "key": "dsn"}}},
+	}), metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, ctx, func() bool { _, ok := agent.desired()["team-c-postgres"]; return ok })
+	if err := dyn.Resource(TunnelServiceGVR).Namespace("team-c").Delete(ctx, "postgres", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, ctx, func() bool { _, ok := agent.desired()["team-c-postgres"]; return !ok })
+
+	for ns, why := range map[string]string{"team-a": "no answer within 1s", "team-b": "larger than any secret"} {
+		if c := condition(t, ctx, dyn, ns, "postgres"); c == nil || c.Reason != "CredentialsInvalid" || !strings.Contains(c.Message, why) {
+			t.Errorf("%s: condition = %+v, want CredentialsInvalid saying %q", ns, c, why)
+		}
+	}
+	// The endless vault is asked again when the status comes back as an
+	// update. Each time, what it sends past the cap is only what fits in the
+	// sockets' buffers, a few MiB at most.
+	if n := sent.Load(); n > 64<<20 {
+		t.Errorf("the endless vault sent %d MiB before the exit node stopped reading", n>>20)
+	}
+}
+
 func waitFor(t *testing.T, ctx context.Context, cond func() bool) {
 	t.Helper()
 	for !cond() {

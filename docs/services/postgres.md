@@ -278,6 +278,7 @@ The coordinator writes these records. Each has the
 |---|---|---|
 | `tunneler services list` shows `unreachable` | The exit node cannot log in with the administrative connection string | Read the reason in the list. Correct the Secret or the database role |
 | The `TunnelService` shows `CredentialsInvalid` | The exit node cannot read the Secret or the Key Vault secret | Add the Role and the RoleBinding, or the Key Vault role assignment |
+| The `TunnelService` shows `CredentialsInvalid`: `no answer within 10s` | Key Vault or Entra ID did not answer in time. The exit node stops waiting, so that the other resources are not held up | Make sure that the exit node can reach the vault and Entra ID. The exit node tries again within 5 minutes |
 | The `TunnelService` shows `InvalidSpec`, and the message names a Key Vault secret | The secret is not listed for the namespace | Add the secret to `workloadIdentity.keyVaultSecrets` for the namespace. The message gives the exact value |
 | The `TunnelService` shows `InvalidSpec`: `the dsn must give its own host, user and password` | The connection string does not include one of them. The exit node does not take them from its own environment | Put the complete connection string in the Secret |
 | The `TunnelService` shows `InvalidSpec`: `the dsn may not set "..."` | The connection string sets a parameter that names a file on the exit node, such as `passfile` or `sslkey`, or another parameter that it cannot set | Remove the parameter |
