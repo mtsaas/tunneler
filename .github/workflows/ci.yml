@@ -26,6 +26,16 @@ jobs:
       # TUNNELER_TEST_DSN and TUNNELER_KIND; run those locally.
       - run: go test -vet=all ./...
       - run: helm lint charts/tunneler-coordinator --values hack/kind/coordinator-values.yaml && helm lint charts/tunneler-exit --set server=https://example.com,cluster=ci
+      # The exit chart impersonates the listed groups and no others. Without
+      # a group it must refuse to render, since RBAC reads an empty
+      # resourceNames as every group, system:masters included.
+      - run: |
+          helm template x charts/tunneler-exit --values hack/kind/exit-values.yaml | grep -F 'resourceNames: ["tunneler:view"]'
+          if out=$(helm template x charts/tunneler-exit --set server=https://example.com,cluster=ci,kubernetes.enabled=true 2>&1); then
+            echo "the exit chart rendered kubernetes.enabled with no kubernetes.groups"
+            exit 1
+          fi
+          grep -F kubernetes.groups <<<"$out"
 
   publish:
     if: github.event_name == 'push'

@@ -89,6 +89,11 @@ have version 0.3.0 or later. To upgrade them, see
    `kubernetes`. It also lets the exit node impersonate all users, and these
    groups only.
 
+   `groups` must contain at least one group. If it is empty, Helm stops
+   with an error that names `kubernetes.groups`. The reason: in a
+   ClusterRole, an empty list of names permits all names, `system:masters`
+   too.
+
    NOTE: Helm does not upgrade the custom resource definition of a chart. If
    you installed an earlier version with Helm, apply the definition first:
    `kubectl apply --server-side -f charts/tunneler-exit/crds`. Argo CD does
@@ -190,6 +195,10 @@ impersonator.
 - The exit node refuses a group that is not in its list. This limits what a
   coordinator with a fault, or an attacker who controls the coordinator, can
   do in the cluster. Do not put `system:masters` in the list.
+- The ClusterRole of the exit node permits it to impersonate only the groups
+  in `kubernetes.groups`. This limits what an attacker who gets the service
+  account token of the exit node can do. For this reason, the chart refuses
+  an empty list.
 - The exit node refuses a user whose name starts with `system:`. Those names
   are for nodes, service accounts, and the control plane.
 - The coordinator removes `Authorization` and all `Impersonate-` headers that
@@ -206,6 +215,7 @@ impersonator.
 
 | What you see | Cause | What to do |
 |---|---|---|
+| Helm stops with `kubernetes.groups must list at least one group when kubernetes.enabled` | `kubernetes.enabled` is `true`, but `kubernetes.groups` is empty | Add the groups to `kubernetes.groups`. See [2. Set up a cluster](#2-set-up-a-cluster) |
 | `tunneler connect` finds no service | No exit node offers the cluster, or no grant gives you access | Run `tunneler services list` and `tunneler auth status` |
 | `Forbidden: tunneler: no such service, or access denied` | No grant selects the service | Add a grant with `kind: kubernetes` for the cluster |
 | `Forbidden: tunneler: group "x" is not one this exit node may grant` | A grant gives a group that the chart does not list | Add the group to `kubernetes.groups`, or remove it from the grant |

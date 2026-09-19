@@ -30,7 +30,9 @@ kubernetes:
   enabled: false
   name: kubernetes
   # The only groups a user may be given here. The exit node is allowed to
-  # impersonate these and no others.
+  # impersonate these and no others. Required when enabled, with at least
+  # one group: Kubernetes reads an empty list of names as all of them, so
+  # the chart refuses to render without one.
   groups: []
   # - tunneler:view
   labels: {}
