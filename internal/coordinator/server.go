@@ -87,8 +87,13 @@ func (c *Coordinator) exit(next func(http.ResponseWriter, *http.Request, string)
 //   - its Kubernetes service account token, if its cluster's issuer matches
 //     exit_issuers; the cluster name is bound to that issuer on first use
 //   - a token from the identity provider carrying the role ExitRole(cluster),
-//     as an Azure workload identity obtains
-//   - nothing, if the coordinator runs with insecure_exit_auth
+//     as an Azure workload identity obtains; the cluster name is bound to
+//     that role on first use
+//   - nothing, if the coordinator runs with insecure_exit_auth, which binds
+//     nothing
+//
+// A name bound one way is refused the other way, so that no issuer can join
+// a cluster whose exit nodes hold the role.
 func (c *Coordinator) admitExit(ctx context.Context, cluster, token string) error {
 	var err error
 	issuer, kube := c.kube.trusts(token, c.config().ExitIssuers)
@@ -106,6 +111,9 @@ func (c *Coordinator) admitExit(ctx context.Context, cluster, token string) erro
 		if err != nil && issuer != "" && len(c.config().ExitIssuers) > 0 {
 			err = fmt.Errorf("%w (issuer %s matches no exit_issuers pattern either)", err, issuer)
 		}
+		if err == nil {
+			err = c.claimCluster(cluster, ExitRole(cluster))
+		}
 	}
 	return err
 }
@@ -121,20 +129,34 @@ func (c *Coordinator) authKubeExit(ctx context.Context, cluster, issuer, token s
 	if c.config().ExitSubject != "" && subject != c.config().ExitSubject {
 		return fmt.Errorf("token subject %q is not exit_subject %q", subject, c.config().ExitSubject)
 	}
-	bound, err := c.store.bindCluster(cluster, issuer)
+	return c.claimCluster(cluster, issuer)
+}
+
+// claimCluster binds the cluster name to owner if it is not yet bound, and
+// refuses it if it is bound to anything else. The owner is the issuer of a
+// verified service account token, which is an http(s) URL, or the
+// cluster's ExitRole, which is not.
+func (c *Coordinator) claimCluster(cluster, owner string) error {
+	bound, err := c.store.bindCluster(cluster, owner)
 	if err != nil {
 		return err
 	}
-	if bound == issuer {
+	if bound == owner {
 		return nil
 	}
-	return fmt.Errorf("cluster %q is bound to issuer %s, not %s; see \"tunneler clusters list\", and if the cluster was rebuilt, an admin must run: tunneler clusters forget %s",
-		cluster, bound, issuer, cluster)
+	describe := func(who string) string {
+		if who == ExitRole(cluster) {
+			return "the identity provider's role " + who
+		}
+		return "issuer " + who
+	}
+	return fmt.Errorf("cluster %q is bound to %s, not %s; see \"tunneler clusters list\", and if the cluster was rebuilt or its exit nodes changed how they authenticate, an admin must run: tunneler clusters forget %s",
+		cluster, describe(bound), describe(owner), cluster)
 }
 
-// handleListBindings lists every cluster name that is bound to an issuer or
-// has an exit node connected, so that an admin can see who owns a name
-// before releasing it.
+// handleListBindings lists every cluster name that is bound or has an exit
+// node connected, so that an admin can see who owns a name before releasing
+// it.
 func (c *Coordinator) handleListBindings(w http.ResponseWriter, r *http.Request, id *Identity) {
 	if !c.isAdmin(id) {
 		writeError(w, http.StatusForbidden, "admins only")
@@ -147,7 +169,7 @@ func (c *Coordinator) handleListBindings(w http.ResponseWriter, r *http.Request,
 	}
 	for _, name := range c.hub.clusters() {
 		if _, ok := bound[name]; !ok {
-			bound[name] = "" // connected, but not by a bound issuer
+			bound[name] = "" // connected, but bound to nothing: under insecure_exit_auth, or just released
 		}
 	}
 	bindings := []api.ClusterBinding{}

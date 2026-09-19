@@ -44,7 +44,8 @@ type Config struct {
 	// An issuer matches only with the pattern's host, port and path, and one
 	// with user info, a query, a fragment or percent-encoding matches none;
 	// see parseIssuer. A cluster name is bound to the first issuer that
-	// presents it, and other issuers are then refused that name. Nothing is
+	// presents it, or to ExitRole if a workload identity holding that role
+	// presents it first, and is then refused to every other. Nothing is
 	// configured per cluster.
 	ExitIssuers []string `json:"exit_issuers"`
 	// ExitAudience is the audience such tokens must carry; default "tunneler".
