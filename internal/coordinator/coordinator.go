@@ -72,6 +72,7 @@ func New(cfg *Config, auth Authenticator, log *slog.Logger, audit slog.Handler) 
 	c.cfg.Store(cfg)
 	c.hub.admit = c.admitExit
 	c.hub.onOffer = c.retryDrops
+	c.hub.onWithdraw = c.gateways.drop
 	log.Info("session database opened", "path", cfg.Database, "saved_sessions", len(sessions))
 	for _, s := range sessions {
 		if s.revoked {
