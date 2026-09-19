@@ -2,9 +2,15 @@ package exit
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -129,6 +135,95 @@ func TestDiscovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, ctx, func() bool { _, ok := agent.desired()["preview-1-postgres"]; return !ok })
+}
+
+func TestDiscoveryKeyVault(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Entra, which gives the exit node a token for any vault.
+	entra := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"access_token": "vault-token", "token_type": "Bearer", "expires_in": 3600})
+	}))
+	defer entra.Close()
+	file := filepath.Join(t.TempDir(), "token")
+	os.WriteFile(file, []byte("projected-sa-token"), 0o600)
+	t.Setenv("AZURE_CLIENT_ID", "exit-identity")
+	t.Setenv("AZURE_TENANT_ID", "my-tenant")
+	t.Setenv("AZURE_AUTHORITY_HOST", entra.URL+"/")
+	t.Setenv("AZURE_FEDERATED_TOKEN_FILE", file)
+	azure, err := NewAzureCredential()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A vault for each of two teams. The exit node's one identity can read
+	// both, as it must when both teams use Key Vault.
+	vault := func(database string) (*httptest.Server, *atomic.Int32) {
+		var fetches atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fetches.Add(1)
+			json.NewEncoder(w).Encode(map[string]string{"value": "postgres://tunneler_admin:pw@127.0.0.1:1/" + database + "?sslmode=disable"})
+		}))
+		t.Cleanup(srv.Close)
+		return srv, &fetches
+	}
+	vaultA, fetchesA := vault("a")
+	vaultB, fetchesB := vault("b")
+	allowed, err := ParseKeyVaultSecrets([]string{
+		"team-a=" + vaultA.URL + "/secrets/tunneler-db-uri",
+		"team-b=" + vaultB.URL + "/secrets/tunneler-db-uri",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyVault := func(vaultURI string) map[string]any {
+		return map[string]any{
+			"kind": "postgres",
+			"credentials": map[string]any{"dsnRef": map[string]any{
+				"azureKeyVault": map[string]any{"vaultUri": vaultURI, "secretName": "tunneler-db-uri"},
+			}},
+		}
+	}
+
+	// Team A's own secret, with its vault URI spelled differently.
+	own := tunnelService("team-a", "postgres", keyVault("HTTP"+strings.TrimPrefix(vaultA.URL, "http")+"/"))
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{TunnelServiceGVR: "TunnelServiceList"}, own)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	agent := &Agent{Log: log}
+	d := &Discovery{Agent: agent, Namespace: "tunneler", Dynamic: dyn, Clients: k8sfake.NewSimpleClientset(),
+		Azure: azure, KeyVaultSecrets: allowed, Log: log}
+	go d.Run(ctx)
+
+	waitFor(t, ctx, func() bool { _, ok := agent.desired()["team-a-postgres"]; return ok })
+	if got := agent.desired()["team-a-postgres"].advert.Database; got != "a" || fetchesA.Load() == 0 {
+		t.Errorf("team A's service is on database %q after %d fetches from its vault", got, fetchesA.Load())
+	}
+
+	// Team B's secret, named by team A or by a namespace with no secrets
+	// listed, is refused before anything is fetched from team B's vault.
+	for _, ns := range []string{"team-a", "team-c"} {
+		if _, err := dyn.Resource(TunnelServiceGVR).Namespace(ns).
+			Create(ctx, tunnelService(ns, "stolen", keyVault(vaultB.URL)), metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, ctx, func() bool {
+			_, defined := agent.desired()[ns+"-stolen"]
+			return defined || condition(t, ctx, dyn, ns, "stolen") != nil
+		})
+		if _, ok := agent.desired()[ns+"-stolen"]; ok {
+			t.Errorf("%s was offered a service built from team B's secret", ns)
+		}
+		c := condition(t, ctx, dyn, ns, "stolen")
+		if c == nil || c.Reason != "InvalidSpec" || !strings.Contains(c.Message, "--key-vault-secret "+ns+"="+vaultB.URL+"/secrets/tunneler-db-uri") {
+			t.Errorf("%s naming team B's secret: condition = %+v", ns, c)
+		}
+	}
+	if n := fetchesB.Load(); n != 0 {
+		t.Errorf("team B's vault was asked for its secret %d times for other namespaces", n)
+	}
 }
 
 func waitFor(t *testing.T, ctx context.Context, cond func() bool) {
