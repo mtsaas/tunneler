@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
-	"path"
 	"slices"
-	"strings"
 	"time"
 )
 
@@ -36,14 +34,18 @@ type Config struct {
 	// Either way clusters are not configured; one exists for as long as an
 	// exit node is connected.
 	InsecureExitAuth bool `json:"insecure_exit_auth"`
-	// ExitIssuers are patterns, in path.Match syntax, for the OIDC issuers of
-	// Kubernetes clusters whose service account tokens may authenticate exit
-	// nodes. For every AKS cluster in a tenant:
+	// ExitIssuers are patterns for the OIDC issuers of Kubernetes clusters
+	// whose service account tokens may authenticate exit nodes. A pattern is
+	// an https URL in which '*' matches within one label of the host or one
+	// segment of the path. For every AKS cluster in a tenant:
 	//
 	//	https://*.oic.prod-aks.azure.com/<tenant-id>/*/
 	//
-	// A cluster name is bound to the first issuer that presents it, and other
-	// issuers are then refused that name. Nothing is configured per cluster.
+	// An issuer matches only with the pattern's host, port and path, and one
+	// with user info, a query, a fragment or percent-encoding matches none;
+	// see parseIssuer. A cluster name is bound to the first issuer that
+	// presents it, and other issuers are then refused that name. Nothing is
+	// configured per cluster.
 	ExitIssuers []string `json:"exit_issuers"`
 	// ExitAudience is the audience such tokens must carry; default "tunneler".
 	ExitAudience string `json:"exit_audience"`
@@ -159,11 +161,8 @@ func (c *Config) validate() error {
 		c.trustedProxies = append(c.trustedProxies, prefix.Masked())
 	}
 	for _, p := range c.ExitIssuers {
-		if _, err := path.Match(p, ""); err != nil {
+		if _, err := parseIssuer(p, true); err != nil {
 			return fmt.Errorf("exit_issuers: %q: %w", p, err)
-		}
-		if !strings.HasPrefix(p, "https://") {
-			return fmt.Errorf("exit_issuers: %q: must be an https:// URL pattern", p)
 		}
 	}
 	for i, g := range c.Grants {

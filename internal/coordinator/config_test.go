@@ -59,18 +59,77 @@ func TestAccess(t *testing.T) {
 }
 
 func TestExitIssuerPattern(t *testing.T) {
-	const pattern = "https://*.oic.prod-aks.azure.com/11111111-2222-3333-4444-555555555555/*/"
-	for issuer, want := range map[string]bool{
-		"https://eastus.oic.prod-aks.azure.com/11111111-2222-3333-4444-555555555555/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/":     true,
-		"https://westeurope.oic.prod-aks.azure.com/11111111-2222-3333-4444-555555555555/ffffffff-0000-1111-2222-333333333333/": true,
-		"https://eastus.oic.prod-aks.azure.com/99999999-8888-7777-6666-555555555555/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/":     false, // another tenant
-		"https://evil.example.com/oic.prod-aks.azure.com/11111111-2222-3333-4444-555555555555/x/":                              false,
+	const (
+		tenant = "11111111-2222-3333-4444-555555555555"
+		aks    = "https://*.oic.prod-aks.azure.com/" + tenant + "/*/"
+		kind   = "https://kubernetes.default.svc.cluster.local"
+		local  = "https://127.0.0.1:8443" // a test server
+	)
+	for _, tt := range []struct {
+		pattern, issuer string
+		trusted         bool
+	}{
+		{aks, "https://eastus.oic.prod-aks.azure.com/" + tenant + "/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/", true},
+		{aks, "https://westeurope.oic.prod-aks.azure.com/" + tenant + "/ffffffff-0000-1111-2222-333333333333/", true},
+		{aks, "https://eastus.oic.prod-aks.azure.com/99999999-8888-7777-6666-555555555555/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/", false}, // another tenant
+		{aks, "https://evil.example.com/oic.prod-aks.azure.com/" + tenant + "/x/", false},
+		// These match the pattern as text, but as URLs they name another
+		// host, or name the right one in a way that a reader could mistake.
+		{aks, "https://attacker.example?x=.oic.prod-aks.azure.com/" + tenant + "/y/", false},
+		{aks, "https://attacker.example#.oic.prod-aks.azure.com/" + tenant + "/y/", false},
+		{aks, "https://x:y@attacker.example?.oic.prod-aks.azure.com/" + tenant + "/y/", false},
+		{aks, "https://attacker.example@eastus.oic.prod-aks.azure.com/" + tenant + "/y/", false},
+		{aks, "https://attacker.example:1.oic.prod-aks.azure.com/" + tenant + "/y/", false},
+		{aks, `https://attacker.example\.oic.prod-aks.azure.com/` + tenant + "/y/", false},
+		{aks, "https://attacker.example%2f.oic.prod-aks.azure.com/" + tenant + "/y/", false},
+		{aks, "https://.oic.prod-aks.azure.com/" + tenant + "/y/", false},
+		{aks, "https://a.b.oic.prod-aks.azure.com/" + tenant + "/y/", false}, // '*' is one label
+		{aks, "https://eastus.oic.prod-aks.azure.com/" + tenant + "/y?x=/", false},
+		{aks, "https://eastus.oic.prod-aks.azure.com/" + tenant + "/y#/", false},
+		{aks, "https://eastus.oic.prod-aks.azure.com/" + tenant + "/%2e%2e/", false},
+		{aks, "https://eastus.oic.prod-aks.azure.com/" + tenant + "/../", false},
+		{aks, "https://eastus.oic.prod-aks.azure.com/" + tenant + "//", false},
+		{aks, "https://eastus.oic.prod-aks.azure.com:8443/" + tenant + "/y/", false},
+		{aks, "http://eastus.oic.prod-aks.azure.com/" + tenant + "/y/", false},
+		{kind, kind, true},
+		{kind, kind + "/", false},
+		{kind, kind + ".attacker.example", false},
+		{kind, kind + ":6443", false},
+		{local, local, true},
+		{local, "https://127.0.0.1:8444", false},
+		{local, "https://127.0.0.1", false},
 	} {
 		v := &kubeVerifier{}
 		// A token whose payload is just the issuer claim.
-		payload := base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"` + issuer + `"}`))
-		if _, got := v.trusts("h."+payload+".s", []string{pattern}); got != want {
-			t.Errorf("%s: trusted = %v, want %v", issuer, got, want)
+		claims, _ := json.Marshal(map[string]string{"iss": tt.issuer})
+		payload := base64.RawURLEncoding.EncodeToString(claims)
+		if _, got := v.trusts("h."+payload+".s", []string{tt.pattern}); got != tt.trusted {
+			t.Errorf("%s against %s: trusted = %v, want %v", tt.issuer, tt.pattern, got, tt.trusted)
+		}
+	}
+
+	for pattern, valid := range map[string]bool{
+		aks:                              true,
+		kind:                             true,
+		local:                            true,
+		"https://east*.example.com/*":    true,
+		"http://*.example.com/":          false,
+		"https://*.example.com/?":        false,
+		"https://*.example.com/#":        false,
+		"https://u@*.example.com/":       false,
+		"https://*.example.com:*/":       false,
+		"https://*.Example.com/":         false,
+		"https://[a-z].example.com/":     false,
+		"https://*..example.com/":        false,
+		"https://*.example.com/%2a/":     false,
+		"https://*.example.com/a//b":     false,
+		"https://*.example.com/../":      false,
+		"https://*.example.com/[ab]/":    false,
+		"https://*.example.com/<tenant>": false, // a placeholder left in
+	} {
+		cfg := &Config{OIDC: OIDCConfig{Issuer: "i", ClientID: "c"}, SessionTTL: 1, ExitIssuers: []string{pattern}}
+		if err := cfg.validate(); (err == nil) != valid {
+			t.Errorf("%s: validate = %v, want valid %v", pattern, err, valid)
 		}
 	}
 }
