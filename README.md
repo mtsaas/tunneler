@@ -99,7 +99,7 @@ $ tunneler connect cluster=dev name=my-postgres-db
   URL:       postgres://tnl_clark_com_utrt7i7b:NHW6GJYSR3DRILQJZL3JJK6S36@127.0.0.1:55344/postgres?sslmode=disable
   psql:      psql 'postgres://tnl_clark_com_utrt7i7b:NHW6GJYSR3DRILQJZL3JJK6S36@127.0.0.1:55344/postgres?sslmode=disable'
 
-  Everything you run is audited as clark.mccauley@marconet.com.
+  Everything you run is audited as <email>.
 
 22:47:19  Listening on 127.0.0.1:55344. Press Ctrl-C to disconnect and revoke the session.
 ```
