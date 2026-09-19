@@ -98,9 +98,17 @@ func (s *Server) CreateRole(ctx context.Context, r Role) error {
 	return tx.Commit(ctx)
 }
 
-// DropRole disconnects and drops a role created by CreateRole. Objects the
-// role created are kept and reassigned to the administrative role. Dropping
-// a role that does not exist is not an error.
+// DropRole disconnects and drops a role created by CreateRole, and drops the
+// objects the role created along with it. Dropping a role that does not exist
+// is not an error.
+//
+// The objects are dropped rather than reassigned to the administrative role.
+// Ownership decides the privileges a SECURITY DEFINER function runs with and
+// the privileges a view reads its tables with, so a function or view an
+// untrusted session left behind, once owned by the administrative role, would
+// let a later session run it with that role's privileges: grant itself any
+// grantable role, clear its own expiry, alter other roles. Dropping the
+// objects removes that path, at the cost of not keeping what a session made.
 func (s *Server) DropRole(ctx context.Context, name string) error {
 	conn, err := pgx.ConnectConfig(ctx, s.cfg)
 	if err != nil {
@@ -133,13 +141,15 @@ func dropRole(ctx context.Context, conn *pgx.Conn, name string) error {
 	defer tx.Rollback(ctx)
 	for _, stmt := range []string{
 		// A non-superuser admin must be a member of the role to signal its
-		// backends and reassign its objects.
+		// backends and to drop its objects.
 		"GRANT " + ident + " TO CURRENT_USER",
 		"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = " + literal,
-		// ponytail: REASSIGN and DROP OWNED act on the current database only.
-		// That suffices because Proxy confines sessions to this database.
-		"REASSIGN OWNED BY " + ident + " TO CURRENT_USER",
-		"DROP OWNED BY " + ident,
+		// DROP OWNED, not REASSIGN OWNED: the objects the role made must not
+		// become the administrative role's. CASCADE takes the objects that
+		// depend on them too, such as a trigger the session put on a table it
+		// does not own. ponytail: DROP OWNED acts on the current database
+		// only. That suffices because Proxy confines sessions to this database.
+		"DROP OWNED BY " + ident + " CASCADE",
 		"DROP ROLE " + ident,
 	} {
 		if _, err := tx.Exec(ctx, stmt); err != nil {
