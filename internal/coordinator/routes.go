@@ -30,9 +30,7 @@ const (
 	// request the service receives.
 	routeGateway = "/v1/gateway/{cluster}/{service}/{rest...}"
 
-	routeExitControl = "GET /v1/exit/control" // upgrades; api.Hello one way, api.ExitRequest the other
-	routeExitData    = "GET /v1/exit/data"    // upgrades; answers a dial
-	routeExitResult  = "POST /v1/exit/result" // answers anything else
+	routeExitConnect = "GET /v1/exit/connect" // upgrades to a tunnel.Session; see hub
 )
 
 const (
@@ -43,9 +41,7 @@ const (
 	pathBindings   = "/v1/clusters/bindings"
 	pathSessions   = "/v1/sessions"
 
-	pathExitControl = "/v1/exit/control"
-	pathExitData    = "/v1/exit/data"
-	pathExitResult  = "/v1/exit/result"
+	pathExitConnect = "/v1/exit/connect"
 )
 
 func pathForgetCluster(cluster string) string {

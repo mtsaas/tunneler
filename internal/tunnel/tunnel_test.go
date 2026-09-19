@@ -1,17 +1,17 @@
 package tunnel
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // echo accepts a stream and echoes it back.
@@ -52,26 +52,76 @@ func TestStream(t *testing.T) {
 	}
 }
 
-// TestLegacyClient speaks the pre-WebSocket handshake, as older exit nodes
-// and clients do.
-func TestLegacyClient(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(echo))
+// TestSession opens a stream each way over one connection, and checks what
+// the exit node protocol relies on: a message is read without reading past
+// its end, and Close unblocks a Read in progress, as net.Conn promises.
+func TestSession(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	accepted := make(chan *Session, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := Accept(w, r)
+		if err != nil {
+			return
+		}
+		s := Server(conn, log)
+		accepted <- s
+		<-s.Done()
+	}))
 	defer srv.Close()
-
-	conn, err := net.Dial("tcp", strings.TrimPrefix(srv.URL, "http://"))
+	conn, err := Dial(ctx, srv.URL, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
-	fmt.Fprintf(conn, "GET / HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: tunneler\r\nAuthorization: Bearer ok\r\n\r\n")
-	br := bufio.NewReader(conn)
-	resp, err := http.ReadResponse(br, nil)
-	if err != nil || resp.StatusCode != http.StatusSwitchingProtocols {
-		t.Fatalf("handshake: %v %v", resp, err)
+	client := Client(conn, log)
+	defer client.Close()
+	server := <-accepted
+	defer server.Close()
+
+	for _, way := range []struct {
+		name         string
+		open, accept *Session
+	}{{"client to server", client, server}, {"server to client", server, client}} {
+		out, err := way.open.Open()
+		if err != nil {
+			t.Fatalf("%s: %v", way.name, err)
+		}
+		if err := WriteMessage(out, map[string]string{"op": "dial"}); err != nil {
+			t.Fatalf("%s: %v", way.name, err)
+		}
+		out.Write([]byte("after"))
+		in, err := way.accept.Accept(ctx)
+		if err != nil {
+			t.Fatalf("%s: %v", way.name, err)
+		}
+		var msg map[string]string
+		after := make([]byte, 5)
+		if err := ReadMessage(in, &msg); err != nil || msg["op"] != "dial" {
+			t.Errorf("%s: message = %v, %v", way.name, msg, err)
+		} else if _, err := io.ReadFull(in, after); err != nil || string(after) != "after" {
+			t.Errorf("%s: what followed the message = %q, %v", way.name, after, err)
+		}
 	}
-	fmt.Fprint(conn, "hello")
-	got := make([]byte, 5)
-	if _, err := io.ReadFull(br, got); err != nil || string(got) != "hello" {
-		t.Fatalf("echo = %q, %v", got, err)
+
+	// The peer never closes this stream, and never even accepts it.
+	idle, err := client.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := make(chan error, 1)
+	go func() {
+		_, err := idle.Read(make([]byte, 1))
+		read <- err
+	}()
+	time.Sleep(20 * time.Millisecond) // let the Read block
+	idle.Close()
+	select {
+	case err := <-read:
+		if !errors.Is(err, net.ErrClosed) {
+			t.Errorf("Read after Close = %v, want net.ErrClosed", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("Close did not unblock a Read in progress")
 	}
 }

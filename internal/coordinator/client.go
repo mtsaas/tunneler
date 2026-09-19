@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -28,16 +30,12 @@ type Client struct {
 	HTTP   *http.Client // nil means http.DefaultClient
 }
 
-// Version returns the version of the coordinator, or "" if it is too old to
-// say.
+// Version returns the version of the coordinator.
 func (c *Client) Version(ctx context.Context) (string, error) {
 	var health struct {
 		Version string `json:"version"`
 	}
 	err := c.do(ctx, http.MethodGet, pathHealth, false, nil, &health)
-	if errors.Is(err, io.EOF) { // coordinators before v0.1.1 answer with an empty body
-		err = nil
-	}
 	return health.Version, err
 }
 
@@ -160,32 +158,20 @@ type ExitClient struct {
 	HTTP    *http.Client // nil means http.DefaultClient
 }
 
-// Control opens the control stream, on which the exit node writes an
-// api.Hello and then reads api.ExitRequests.
-func (c *ExitClient) Control(ctx context.Context) (net.Conn, error) {
-	return dialStream(ctx, c.url(pathExitControl, ""), c.Token)
-}
-
-// Data opens the data stream that answers the dial with the given ID.
-func (c *ExitClient) Data(ctx context.Context, id string) (net.Conn, error) {
-	return dialStream(ctx, c.url(pathExitData, id), c.Token)
-}
-
-// Result answers any request other than a successful dial.
-func (c *ExitClient) Result(ctx context.Context, id string, res api.ExitResult) error {
-	resp, err := send(ctx, c.HTTP, http.MethodPost, c.url(pathExitResult, id), c.Token, res)
+// Connect opens the exit node's session with the coordinator. The node
+// opens the first stream, and advertises its services on it; the
+// coordinator opens a stream for each of its requests.
+func (c *ExitClient) Connect(ctx context.Context, log *slog.Logger) (*tunnel.Session, error) {
+	u := c.Server + pathExitConnect + "?" + url.Values{"cluster": {c.Cluster}}.Encode()
+	conn, err := dialStream(ctx, u, c.Token)
+	if e := (*api.Error)(nil); errors.As(err, &e) && e.Status == http.StatusNotFound {
+		return nil, fmt.Errorf("%s does not serve %s: the coordinator is older than this exit node, and must be upgraded: %w",
+			c.Server, pathExitConnect, err)
+	}
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return resp.Body.Close()
-}
-
-func (c *ExitClient) url(path, id string) string {
-	q := url.Values{"cluster": {c.Cluster}}
-	if id != "" {
-		q.Set("id", id)
-	}
-	return c.Server + path + "?" + q.Encode()
+	return tunnel.Client(conn, log), nil
 }
 
 // authorization returns the header carrying the token, if there is one.
