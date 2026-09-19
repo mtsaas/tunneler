@@ -183,6 +183,23 @@ of these values:
 | `access denied: no such service, or no grant selects it` | A request to the API of a cluster named a service that does not exist, or that none of the person's grants reach |
 | `cluster name released; the next issuer to present it will bind it` | An admin ran `tunneler clusters forget` |
 
+The coordinator does not let an action start before it records the action.
+If it cannot write the record, it refuses the action and writes the cause
+in its own log. These actions are refused:
+
+- A session. No account stays on the service.
+- A connection of a database tool.
+- A SQL statement. Statements that the coordinator recorded before it go
+  to the database. The statement and all after it do not, and the
+  connection closes.
+- A Kubernetes request that stays open, such as `exec`, `logs -f`,
+  `port-forward`, or a watch.
+
+The coordinator records other actions when they are complete, for example a
+Kubernetes request that does not stay open. If it cannot write such a
+record, the action is already complete. The coordinator writes in its own
+log that a record is missing.
+
 ## 7. Services from a file
 
 An exit node can also read services from a file. Use this on a laptop, or

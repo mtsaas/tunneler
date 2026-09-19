@@ -31,7 +31,7 @@ func TestReadvertisingKeepsConnections(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	release := make(chan struct{})
-	r := newGatewayRig(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	r := newGatewayRig(t, slog.DiscardHandler, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path != "/watch" {
 			return // the exit node's readiness check
 		}
@@ -68,7 +68,7 @@ func TestReadvertisingKeepsConnections(t *testing.T) {
 func TestWithdrawnAdmission(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	r := newGatewayRig(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "{}") }))
+	r := newGatewayRig(t, slog.DiscardHandler, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "{}") }))
 	r.startExit(ctx, t, "kubernetes", "kubernetes-b")
 	r.await(ctx, t, "kubernetes", "kubernetes-b")
 	if code, body := r.fetch(ctx, t, "kubernetes", "/version"); code != http.StatusOK {
@@ -88,7 +88,7 @@ func TestWithdrawnAdmission(t *testing.T) {
 
 // gatewayRig is a coordinator whose one grant lets alice reach every
 // kubernetes service of the cluster prod, and a stand-in for that cluster's
-// API server.
+// API server. The coordinator writes its audit trail to the sink given.
 type gatewayRig struct {
 	cfg   coordinator.Config
 	c     *coordinator.Coordinator
@@ -96,10 +96,11 @@ type gatewayRig struct {
 	alice *coordinator.Client
 	api   kube.Config // the stand-in, as an exit node reaches it
 	dir   string
-	log   *slog.Logger
+	log   *slog.Logger // the exit nodes'
+	ops   syncBuffer   // the coordinator's operational log
 }
 
-func newGatewayRig(t *testing.T, apiserver http.Handler) *gatewayRig {
+func newGatewayRig(t *testing.T, audit slog.Handler, apiserver http.Handler) *gatewayRig {
 	t.Helper()
 	stand := httptest.NewTLSServer(apiserver)
 	t.Cleanup(stand.Close)
@@ -125,7 +126,7 @@ func newGatewayRig(t *testing.T, apiserver http.Handler) *gatewayRig {
 		return nil, errors.New("bad token")
 	}
 	cfg := r.cfg
-	c, err := coordinator.New(&cfg, auth, r.log, r.log)
+	c, err := coordinator.New(&cfg, auth, slog.New(slog.NewTextHandler(&r.ops, nil)), audit)
 	if err != nil {
 		t.Fatal(err)
 	}

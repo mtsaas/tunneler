@@ -77,7 +77,7 @@ func TestKubeExitAuth(t *testing.T) {
 	}
 	c, err := coordinator.New(cfg, func(context.Context, string) (*coordinator.Identity, error) {
 		return nil, errors.New("not an identity provider token")
-	}, log, log)
+	}, log, log.Handler())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestKubeExitAuth(t *testing.T) {
 		return &coordinator.Identity{Subject: "a", Username: "admin@example.com", Groups: []string{"admins"}}, nil
 	}
 	cfg.Admins = []string{"admins"}
-	c2, err := coordinator.New(cfg, admin, log, log)
+	c2, err := coordinator.New(cfg, admin, log, log.Handler())
 	if err != nil {
 		t.Fatal(err)
 	}

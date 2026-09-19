@@ -63,7 +63,7 @@ func TestKubernetesGateway(t *testing.T) {
 	}
 	var audit syncBuffer
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
-	c, err := coordinator.New(cfg, auth, quiet, slog.New(slog.NewJSONHandler(&audit, nil)))
+	c, err := coordinator.New(cfg, auth, quiet, slog.NewJSONHandler(&audit, nil))
 	if err != nil {
 		t.Fatal(err)
 	}

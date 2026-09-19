@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -72,8 +73,9 @@ func TestEndToEnd(t *testing.T) {
 		return nil, errors.New("bad token")
 	}
 	var audit syncBuffer
+	var failing atomic.Bool // makes the audit sink refuse records
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	c, err := coordinator.New(cfg, auth, log, slog.New(slog.NewJSONHandler(&audit, nil)))
+	c, err := coordinator.New(cfg, auth, log, failingSink{slog.NewJSONHandler(&audit, nil), &failing})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,6 +239,51 @@ func TestEndToEnd(t *testing.T) {
 		t.Errorf("role %s survived revocation", s.Username)
 	}
 
+	// While the audit trail fails, nothing it cannot record goes ahead: not
+	// a session, which leaves no account behind; not a connection; and not a
+	// statement on a connection already open.
+	failing.Store(true)
+	if code := call("POST", "/v1/sessions", "alice", req, nil); code != http.StatusServiceUnavailable {
+		t.Errorf("a session the trail cannot record: status %d, want 503", code)
+	}
+	failing.Store(false)
+	var accounts int
+	admin.QueryRow(ctx, "SELECT count(*) FROM pg_roles WHERE rolname LIKE 'tnl_alice%'").Scan(&accounts)
+	if accounts != 0 {
+		t.Errorf("a session the trail could not record left %d accounts behind", accounts)
+	}
+	if code := call("POST", "/v1/sessions", "alice", req, &s); code != http.StatusCreated {
+		t.Fatalf("creating session: status %d", code)
+	}
+	failing.Store(true)
+	if _, err := connect("alice", s.Username, s.Password); err == nil {
+		t.Error("a connection the trail could not record was opened")
+	}
+	failing.Store(false)
+	if conn, err = connect("alice", s.Username, s.Password); err != nil {
+		t.Fatal(err)
+	}
+	// Any account may notify, so whether the statement ran shows here.
+	listener, err := pgx.Connect(ctx, adminDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close(ctx)
+	listener.Exec(ctx, "LISTEN unaudited")
+	failing.Store(true)
+	if _, err := conn.Exec(ctx, "SELECT pg_notify('unaudited', 'ran')"); err == nil {
+		t.Error("a statement the trail could not record reported success")
+	}
+	failing.Store(false)
+	wait, stopWaiting := context.WithTimeout(ctx, time.Second)
+	if _, err := listener.WaitForNotification(wait); err == nil {
+		t.Error("a statement the trail could not record ran")
+	}
+	stopWaiting()
+	if code := call("DELETE", "/v1/sessions/"+s.ID, "alice", nil, nil); code != http.StatusNoContent {
+		t.Fatalf("revoking: status %d", code)
+	}
+
 	// Revoke while the exit node is down: the drop must be remembered and
 	// carried out when a node for the cluster returns.
 	if code := call("POST", "/v1/sessions", "alice", req, &s); code != http.StatusCreated {
@@ -279,7 +326,7 @@ func TestUnreadyService(t *testing.T) {
 	auth := func(context.Context, string) (*coordinator.Identity, error) {
 		return &coordinator.Identity{Subject: "1", Username: "alice@example.com", Groups: []string{"dba"}}, nil
 	}
-	c, err := coordinator.New(cfg, auth, log, log)
+	c, err := coordinator.New(cfg, auth, log, log.Handler())
 	if err != nil {
 		t.Fatal(err)
 	}

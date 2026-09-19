@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"slices"
@@ -36,7 +37,10 @@ func TestRelayAudits(t *testing.T) {
 	)
 	var out bytes.Buffer
 	var got []string
-	err := relay(&out, bytes.NewReader(in), func(q string) { got = append(got, q) })
+	err := relay(&out, bytes.NewReader(in), func(q string) error {
+		got = append(got, q)
+		return nil
+	})
 	if err != io.EOF {
 		t.Fatalf("relay: %v", err)
 	}
@@ -46,6 +50,29 @@ func TestRelayAudits(t *testing.T) {
 	want := []string{"SELECT 1", "SELECT $1", big[:maxAuditLen] + " [truncated]"}
 	if !slices.Equal(got, want) {
 		t.Errorf("audited %q, want %q", got, want)
+	}
+}
+
+// TestRelayRefusesUnrecorded has the audit trail fail on the second
+// statement. Neither that statement nor anything after it reaches the
+// server: not even its message header.
+func TestRelayRefusesUnrecorded(t *testing.T) {
+	first, second := message('Q', "SELECT 1\x00"), message('Q', "DROP TABLE orders\x00")
+	in := slices.Concat(first, second, message('Q', "SELECT 2\x00"))
+	full := errors.New("no space left on device")
+	var out bytes.Buffer
+	statements := 0
+	err := relay(&out, bytes.NewReader(in), func(string) error {
+		if statements++; statements == 2 {
+			return full
+		}
+		return nil
+	})
+	if !errors.Is(err, full) {
+		t.Errorf("relay: %v, want the sink's error", err)
+	}
+	if !bytes.Equal(out.Bytes(), first) {
+		t.Errorf("the server got %q, want only the recorded statement %q", out.Bytes(), first)
 	}
 }
 
@@ -64,7 +91,7 @@ func TestProxyConfinesLogin(t *testing.T) {
 			done <- Proxy(context.Background(), server, func(context.Context) (net.Conn, error) {
 				dialed = true
 				return nil, io.ErrUnexpectedEOF
-			}, "tnl_me", "app", func(string) {})
+			}, "tnl_me", "app", func(string) error { return nil })
 		}()
 
 		// An SSLRequest first, as libpq sends by default; it must be declined.

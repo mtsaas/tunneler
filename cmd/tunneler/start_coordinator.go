@@ -45,8 +45,8 @@ func startCoordinator(ctx context.Context, path string) error {
 		return fmt.Errorf("oidc discovery: %w", err)
 	}
 	// ponytail: the audit trail shares the process log, marked audit=true.
-	// To store it elsewhere, pass a logger with another slog.Handler.
-	c, err := coordinator.New(cfg, auth, log, log.With("audit", true))
+	// To store it elsewhere, pass another slog.Handler.
+	c, err := coordinator.New(cfg, auth, log, log.With("audit", true).Handler())
 	if err != nil {
 		return err
 	}

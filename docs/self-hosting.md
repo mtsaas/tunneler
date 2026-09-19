@@ -474,6 +474,11 @@ The coordinator log records each session, each connection, and each SQL
 statement. Each record names the person and the session. Filter the log on
 `"audit":true`.
 
+If the coordinator cannot write a record, for example because its log
+cannot be written, it refuses the action that the record is for. The
+coordinator log then contains `the audit sink failed to take a record`.
+See [the audit trail](services/README.md#6-the-audit-trail).
+
 ## 9. Local development
 
 For a laptop, the coordinator can accept exit nodes without a token, and the

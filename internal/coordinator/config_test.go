@@ -77,7 +77,7 @@ func TestExitIssuerPattern(t *testing.T) {
 
 func TestReload(t *testing.T) {
 	base := Config{Listen: ":1", Database: filepath.Join(t.TempDir(), "t.db"), SessionTTL: Duration(time.Hour)}
-	c, err := New(&base, nil, slog.New(slog.DiscardHandler), slog.New(slog.DiscardHandler))
+	c, err := New(&base, nil, slog.New(slog.DiscardHandler), slog.DiscardHandler)
 	if err != nil {
 		t.Fatal(err)
 	}

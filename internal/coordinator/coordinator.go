@@ -41,9 +41,12 @@ type Coordinator struct {
 // previous run.
 //
 // Operational messages go to log. The access trail — sessions, connections
-// and every statement — goes to audit; to store it somewhere other than the
-// process log, hand New a logger with a different slog.Handler.
-func New(cfg *Config, auth Authenticator, log, audit *slog.Logger) (*Coordinator, error) {
+// and every statement — goes to audit, the sink that keeps it: stdout, a
+// file, or a log system's slog.Handler. Every record reaches audit, whatever
+// its level. The coordinator refuses what the sink fails to record before it
+// happens: a session, a connection, a statement, and a Kubernetes request
+// that stays open. A failure to record anything else is reported on log.
+func New(cfg *Config, auth Authenticator, log *slog.Logger, audit slog.Handler) (*Coordinator, error) {
 	kube, err := newKubeVerifier(cfg)
 	if err != nil {
 		return nil, err
@@ -63,7 +66,7 @@ func New(cfg *Config, auth Authenticator, log, audit *slog.Logger) (*Coordinator
 		store:    st,
 		kube:     kube,
 		log:      log,
-		audit:    audit,
+		audit:    slog.New(auditHandler{Handler: audit, log: log}),
 		sessions: make(map[string]*session),
 	}
 	c.cfg.Store(cfg)
@@ -281,7 +284,11 @@ func (c *Coordinator) createSession(ctx context.Context, id *Identity, cluster s
 	c.sessions[s.info.ID] = s
 	s.expiry = time.AfterFunc(ttl, func() { c.revoke(s.info.ID, "expired") })
 	c.mu.Unlock()
-	c.audit.Info("session created", s.attrs(), "roles", roles, "expires_at", s.info.ExpiresAt)
+	// The person gets the password only once the session is on the trail.
+	if err := mustAudit(ctx, c.audit, "session created", s.attrs(), "roles", roles, "expires_at", s.info.ExpiresAt); err != nil {
+		c.revoke(s.info.ID, "the audit trail could not record it")
+		return nil, err
+	}
 
 	info := s.info
 	info.Password = password
@@ -370,7 +377,9 @@ func (c *Coordinator) serveSession(ctx context.Context, s *session, conn net.Con
 		return c.hub.call(ctx, s.info.Cluster, api.ExitRequest{Op: api.OpDial, Service: s.info.Service})
 	}
 	log := c.audit.With(s.attrs(), "remote", remote)
-	log.Info("connection opened")
+	if mustAudit(ctx, log, "connection opened") != nil {
+		return // closed unused; the sink's failure is on the operational log
+	}
 	start := time.Now()
 	err := kinds[s.info.Kind].proxy(ctx, conn, dial, &s.info, log)
 	if errors.Is(err, net.ErrClosed) {

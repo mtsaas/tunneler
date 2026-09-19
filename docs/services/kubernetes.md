@@ -174,6 +174,10 @@ The coordinator writes one record for each request, with the message
 A request that stays open, such as `exec`, `logs -f`, `port-forward`, or a
 watch, gets a second record when it starts. Its message is `kubernetes request started`.
 
+If the coordinator cannot record the start of a request that stays open, it
+refuses the request with status 503. See
+[the audit trail](README.md#6-the-audit-trail).
+
 The record does not contain the body of a request or of a response. Bodies
 can contain secrets.
 

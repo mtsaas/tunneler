@@ -45,7 +45,7 @@ func TestExitAuth(t *testing.T) {
 			SessionTTL:       coordinator.Duration(time.Hour),
 			InsecureExitAuth: tt.insecure,
 		}
-		c, err := coordinator.New(cfg, auth, log, log)
+		c, err := coordinator.New(cfg, auth, log, log.Handler())
 		if err != nil {
 			t.Fatal(err)
 		}
