@@ -32,9 +32,12 @@ their temporary account only, and into one database only. It records each
 SQL statement.
 
 **The account goes away.** When the person disconnects, when an admin revokes
-the session, or when the session expires, the exit node removes the role.
-Objects that the person made stay, and the administrative role becomes their
-owner. If the exit node is down at that time, the coordinator does the
+the session, or when the session expires, the exit node removes the role. It
+also drops the objects that the person made, such as tables, functions, and
+views. The exit node does not keep them or give them to another role: a
+function or a view carries the privileges of its owner, so an object left in
+the hands of a more privileged role would let a later session act with those
+privileges. If the exit node is down at that time, the coordinator does the
 removal later. Postgres also refuses the role after its expiry time.
 
 **The administrative credential stays in the cluster.** The exit node reads
@@ -44,7 +47,10 @@ have it.
 ## 2. Prepare the database
 
 The exit node needs an administrative role on each database. That role
-creates and removes the temporary accounts. It does not need superuser.
+creates and removes the temporary accounts. Give it `CREATEROLE` and the
+right to grant the roles that people receive, and nothing more. It must not
+be a superuser. The exit node runs some cleanup as this role, so the fewer
+privileges it holds, the less a mistake or a flaw can reach.
 
 1. Connect to the database as a superuser.
 
@@ -257,6 +263,9 @@ The coordinator writes these records. Each has the
 
 - One service is one database. For a server with more databases, register
   one `TunnelService` for each database.
+- A session is for work that does not outlive it. The exit node drops the
+  objects a session made when the account goes away, so a table you want to
+  keep must live in a database you reach another way.
 - The coordinator records the text of each statement. It does not record the
   values of parameters that the database tool sends separately.
 - If the log of the Postgres server includes statements that create roles,

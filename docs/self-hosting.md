@@ -512,6 +512,10 @@ exit node can read services from a file.
    {"services": [{"name": "pg", "kind": "postgres", "dsn": "postgres://postgres:pw@localhost:5432/postgres?sslmode=disable", "roles": ["pg_read_all_data"]}]}
    ```
 
+   NOTE: This connection string uses the `postgres` superuser, which is
+   enough on a laptop. In production, the administrative role must not be a
+   superuser. See [Postgres](services/postgres.md#2-prepare-the-database).
+
 4. Start the exit node:
 
    ```bash
