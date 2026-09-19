@@ -149,6 +149,21 @@ manages.
      --set workloadIdentity.clientId=$(az identity show -g $RG -n tunneler-exit --query clientId -o tsv)
    ```
 
+5. Let the namespace use the secret. The identity can read the secrets of
+   all namespaces, so Azure cannot keep a namespace to its own secret. The
+   exit node does this instead: a namespace can use only the secrets that
+   you list for it.
+
+   ```bash
+   helm upgrade tunneler-exit oci://ghcr.io/mtsaas/charts/tunneler-exit --reuse-values \
+     --set 'workloadIdentity.keyVaultSecrets.shop={https://<vault>.vault.azure.net/secrets/tunneler-db-uri}'
+   ```
+
+   A `TunnelService` that names a secret which is not listed for its
+   namespace shows `InvalidSpec`. The exit node does not read that secret.
+   If you upgrade from version 0.4.0 or earlier, see
+   [Upgrades](../self-hosting.md#upgrades).
+
 ## 4. Register the database
 
 1. Create a `TunnelService` in the namespace of the database:
@@ -171,6 +186,7 @@ manages.
 
    For Key Vault, replace `kubernetesSecret` with
    `azureKeyVault: {vaultUri: https://<vault>.vault.azure.net, secretName: tunneler-db-uri}`.
+   The secret must be listed for the namespace. See step 5 of option B.
 
 2. Make sure that the service is ready:
 
@@ -181,7 +197,8 @@ manages.
    The `READY` column must show `True`. If it shows `False`, the `REASON`
    column tells you why. `CredentialsInvalid` means that the exit node
    cannot read the Secret. `Unreachable` means that the connection string
-   does not work.
+   does not work. `InvalidSpec` means that the resource is not correct, for
+   example a Key Vault secret that is not listed for the namespace.
 
 The coordinator knows this service as `shop-postgres`. It has the labels
 `cluster`, `kind`, `name`, `namespace`, and `team`. When you delete the
@@ -248,6 +265,7 @@ The coordinator writes these records. Each has the
 |---|---|---|
 | `tunneler services list` shows `unreachable` | The exit node cannot log in with the administrative connection string | Read the reason in the list. Correct the Secret or the database role |
 | The `TunnelService` shows `CredentialsInvalid` | The exit node cannot read the Secret or the Key Vault secret | Add the Role and the RoleBinding, or the Key Vault role assignment |
+| The `TunnelService` shows `InvalidSpec`, and the message names a Key Vault secret | The secret is not listed for the namespace | Add the secret to `workloadIdentity.keyVaultSecrets` for the namespace. The message gives the exact value |
 | `provisioning access failed: ... role "x" is not grantable` | A grant gives a role that `grantableRoles` does not list | Add the role to `grantableRoles`, or remove it from the grant |
 | `provisioning access failed: ... permission denied to grant role` | The administrative role cannot grant that role | `GRANT x TO tunneler_admin WITH ADMIN OPTION` |
 | `this session only permits logging in as ...` | The database tool used a different user | Use the user that `tunneler connect` printed |

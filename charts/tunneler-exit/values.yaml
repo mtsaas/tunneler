@@ -35,11 +35,19 @@ kubernetes:
   # - tunneler:view
   labels: {}
 
-# Only needed for TunnelService resources that refer to Azure Key Vault: the
-# client ID of a managed identity with a federated credential for this
-# chart's service account. Authentication to the coordinator does not use it.
+# Only needed for TunnelService resources that refer to Azure Key Vault.
 workloadIdentity:
+  # The client ID of a managed identity with a federated credential for this
+  # chart's service account. Authentication to the coordinator does not use
+  # it.
   clientId: ""
+  # The Key Vault secrets that the TunnelService resources of each namespace
+  # may use. A namespace that is not listed may use none. The one identity
+  # above can read the secrets of every namespace, so this list is what keeps
+  # each namespace to its own secret.
+  keyVaultSecrets: {}
+  #   platform-acme:
+  #     - https://kv-platform-acme.vault.azure.net/secrets/tunneler-db-uri
 
 resources:
   requests:

@@ -23,6 +23,7 @@ import (
 func startExitCmd() *cobra.Command {
 	var path, healthAddr, tokenFile string
 	var kubernetes bool
+	var keyVaultSecrets []string
 	a := &exit.Agent{}
 	cmd := &cobra.Command{
 		Use:   "exit",
@@ -34,6 +35,8 @@ creates and removes accounts on them.
 
 Services come from TunnelService resources (--kubernetes), from the
 configuration file, or both. A service is offered once its credentials work.
+A TunnelService may use only the Key Vault secrets that --key-vault-secret
+lists for its namespace.
 
 Proves which cluster it is with, in order: the service account token at
 --token-file; Azure Workload Identity; or nothing, which only a coordinator
@@ -77,10 +80,15 @@ $ tunneler start exit --cluster dev --server http://localhost:8443 --config exit
 				return fmt.Errorf("no services: %s does not exist and --kubernetes is off", path)
 			}
 			if kubernetes {
+				allowed, err := exit.ParseKeyVaultSecrets(keyVaultSecrets)
+				if err != nil {
+					return usageError{fmt.Errorf("--key-vault-secret: %w", err)}
+				}
 				d, err := newDiscovery(a, azure)
 				if err != nil {
 					return err
 				}
+				d.KeyVaultSecrets = allowed
 				go func() {
 					if err := d.Run(ctx); !errors.Is(err, context.Canceled) {
 						log.Error("TunnelService discovery stopped", "err", err)
@@ -100,6 +108,8 @@ $ tunneler start exit --cluster dev --server http://localhost:8443 --config exit
 	cmd.Flags().StringVar(&tokenFile, "token-file", "/var/run/secrets/tunneler/token", "Service account token to authenticate with, if present")
 	cmd.Flags().StringVar(&path, "config", "/etc/tunneler/exit.json", "Configuration file, if present")
 	cmd.Flags().BoolVar(&kubernetes, "kubernetes", false, "Discover services from TunnelService resources")
+	cmd.Flags().StringArrayVar(&keyVaultSecrets, "key-vault-secret", nil,
+		"Let TunnelService resources in NAMESPACE use a Key Vault secret, as NAMESPACE=https://VAULT.vault.azure.net/secrets/NAME; repeat for more")
 	return cmd
 }
 

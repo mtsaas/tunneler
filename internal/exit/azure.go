@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -164,4 +165,47 @@ func keyVaultSecret(ctx context.Context, cred *AzureCredential, vaultURI, name s
 		return "", fmt.Errorf("key vault: %s: secret %s has no value", resp.Status, name)
 	}
 	return body.Value, nil
+}
+
+var (
+	// A vault URI is a scheme and a host with an optional port, and nothing
+	// else. It is ASCII, so that folding its case cannot turn one host into
+	// another.
+	vaultURIPattern = regexp.MustCompile(`^([A-Za-z]+://[0-9A-Za-z.:\[\]-]+)/?$`)
+	// What Key Vault accepts as the name of a secret.
+	secretNamePattern = regexp.MustCompile(`^[0-9A-Za-z-]{1,127}$`)
+)
+
+// keyVaultSecretID returns the identifier of the named secret in the vault,
+// <vault URI>/secrets/<name>, spelled one way however the vault URI is:
+// scheme and host in lower case, no trailing slash. A vault URI with a path,
+// a query or a user, or a name that Key Vault would not accept, is refused,
+// so that references with the same identifier are the same secret, the one
+// keyVaultSecret fetches.
+func keyVaultSecretID(vaultURI, name string) (string, error) {
+	m := vaultURIPattern.FindStringSubmatch(vaultURI)
+	if m == nil {
+		return "", fmt.Errorf("vault URI %q is not of the form https://<vault>.vault.azure.net", vaultURI)
+	}
+	if !secretNamePattern.MatchString(name) {
+		return "", fmt.Errorf("%q is not the name of a Key Vault secret", name)
+	}
+	return strings.ToLower(m[1]) + "/secrets/" + name, nil
+}
+
+// ParseKeyVaultSecrets reads the Key Vault secrets that namespaces may use,
+// each given as NAMESPACE=https://<vault>.vault.azure.net/secrets/<name>,
+// into the KeyVaultSecrets of a Discovery.
+func ParseKeyVaultSecrets(allow []string) (map[string][]string, error) {
+	secrets := make(map[string][]string)
+	for _, a := range allow {
+		namespace, secret, _ := strings.Cut(a, "=")
+		vaultURI, name, ok := strings.Cut(secret, "/secrets/")
+		id, err := keyVaultSecretID(vaultURI, name)
+		if namespace == "" || !ok || err != nil {
+			return nil, fmt.Errorf("%q is not of the form NAMESPACE=https://<vault>.vault.azure.net/secrets/<name>", a)
+		}
+		secrets[namespace] = append(secrets[namespace], id)
+	}
+	return secrets, nil
 }
