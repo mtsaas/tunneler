@@ -19,7 +19,15 @@ spec:
 ---
 # A persistent platform: a dedicated tunneler_admin DSN that Terraform keeps
 # in the platform's Key Vault. The exit node reads only this secret, through
-# its workload identity. Advertised as platform-acme-postgres.
+# its workload identity, and only because its chart lists the secret for
+# this namespace:
+#
+#   workloadIdentity:
+#     keyVaultSecrets:
+#       platform-acme:
+#         - https://kv-platform-acme.vault.azure.net/secrets/tunneler-db-uri
+#
+# Advertised as platform-acme-postgres.
 apiVersion: tunneler.marconet.com/v1alpha1
 kind: TunnelService
 metadata:

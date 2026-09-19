@@ -80,7 +80,8 @@ spec:
                         azureKeyVault:
                           description: >-
                             A Key Vault secret the exit node's workload
-                            identity may read.
+                            identity may read, and that the exit node lists
+                            for this namespace.
                           type: object
                           required: [vaultUri, secretName]
                           properties:

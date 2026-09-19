@@ -39,7 +39,15 @@ spec:
         - name: exit
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          args: ["start", "exit", "--kubernetes"]
+          args:
+            - start
+            - exit
+            - --kubernetes
+            {{- range $namespace, $secrets := .Values.workloadIdentity.keyVaultSecrets }}
+            {{- range $secrets }}
+            - {{ printf "--key-vault-secret=%s=%s" $namespace . | quote }}
+            {{- end }}
+            {{- end }}
           env:
             - name: TUNNELER_SERVER
               value: {{ required "server is required: the coordinator's URL" .Values.server | quote }}
