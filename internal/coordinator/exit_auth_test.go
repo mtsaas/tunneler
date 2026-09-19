@@ -39,6 +39,7 @@ func TestExitAuth(t *testing.T) {
 		{"no credentials", false, "prod", "", false},
 		{"no credentials, insecure mode", true, "prod", "", true},
 		{"no cluster, insecure mode", true, "", "", false},
+		{"cluster name with control characters, insecure mode", true, "prod%1b%5b2J", "", false},
 	} {
 		cfg := &coordinator.Config{
 			Database:         filepath.Join(t.TempDir(), "t.db"),

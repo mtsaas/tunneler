@@ -63,7 +63,7 @@ func connectKubernetes(ctx context.Context, c *client, cluster string, svc api.S
 	if err := writeKubeContext("", name, server, c.Server, !opts.noUse); err != nil {
 		return err
 	}
-	text := fmt.Sprintf("Added context %q to %s.\n\n%s\n\n    kubectl --context %s get pods\n", name, file, kubeAuditNotice, name)
+	text := fmt.Sprintf("Added context %q to %s.\n\n%s\n\n    kubectl --context %s get pods\n", name, file, kubeAuditNotice, printable(name))
 	if !opts.noUse {
 		text = fmt.Sprintf("Added context %q to %s and made it current.\n\n%s\n\n    kubectl get pods\n", name, file, kubeAuditNotice)
 	}

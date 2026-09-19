@@ -30,8 +30,8 @@ func sessionsListCmd() *cobra.Command {
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 			fmt.Fprintln(w, "ID\tOWNER\tCLUSTER\tSERVICE\tACCOUNT\tEXPIRES")
 			for _, s := range sessions {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", s.ID, s.Owner, s.Cluster, s.Service, s.Username,
-					s.ExpiresAt.Local().Format(time.DateTime))
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", printable(s.ID), printable(s.Owner), printable(s.Cluster),
+					printable(s.Service), printable(s.Username), s.ExpiresAt.Local().Format(time.DateTime))
 			}
 			return w.Flush()
 		},

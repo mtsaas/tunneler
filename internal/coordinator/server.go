@@ -100,6 +100,8 @@ func (c *Coordinator) admitExit(ctx context.Context, cluster, token string) erro
 	switch {
 	case cluster == "":
 		err = errors.New("no cluster named")
+	case !printable(cluster):
+		err = errors.New("the cluster name has control characters")
 	case c.config().InsecureExitAuth:
 	case kube:
 		err = c.authKubeExit(ctx, cluster, issuer, token)

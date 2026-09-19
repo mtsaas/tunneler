@@ -59,17 +59,25 @@ func printServices(out io.Writer, clusters []api.Cluster, numbered bool) {
 	n := 0
 	for _, cl := range clusters {
 		for _, svc := range cl.Services {
-			status := "ready"
-			if !svc.Ready {
-				status = "unreachable: " + svc.Status
-			}
 			if n++; numbered {
 				fmt.Fprintf(w, "%d\t", n)
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", cl.Name, svc.Name, svc.Kind, status, formatLabels(svc.Labels))
+			fmt.Fprintln(w, serviceRow(cl.Name, svc))
 		}
 	}
 	w.Flush()
+}
+
+// serviceRow returns the row of a table of services for one service: its
+// cluster, name, kind, status and labels, separated by tabs. An exit node
+// chose them all, and a namespace tenant some, so each is made printable.
+func serviceRow(cluster string, svc api.Service) string {
+	status := "ready"
+	if !svc.Ready {
+		status = "unreachable: " + svc.Status
+	}
+	return fmt.Sprintf("%s\t%s\t%s\t%s\t%s", printable(cluster), printable(svc.Name), printable(svc.Kind),
+		printable(status), printable(formatLabels(svc.Labels)))
 }
 
 // formatLabels renders labels as sorted, comma-separated k=v pairs.

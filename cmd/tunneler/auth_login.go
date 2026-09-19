@@ -68,7 +68,7 @@ func (c *client) login(ctx context.Context, prompt func(*oauth2.DeviceAuthRespon
 		// client. It is the first thing everyone hits.
 		if strings.Contains(err.Error(), "AADSTS7000218") {
 			return fmt.Errorf("the app registration does not allow public clients, which a CLI must be; "+
-				"in Entra set Authentication > Allow public client flows to Yes\n\n%w", err)
+				"in Entra set Authentication > Allow public client flows to Yes (%w)", err)
 		}
 		return err
 	}
@@ -80,7 +80,9 @@ func (c *client) login(ctx context.Context, prompt func(*oauth2.DeviceAuthRespon
 	return c.storeToken(tok)
 }
 
-// signInText tells a person where to sign in.
+// signInText tells a person where to sign in. The identity provider, which
+// the coordinator names, supplied the URL and the code.
 func signInText(da *oauth2.DeviceAuthResponse) string {
-	return fmt.Sprintf("To sign in, open\n\n    %s\n\nand enter the code %s\n\nWaiting for you to finish signing in...", da.VerificationURI, da.UserCode)
+	return fmt.Sprintf("To sign in, open\n\n    %s\n\nand enter the code %s\n\nWaiting for you to finish signing in...",
+		printable(da.VerificationURI), printable(da.UserCode))
 }
