@@ -16,7 +16,7 @@ func versionCmd() *cobra.Command {
 			defer func() {
 				text := "client:      " + out["client"]
 				if out["server"] != "" {
-					text += "\ncoordinator: " + out["coordinator"] + " (" + out["server"] + ")"
+					text += "\ncoordinator: " + printable(out["coordinator"]) + " (" + out["server"] + ")"
 				}
 				result(out, text)
 			}()

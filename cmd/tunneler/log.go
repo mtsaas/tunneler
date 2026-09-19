@@ -38,7 +38,9 @@ func newLogger(server, verbose bool) *slog.Logger {
 
 // statusHandler prints a record as a line of prose: the time and the
 // message, and for problems the error. Other attributes are dropped, so
-// messages at Info and above must read well on their own.
+// messages at Info and above must read well on their own. Messages name
+// clusters, services and accounts that the coordinator supplied, and errors
+// carry what it said, so the line is made printable.
 type statusHandler struct {
 	w   io.Writer
 	mu  *sync.Mutex
@@ -59,6 +61,6 @@ func (h statusHandler) Handle(_ context.Context, r slog.Record) error {
 	})
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	_, err := fmt.Fprintln(h.w, line)
+	_, err := fmt.Fprintln(h.w, printable(line))
 	return err
 }

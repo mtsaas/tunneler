@@ -217,18 +217,19 @@ func (c *client) forward(ctx context.Context, local net.Conn, sessionID string, 
 // auditNotice tells the person, every time a session starts, that what they
 // do in it is recorded under their name.
 func auditNotice(s *api.Session) string {
-	return fmt.Sprintf("NOTICE: This session is audited. Every query you run is logged with your identity (%s).", s.Owner)
+	return fmt.Sprintf("NOTICE: This session is audited. Every query you run is logged with your identity (%s).", printable(s.Owner))
 }
 
-// printSession writes what a client program needs in order to connect.
+// printSession writes what a client program needs in order to connect. The
+// URL is escaped already, as a URL.
 func printSession(s *api.Session, addr *net.TCPAddr) {
 	fmt.Printf("\n%s\n", auditNotice(s))
 	fmt.Printf("\n  Host:      %s\n  Port:      %d\n", addr.IP, addr.Port)
 	if s.Database != "" {
-		fmt.Printf("  Database:  %s\n", s.Database)
+		fmt.Printf("  Database:  %s\n", printable(s.Database))
 	}
 	fmt.Printf("  User:      %s\n  Password:  %s\n  Expires:   %s\n",
-		s.Username, s.Password, s.ExpiresAt.Local().Format(time.DateTime))
+		printable(s.Username), printable(s.Password), s.ExpiresAt.Local().Format(time.DateTime))
 
 	if s.Kind == "postgres" {
 		dsn := sessionURL(s, addr)

@@ -10,8 +10,10 @@ import (
 	"maps"
 	"net"
 	"slices"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/mtsaas/tunneler/internal/api"
 	"github.com/mtsaas/tunneler/internal/tunnel"
@@ -161,6 +163,18 @@ func (h *hub) vouch(cluster string, e *exitConn, token string) error {
 func (h *hub) advertise(cluster string, e *exitConn, hello api.Hello) {
 	services := make(map[string]api.Service, len(hello.Services))
 	for _, svc := range hello.Services {
+		// Clients print these, and a tenant chooses the labels. Only the
+		// service is refused, not the node, so that one tenant's labels
+		// cannot take the cluster's other services away.
+		names := []string{svc.Name, svc.Kind, svc.Database}
+		for k, v := range svc.Labels {
+			names = append(names, k, v)
+		}
+		if !printable(names...) {
+			h.log.Warn("exit node offered a service with control characters in its name, kind, database or labels; not offering it",
+				"cluster", cluster, "remote", e.remote, "service", svc.Name)
+			continue
+		}
 		// An exit node describes its services however it likes, but which
 		// cluster it speaks for was settled by its token.
 		svc.Labels = maps.Clone(svc.Labels)
@@ -204,6 +218,17 @@ func (h *hub) advertise(cluster string, e *exitConn, hello api.Hello) {
 	if len(withdrawn) > 0 && h.onWithdraw != nil {
 		h.onWithdraw(cluster, withdrawn)
 	}
+}
+
+// printable reports whether none of s has a control character or a
+// character that reorders text, such as U+202E. No name or label needs one,
+// and printed to a terminal they could clear the screen, forge or hide rows
+// of a listing, or set the window title. The CLI escapes them anyway; this
+// keeps them from clients that do not.
+func printable(s ...string) bool {
+	return !slices.ContainsFunc(s, func(s string) bool {
+		return strings.ContainsFunc(s, func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) })
+	})
 }
 
 // remove makes e unroutable once it has disconnected.

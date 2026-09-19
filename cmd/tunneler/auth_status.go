@@ -55,8 +55,12 @@ Exits with 3 if you are not logged in.`,
 				return fmt.Errorf("the coordinator did not accept the token: %w", err)
 			}
 			fmt.Println("\n2. You, as the coordinator sees you")
+			groups := make([]string, len(st.Groups))
+			for i, g := range st.Groups {
+				groups[i] = printable(g)
+			}
 			fmt.Printf("   subject:   %s\n   user id:   %s\n   username:  %s\n   admin:     %t\n   groups:    %s\n",
-				st.Subject, st.UserID, st.Username, st.Admin, orNone(strings.Join(st.Groups, "\n              ")))
+				printable(st.Subject), printable(st.UserID), printable(st.Username), st.Admin, orNone(strings.Join(groups, "\n              ")))
 			if len(st.Groups) == 0 {
 				fmt.Println("\n   Without groups only a grant naming your user id or username can apply. The token\n" +
 					"   above has no groups claim: in Entra, add one to ID tokens under Token configuration.")
@@ -70,7 +74,7 @@ Exits with 3 if you are not logged in.`,
 				if g.User != "" {
 					via = "user " + g.User
 				}
-				fmt.Fprintf(w, "   %s\t%s\t%s\n", via, formatLabels(g.Labels), orNone(strings.Join(g.Roles, ",")))
+				fmt.Fprintf(w, "   %s\t%s\t%s\n", printable(via), printable(formatLabels(g.Labels)), printable(orNone(strings.Join(g.Roles, ","))))
 			}
 			w.Flush()
 			if len(st.Grants) == 0 {
@@ -81,11 +85,7 @@ Exits with 3 if you are not logged in.`,
 			fmt.Fprintln(w, "   CLUSTER\tSERVICE\tKIND\tSTATUS\tLABELS")
 			for _, cl := range st.Clusters {
 				for _, svc := range cl.Services {
-					status := "ready"
-					if !svc.Ready {
-						status = "unreachable: " + svc.Status
-					}
-					fmt.Fprintf(w, "   %s\t%s\t%s\t%s\t%s\n", cl.Name, svc.Name, svc.Kind, status, formatLabels(svc.Labels))
+					fmt.Fprintf(w, "   %s\n", serviceRow(cl.Name, svc))
 				}
 			}
 			w.Flush()
@@ -99,14 +99,18 @@ Exits with 3 if you are not logged in.`,
 
 // printClaims prints a JWT's claims. They are not verified here; section 2
 // of the output is the coordinator's verified reading of the same token.
+// encoding/json escapes C0 controls in them but not C1 or bidi ones, so
+// each line is made printable too.
 func printClaims(token string) {
 	var claims map[string]any
 	if parts := strings.Split(token, "."); len(parts) == 3 {
 		payload, _ := base64.RawURLEncoding.DecodeString(parts[1])
 		json.Unmarshal(payload, &claims)
 	}
-	out, _ := json.MarshalIndent(claims, "   ", "  ")
-	fmt.Printf("   %s\n", out)
+	out, _ := json.MarshalIndent(claims, "", "  ")
+	for line := range strings.Lines(string(out)) {
+		fmt.Printf("   %s\n", printable(strings.TrimSuffix(line, "\n")))
+	}
 }
 
 func orNone(s string) string {

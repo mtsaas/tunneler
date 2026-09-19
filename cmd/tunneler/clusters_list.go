@@ -48,7 +48,7 @@ $ tunneler clusters list --output json`,
 				case coordinator.ExitRole(b.Name):
 					issuer = "(no issuer: the identity provider's role " + issuer + ")"
 				}
-				fmt.Fprintf(w, "%s\t%d\t%s\n", b.Name, b.ExitNodes, issuer)
+				fmt.Fprintf(w, "%s\t%d\t%s\n", printable(b.Name), b.ExitNodes, printable(issuer))
 			}
 			return w.Flush()
 		},

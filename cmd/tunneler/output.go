@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
+	"unicode"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -99,8 +102,32 @@ func fail(w io.Writer, err error) int {
 		json.NewEncoder(w).Encode(out)
 		return status
 	}
-	fmt.Fprintln(w, "tunneler:", err)
+	fmt.Fprintln(w, "tunneler:", printable(err.Error()))
 	return status
+}
+
+// printable returns s with its control characters, and the characters that
+// reorder text such as U+202E, escaped as in a Go string literal. Text
+// output passes through it whatever the coordinator, an exit node or the
+// identity provider supplied, some of which a namespace tenant chooses:
+// printed as it came, such a string could clear the screen, forge rows of
+// a table or set the window title. Other text is left as it is, and bytes
+// that are not UTF-8 become U+FFFD, as encoding/json makes them.
+//
+// ponytail: backslashes are not escaped, so a name that holds the text \x1b
+// reads the same as one that holds ESC. This output is for people; --output
+// json is exact.
+func printable(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) {
+			q := strconv.QuoteRune(r)
+			b.WriteString(q[1 : len(q)-1])
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // usage makes a command's argument check fail with exitUsage.
