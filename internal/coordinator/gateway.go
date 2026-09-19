@@ -12,20 +12,26 @@ import (
 
 // gateways holds the handler of each service of a per-request kind. A
 // handler keeps connections to its service's exit nodes between requests,
-// so it is made once and kept.
+// so it is made once and kept until no exit node offers the service. A
+// service that is offered anew gets a new handler.
 type gateways struct {
 	mu       sync.Mutex
-	handlers map[string]gatewayHandler // by cluster/service
+	handlers map[gatewayKey]gatewayHandler
 }
+
+// gatewayKey names a service by its cluster and its name, kept apart.
+// Either may contain a '/', so a key joined with one could not tell cluster
+// "a" with service "b/c" from cluster "a/b" with service "c".
+type gatewayKey struct{ cluster, service string }
 
 func (g *gateways) handler(c *Coordinator, cluster string, svc api.Service) gatewayHandler {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	key := cluster + "/" + svc.Name
+	key := gatewayKey{cluster, svc.Name}
 	h, ok := g.handlers[key]
 	if !ok {
 		if g.handlers == nil {
-			g.handlers = make(map[string]gatewayHandler)
+			g.handlers = make(map[gatewayKey]gatewayHandler)
 		}
 		h = kinds[svc.Kind].gateway(func(ctx context.Context) (net.Conn, error) {
 			return c.hub.call(ctx, cluster, api.ExitRequest{Op: api.OpDial, Service: svc.Name})
@@ -33,6 +39,21 @@ func (g *gateways) handler(c *Coordinator, cluster string, svc api.Service) gate
 		g.handlers[key] = h
 	}
 	return h
+}
+
+// drop forgets the handlers of the cluster's named services, which no exit
+// node offers any longer, and closes the connections they kept. Requests in
+// flight finish on the handler they began with.
+func (g *gateways) drop(cluster string, services []string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, name := range services {
+		key := gatewayKey{cluster, name}
+		if h, ok := g.handlers[key]; ok {
+			h.CloseIdleConnections()
+			delete(g.handlers, key)
+		}
+	}
 }
 
 // handleGateway serves a service of a per-request kind. Unlike a session,

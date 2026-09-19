@@ -176,3 +176,57 @@ func TestKubernetesGateway(t *testing.T) {
 
 	checkAuditFields(t, auditRecords(t, audit.String()))
 }
+
+// TestGatewayKeepsServicesApart offers, in cluster "a", a service "b/c",
+// and in cluster "a/b", a service "c": pairs that a slash would join alike.
+// Each is served by its own cluster, though the other was reached first.
+func TestGatewayKeepsServicesApart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	r := newGatewayRig(t, slog.DiscardHandler, answering("cluster a"))
+	cfg := r.cfg
+	cfg.Grants = []coordinator.Grant{{User: "alice@example.com", Labels: map[string]string{"kind": "kubernetes"}}}
+	r.c.Reload(&cfg)
+	r.startExitOf(ctx, t, "a", r.offer(t, "b/c"))
+	r.startExitOf(ctx, t, "a/b", r.offerAt(t, standIn(t, answering("cluster a/b")), "c"))
+	r.await(ctx, t, "b/c", "c")
+
+	for _, tt := range []struct{ cluster, service string }{{"a", "b/c"}, {"a/b", "c"}} {
+		if code, body := r.fetchFrom(ctx, t, tt.cluster, tt.service, "/version"); body != "cluster "+tt.cluster {
+			t.Errorf("service %q of cluster %q: status %d, answered by %q", tt.service, tt.cluster, code, body)
+		}
+	}
+}
+
+// TestGatewayForgetsWithdrawnService reaches a service, which its exit node
+// then withdraws and offers again at another API server. The next request
+// reaches the other one: the connection kept from the first request went
+// with the service it was made for.
+func TestGatewayForgetsWithdrawnService(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	r := newGatewayRig(t, slog.DiscardHandler, answering("first"))
+	agent := r.startExit(ctx, t, "kubernetes")
+	r.await(ctx, t, "kubernetes")
+	if code, body := r.fetch(ctx, t, "kubernetes", "/version"); body != "first" {
+		t.Fatalf("status %d, answered by %q", code, body)
+	}
+
+	if err := agent.LoadConfig(r.offer(t, "kubernetes-b")); err != nil {
+		t.Fatal(err)
+	}
+	r.await(ctx, t, "kubernetes-b")
+	if err := agent.LoadConfig(r.offerAt(t, standIn(t, answering("second")), "kubernetes")); err != nil {
+		t.Fatal(err)
+	}
+	r.await(ctx, t, "kubernetes")
+	if code, body := r.fetch(ctx, t, "kubernetes", "/version"); body != "second" {
+		t.Errorf("offered anew, the service was answered by %q (status %d); want the API server it is offered at now", body, code)
+	}
+}
+
+// answering is a stand-in API server that answers every request, the exit
+// node's readiness check among them, with name.
+func answering(name string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, name) })
+}
