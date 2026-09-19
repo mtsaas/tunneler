@@ -111,6 +111,10 @@ type Discovery struct {
 	Resync time.Duration
 	Log    *slog.Logger
 
+	// credentialTimeout is how long resolving one resource's credentials
+	// may take; 10s if zero. Tests shorten it.
+	credentialTimeout time.Duration
+
 	mu       sync.Mutex
 	services map[string]*service // by namespace/name
 	sources  map[string]string   // by namespace/name: the DSN and generation the service was built from
@@ -323,8 +327,13 @@ func (d *Discovery) keyVaultRefused(ts *TunnelService) string {
 		ts.Namespace, id, ts.Namespace, ts.Namespace, id)
 }
 
-// resolveDSN fetches the administrative DSN the resource refers to.
+// resolveDSN fetches the administrative DSN the resource refers to. It runs
+// on the informer's one handler goroutine, where waiting holds up every
+// other resource's events, so it gives up after 10 seconds, as the ping does.
 func (d *Discovery) resolveDSN(ctx context.Context, ts *TunnelService) (string, error) {
+	timeout := cmp.Or(d.credentialTimeout, 10*time.Second)
+	ctx, cancel := context.WithTimeoutCause(ctx, timeout, fmt.Errorf("no answer within %s", timeout))
+	defer cancel()
 	ref := ts.Spec.Credentials.DSNRef
 	switch {
 	case ref.KubernetesSecret != nil && ref.AzureKeyVault != nil:
