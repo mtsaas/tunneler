@@ -175,6 +175,13 @@ one tenant has an issuer URL of the form
 pattern above matches all of them. Azure sets the tenant ID in that URL, so
 a cluster in a different tenant cannot match.
 
+A pattern is an `https` URL. In a pattern, `*` matches within one part of
+the host, such as the region, or within one part of the path, such as the
+cluster ID. It does not match a `.` or a `/`. An issuer must have the host,
+port, and path that the pattern gives. The coordinator refuses an issuer
+with a user name, a query, a fragment, or `%` escapes, and sends it no
+request.
+
 ### 4.2 Run the coordinator
 
 You can run the coordinator in Kubernetes or as one container. Use the
