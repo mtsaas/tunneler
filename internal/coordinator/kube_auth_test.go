@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -85,28 +84,21 @@ func TestKubeExitAuth(t *testing.T) {
 	defer c.Close()
 	h := c.Handler()
 
-	try := func(cluster, token string) int {
-		req := httptest.NewRequest("POST", "/v1/exit/result?id=none&cluster="+cluster, strings.NewReader("{}"))
-		req.Header.Set("Authorization", "Bearer "+token)
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
-		return rec.Code
-	}
 	for _, tt := range []struct {
 		name, cluster, token string
-		want                 int
+		admitted             bool
 	}{
-		{"first issuer binds the name", "prod", prodA.token(t, sa, "tunneler"), http.StatusOK},
-		{"same issuer again", "prod", prodA.token(t, sa, "tunneler"), http.StatusOK},
-		{"another issuer claiming the name", "prod", prodB.token(t, sa, "tunneler"), http.StatusUnauthorized},
-		{"another issuer under its own name", "dev", prodB.token(t, sa, "tunneler"), http.StatusOK},
-		{"wrong audience", "prod", prodA.token(t, sa, "other"), http.StatusUnauthorized},
-		{"wrong service account", "prod", prodA.token(t, "system:serviceaccount:default:default", "tunneler"), http.StatusUnauthorized},
-		{"untrusted issuer", "staging", stranger.token(t, sa, "tunneler"), http.StatusUnauthorized},
-		{"garbage", "prod", "x.y.z", http.StatusUnauthorized},
+		{"first issuer binds the name", "prod", prodA.token(t, sa, "tunneler"), true},
+		{"same issuer again", "prod", prodA.token(t, sa, "tunneler"), true},
+		{"another issuer claiming the name", "prod", prodB.token(t, sa, "tunneler"), false},
+		{"another issuer under its own name", "dev", prodB.token(t, sa, "tunneler"), true},
+		{"wrong audience", "prod", prodA.token(t, sa, "other"), false},
+		{"wrong service account", "prod", prodA.token(t, "system:serviceaccount:default:default", "tunneler"), false},
+		{"untrusted issuer", "staging", stranger.token(t, sa, "tunneler"), false},
+		{"garbage", "prod", "x.y.z", false},
 	} {
-		if got := try(tt.cluster, tt.token); got != tt.want {
-			t.Errorf("%s: status %d, want %d", tt.name, got, tt.want)
+		if got := admitted(h, tt.cluster, tt.token); got != tt.admitted {
+			t.Errorf("%s: admitted = %v, want %v", tt.name, got, tt.admitted)
 		}
 	}
 
@@ -138,10 +130,10 @@ func TestKubeExitAuth(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("forget: status %d", rec.Code)
 	}
-	if got := try("prod", prodB.token(t, sa, "tunneler")); got != http.StatusOK {
-		t.Errorf("rebuilt cluster after forget: status %d, want 200", got)
+	if !admitted(h, "prod", prodB.token(t, sa, "tunneler")) {
+		t.Error("rebuilt cluster not admitted after forget")
 	}
-	if got := try("prod", prodA.token(t, sa, "tunneler")); got != http.StatusUnauthorized {
-		t.Errorf("old issuer after rebind: status %d, want 401", got)
+	if admitted(h, "prod", prodA.token(t, sa, "tunneler")) {
+		t.Error("old issuer admitted after rebind")
 	}
 }

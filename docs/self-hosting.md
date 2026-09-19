@@ -425,11 +425,18 @@ account.
 
 ### Upgrades
 
-Upgrade the coordinator before the exit nodes. A new coordinator serves the
-exit nodes of the previous version, but a new exit node cannot connect to an
-old coordinator. Such an exit node logs that the coordinator must be
-upgraded first, and it does not become ready. Thus a rolling update of the
-exit node chart stops before it replaces a working exit node.
+Upgrade the exit nodes first, and then the coordinator. An exit node that
+is newer than the coordinator can be refused by it. Such an exit node logs
+that the coordinator must be upgraded, and it does not become ready. Thus
+the rolling update of the exit node chart stops, and the old exit nodes
+continue to operate. When you upgrade the coordinator, the new exit nodes
+connect and the update continues.
+
+CAUTION: Exit nodes and coordinators after version 0.3.1 use a new
+protocol. They do not operate with version 0.3.1 or earlier. When you
+upgrade the coordinator past 0.3.1, the old exit nodes disconnect. A
+cluster is available again when its first new exit node connects. If you
+upgraded the exit nodes first, that is within 30 seconds.
 
 ### A rebuilt cluster
 

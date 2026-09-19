@@ -18,11 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mtsaas/tunneler/internal/api"
 	"github.com/mtsaas/tunneler/internal/coordinator"
 	"github.com/mtsaas/tunneler/internal/exit"
 	"github.com/mtsaas/tunneler/internal/kube"
-	"github.com/mtsaas/tunneler/internal/tunnel"
 )
 
 // TestReadvertisingKeepsConnections changes an exit node's services while a
@@ -86,53 +84,6 @@ func TestWithdrawnAdmission(t *testing.T) {
 		t.Errorf("after withdrawal: status %d, body %s; want 502 saying the node is not admitted", code, body)
 	}
 	r.await(ctx, t) // and nothing of the cluster remains
-}
-
-// TestLegacyExitNode speaks the protocol of exit nodes of v0.3.1 and
-// earlier, which a coordinator still serves: a control stream of JSON
-// lines, and a connection back for each dial.
-func TestLegacyExitNode(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	r := newGatewayRig(t, http.NotFoundHandler()) // the stand-in goes unused
-	control, err := tunnel.Dial(ctx, r.srv.URL+"/v1/exit/control?cluster=prod", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer control.Close()
-	json.NewEncoder(control).Encode(api.Hello{Services: []api.Service{{Name: "kubernetes", Kind: "kubernetes", Ready: true}}})
-	go func() {
-		dec := json.NewDecoder(control)
-		for {
-			var req api.ExitRequest
-			if dec.Decode(&req) != nil {
-				return
-			}
-			if req.Op != api.OpDial {
-				continue // a keepalive
-			}
-			data, err := tunnel.Dial(ctx, r.srv.URL+"/v1/exit/data?cluster=prod&id="+req.ID, nil)
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			// Answer one request, as the cluster's API would.
-			go func() {
-				defer data.Close()
-				req, err := http.ReadRequest(bufio.NewReader(data))
-				if err != nil {
-					return
-				}
-				body := "legacy, for " + req.Header.Get("Impersonate-User")
-				fmt.Fprintf(data, "HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
-			}()
-		}
-	}()
-
-	r.await(ctx, t, "kubernetes")
-	if code, body := r.fetch(ctx, t, "kubernetes", "/version"); code != http.StatusOK || body != "legacy, for alice@example.com" {
-		t.Errorf("through a legacy exit node: status %d, body %q", code, body)
-	}
 }
 
 // gatewayRig is a coordinator whose one grant lets alice reach every

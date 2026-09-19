@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -31,15 +30,15 @@ func TestExitAuth(t *testing.T) {
 		name           string
 		insecure       bool
 		cluster, token string
-		want           int
+		admitted       bool
 	}{
-		{"workload identity with the cluster's role", false, "prod", "workload.prod.jwt", http.StatusOK},
-		{"workload identity claiming another cluster", false, "dev", "workload.prod.jwt", http.StatusUnauthorized},
-		{"user token", false, "prod", "user.alice.jwt", http.StatusUnauthorized},
-		{"forged token", false, "prod", "x.y.z", http.StatusUnauthorized},
-		{"no credentials", false, "prod", "", http.StatusUnauthorized},
-		{"no credentials, insecure mode", true, "prod", "", http.StatusOK},
-		{"no cluster, insecure mode", true, "", "", http.StatusUnauthorized},
+		{"workload identity with the cluster's role", false, "prod", "workload.prod.jwt", true},
+		{"workload identity claiming another cluster", false, "dev", "workload.prod.jwt", false},
+		{"user token", false, "prod", "user.alice.jwt", false},
+		{"forged token", false, "prod", "x.y.z", false},
+		{"no credentials", false, "prod", "", false},
+		{"no credentials, insecure mode", true, "prod", "", true},
+		{"no cluster, insecure mode", true, "", "", false},
 	} {
 		cfg := &coordinator.Config{
 			Database:         filepath.Join(t.TempDir(), "t.db"),
@@ -50,13 +49,20 @@ func TestExitAuth(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		req := httptest.NewRequest("POST", "/v1/exit/result?id=none&cluster="+tt.cluster, strings.NewReader("{}"))
-		req.Header.Set("Authorization", "Bearer "+tt.token)
-		rec := httptest.NewRecorder()
-		c.Handler().ServeHTTP(rec, req)
-		if rec.Code != tt.want {
-			t.Errorf("%s: status %d, want %d", tt.name, rec.Code, tt.want)
+		if got := admitted(c.Handler(), tt.cluster, tt.token); got != tt.admitted {
+			t.Errorf("%s: admitted = %v, want %v", tt.name, got, tt.admitted)
 		}
 		c.Close()
 	}
+}
+
+// admitted reports whether h admits the bearer of token as an exit node of
+// the cluster. An admitted request goes on to fail for want of a WebSocket
+// handshake, which it does not attempt.
+func admitted(h http.Handler, cluster, token string) bool {
+	req := httptest.NewRequest("GET", "/v1/exit/connect?cluster="+cluster, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec.Code == http.StatusUpgradeRequired
 }

@@ -129,7 +129,6 @@ func (e *Error) Error() string { return e.Message }
 type Hello struct {
 	Services []Service `json:"services"`
 	// Token proves which cluster the node speaks for; see ExitResult.Token.
-	// Exit nodes of v0.3.1 and earlier send none after connecting.
 	Token string `json:"token,omitempty"`
 }
 
@@ -145,10 +144,6 @@ const (
 // node answers there with an ExitResult, after which the stream of a
 // successful dial carries the connection to the service.
 type ExitRequest struct {
-	// ID names the request for exit nodes of v0.3.1 and earlier, which
-	// answer on connections of their own. For them, a request with an empty
-	// ID is a keepalive.
-	ID      string `json:"id,omitempty"`
 	Op      string `json:"op,omitempty"`
 	Service string `json:"service,omitempty"`
 	Role    *Role  `json:"role,omitempty"`

@@ -35,9 +35,6 @@ func (c *Coordinator) Handler() http.Handler {
 	mux.HandleFunc(routeSessionEvents, c.user(c.handleSessionEvents))
 	mux.HandleFunc(routeGateway, c.handleGateway) // authenticates for itself, to answer in the kind's manner
 	mux.HandleFunc(routeExitConnect, c.exit(c.handleExitConnect))
-	mux.HandleFunc(routeExitControl, c.exit(c.handleExitControl))
-	mux.HandleFunc(routeExitData, c.exit(c.handleExitData))
-	mux.HandleFunc(routeExitResult, c.exit(c.handleExitResult))
 	return mux
 }
 

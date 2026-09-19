@@ -169,7 +169,7 @@ func (c *ExitClient) Connect(ctx context.Context, log *slog.Logger) (*tunnel.Ses
 	u := c.Server + pathExitConnect + "?" + url.Values{"cluster": {c.Cluster}}.Encode()
 	conn, err := dialStream(ctx, u, c.Token)
 	if e := (*api.Error)(nil); errors.As(err, &e) && e.Status == http.StatusNotFound {
-		return nil, fmt.Errorf("%s does not serve %s: a coordinator must be at least as new as its exit nodes, so upgrade it first: %w",
+		return nil, fmt.Errorf("%s does not serve %s: the coordinator is older than this exit node, and must be upgraded: %w",
 			c.Server, pathExitConnect, err)
 	}
 	if err != nil {

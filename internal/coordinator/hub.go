@@ -42,25 +42,19 @@ type hub struct {
 	admit   func(ctx context.Context, cluster, token string) error
 	onOffer func(cluster string) // called, on its own goroutine, whenever an exit node begins to offer a service
 
-	mu      sync.Mutex
-	exits   map[string]map[*exitConn]struct{} // by cluster
-	pending map[string]pendingCall            // of legacy exit nodes, by request ID
+	mu    sync.Mutex
+	exits map[string]map[*exitConn]struct{} // by cluster
 }
 
 // exitConn is one connected exit node.
 type exitConn struct {
 	remote   string
 	session  *tunnel.Session
-	legacy   *legacyControl         // instead of session, for an exit node of v0.3.1 or earlier
 	services map[string]api.Service // guarded by hub.mu; replaced whole when the node re-advertises
 }
 
 func newHub(log *slog.Logger) *hub {
-	return &hub{
-		log:     log,
-		exits:   make(map[string]map[*exitConn]struct{}),
-		pending: make(map[string]pendingCall),
-	}
+	return &hub{log: log, exits: make(map[string]map[*exitConn]struct{})}
 }
 
 // nodes returns how many exit nodes of the cluster are connected.
@@ -233,16 +227,12 @@ func (h *hub) call(ctx context.Context, cluster string, req api.ExitRequest) (ne
 		return nil, fmt.Errorf("no connected exit node in cluster %q offers service %q", cluster, req.Service)
 	}
 
-	ask := h.ask
-	if exit.legacy != nil {
-		ask = h.askLegacy
-	}
 	log := h.log.With("cluster", cluster, "service", req.Service, "op", req.Op, "exit", exit.remote)
 	log.Debug("asking exit node")
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
-	conn, err := ask(ctx, cluster, exit, req)
+	conn, err := h.ask(ctx, cluster, exit, req)
 	if err != nil && ctx.Err() != nil {
 		log.Warn("exit node did not answer", "waited", time.Since(start).Round(time.Millisecond).String())
 		return nil, fmt.Errorf("exit node for cluster %q: %s: %w", cluster, req.Op, ctx.Err())

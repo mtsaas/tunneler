@@ -1,11 +1,9 @@
 package tunnel
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -51,30 +49,6 @@ func TestStream(t *testing.T) {
 	var status *StatusError
 	if !errors.As(err, &status) || status.Code != http.StatusUnauthorized || !strings.Contains(status.Body, "who are you") {
 		t.Errorf("unauthorized dial: %v", err)
-	}
-}
-
-// TestLegacyClient speaks the pre-WebSocket handshake, as older exit nodes
-// and clients do.
-func TestLegacyClient(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(echo))
-	defer srv.Close()
-
-	conn, err := net.Dial("tcp", strings.TrimPrefix(srv.URL, "http://"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
-	fmt.Fprintf(conn, "GET / HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: tunneler\r\nAuthorization: Bearer ok\r\n\r\n")
-	br := bufio.NewReader(conn)
-	resp, err := http.ReadResponse(br, nil)
-	if err != nil || resp.StatusCode != http.StatusSwitchingProtocols {
-		t.Fatalf("handshake: %v %v", resp, err)
-	}
-	fmt.Fprint(conn, "hello")
-	got := make([]byte, 5)
-	if _, err := io.ReadFull(br, got); err != nil || string(got) != "hello" {
-		t.Fatalf("echo = %q, %v", got, err)
 	}
 }
 

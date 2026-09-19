@@ -61,7 +61,8 @@ The groups are the link between the three places that you configure:
 ## 2. Set up a cluster
 
 Do this procedure for each cluster. The coordinator and the exit node must
-have version 0.3.0 or later. Upgrade the coordinator first.
+have version 0.3.0 or later. To upgrade them, see
+[Upgrades](../self-hosting.md#upgrades).
 
 1. Select names for the groups, for example `tunneler:view` and
    `tunneler:edit`. The names have no special meaning to Kubernetes.

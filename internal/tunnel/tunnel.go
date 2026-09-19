@@ -6,7 +6,6 @@
 package tunnel
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -14,7 +13,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/coder/websocket"
 )
@@ -71,9 +69,6 @@ func (e *StatusError) Error() string {
 // Accept turns an incoming request into a stream. On failure it writes an
 // error response and the caller should simply return.
 func Accept(w http.ResponseWriter, r *http.Request) (net.Conn, error) {
-	if strings.EqualFold(r.Header.Get("Upgrade"), legacyProtocol) {
-		return acceptLegacy(w, r)
-	}
 	// The peer is a tunneler binary, never a browser, so the Origin check
 	// that protects cookie-authenticated sites has nothing to protect.
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
@@ -82,42 +77,6 @@ func Accept(w http.ResponseWriter, r *http.Request) (net.Conn, error) {
 	}
 	return stream(ws), nil
 }
-
-// legacyProtocol is the Upgrade token of tunneler builds before the move to
-// WebSocket, which spoke raw bytes after a bare HTTP/1.1 upgrade.
-//
-// ponytail: accepted so that a coordinator can be upgraded ahead of its exit
-// nodes and clients. Delete acceptLegacy once none of those remain.
-const legacyProtocol = "tunneler"
-
-func acceptLegacy(w http.ResponseWriter, r *http.Request) (net.Conn, error) {
-	conn, brw, err := http.NewResponseController(w).Hijack()
-	if err != nil {
-		http.Error(w, "connection cannot be upgraded", http.StatusInternalServerError)
-		return nil, err
-	}
-	_, err = brw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + legacyProtocol + "\r\n\r\n")
-	if err == nil {
-		err = brw.Flush()
-	}
-	if err == nil {
-		err = conn.SetDeadline(time.Time{}) // drop the HTTP server's deadlines
-	}
-	if err != nil {
-		conn.Close()
-		return nil, err
-	}
-	return &bufferedConn{Conn: conn, r: brw.Reader}, nil
-}
-
-// bufferedConn is a net.Conn whose first reads are served from the buffer
-// that parsed the HTTP handshake, which may already hold stream data.
-type bufferedConn struct {
-	net.Conn
-	r *bufio.Reader
-}
-
-func (c *bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 
 // Splice copies between a and b until either side fails or is closed, then
 // closes both.
