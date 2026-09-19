@@ -27,6 +27,19 @@ func openStore(path string) (*store, error) {
 	// sessions that expired while the coordinator was down) can outwait the
 	// busy timeout and lose a write.
 	db.SetMaxOpenConns(1)
+	// A session records the roles its account was given. The sessions saved
+	// by an earlier coordinator do not, so they are dropped rather than kept
+	// without them. Their accounts can no longer be reached, and the exit
+	// node removes them once they expire. user_version counts such breaks.
+	var version int
+	err = db.QueryRow(`PRAGMA user_version`).Scan(&version)
+	if err == nil && version < 1 {
+		_, err = db.Exec(`DROP TABLE IF EXISTS sessions; PRAGMA user_version = 1`)
+	}
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS sessions (
 		id         TEXT PRIMARY KEY,
 		subject    TEXT NOT NULL,
@@ -36,7 +49,7 @@ func openStore(path string) (*store, error) {
 		kind       TEXT NOT NULL,
 		database   TEXT NOT NULL,
 		username   TEXT NOT NULL,
-		labels     TEXT NOT NULL, -- JSON object
+		roles      TEXT NOT NULL, -- JSON array: those its account was given
 		expires_at INTEGER NOT NULL, -- Unix seconds
 		revoked    INTEGER NOT NULL DEFAULT 0 -- ended, but its account is not yet known to be dropped
 	) STRICT`)
@@ -90,13 +103,13 @@ func (st *store) unbindCluster(name string) error {
 }
 
 func (st *store) insert(s *session) error {
-	labels, err := json.Marshal(s.labels)
+	roles, err := json.Marshal(s.roles)
 	if err != nil {
 		return err
 	}
 	_, err = st.db.Exec(`INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
 		s.info.ID, s.subject, s.info.Owner, s.info.Cluster, s.info.Service, s.info.Kind,
-		s.info.Database, s.info.Username, string(labels), s.info.ExpiresAt.Unix())
+		s.info.Database, s.info.Username, string(roles), s.info.ExpiresAt.Unix())
 	return err
 }
 
@@ -119,7 +132,7 @@ func (st *store) pruneRevoked(now time.Time) error {
 }
 
 func (st *store) load() ([]*session, error) {
-	rows, err := st.db.Query(`SELECT id, subject, owner, cluster, service, kind, database, username, labels, expires_at, revoked FROM sessions`)
+	rows, err := st.db.Query(`SELECT id, subject, owner, cluster, service, kind, database, username, roles, expires_at, revoked FROM sessions`)
 	if err != nil {
 		return nil, err
 	}
@@ -128,14 +141,14 @@ func (st *store) load() ([]*session, error) {
 	var sessions []*session
 	for rows.Next() {
 		s := &session{conns: make(map[net.Conn]struct{})}
-		var labels string
+		var roles string
 		var expires int64
 		err := rows.Scan(&s.info.ID, &s.subject, &s.info.Owner, &s.info.Cluster, &s.info.Service,
-			&s.info.Kind, &s.info.Database, &s.info.Username, &labels, &expires, &s.revoked)
+			&s.info.Kind, &s.info.Database, &s.info.Username, &roles, &expires, &s.revoked)
 		if err != nil {
 			return nil, err
 		}
-		if err := json.Unmarshal([]byte(labels), &s.labels); err != nil {
+		if err := json.Unmarshal([]byte(roles), &s.roles); err != nil {
 			return nil, err
 		}
 		s.info.ExpiresAt = time.Unix(expires, 0)

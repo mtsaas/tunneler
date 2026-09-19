@@ -99,10 +99,10 @@ func (c *Coordinator) remote(r *http.Request) string {
 // Reload puts a new configuration into effect without disturbing sessions
 // or connections. Grants, admins, the session lifetime and the rules for
 // admitting exit nodes take effect at once: a session whose owner lost
-// access is revoked at its next connection. The listener, the session
-// database, the identity provider and the issuer CA bundle are fixed at
-// start; Reload reports those it found changed, and they keep their old
-// values until a restart.
+// access, or lost a role its account was given, is revoked at its next
+// connection. The listener, the session database, the identity provider
+// and the issuer CA bundle are fixed at start; Reload reports those it
+// found changed, and they keep their old values until a restart.
 func (c *Coordinator) Reload(cfg *Config) (ignored []string) {
 	old := c.config()
 	fixed := []struct {
@@ -142,9 +142,9 @@ func (c *Coordinator) Close() error {
 
 // session is a provisioned account and the connections using it.
 type session struct {
-	info    api.Session       // never holds the password
-	subject string            // owner's Identity.Subject
-	labels  map[string]string // of the service, as advertised at creation
+	info    api.Session // never holds the password
+	subject string      // owner's Identity.Subject
+	roles   []string    // those its account was given
 	expiry  *time.Timer
 
 	mu       sync.Mutex
@@ -264,7 +264,7 @@ func (c *Coordinator) createSession(ctx context.Context, id *Identity, cluster s
 			ExpiresAt: time.Now().Add(ttl).Truncate(time.Second),
 		},
 		subject: id.Subject,
-		labels:  svc.Labels,
+		roles:   roles,
 		conns:   make(map[net.Conn]struct{}),
 	}
 	// Record the session before the account exists, never the reverse: a
