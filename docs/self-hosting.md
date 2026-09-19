@@ -320,13 +320,17 @@ token and rotates it. The exit node presents it to the coordinator.
 If the coordinator log contains `exit node rejected`, read the `err` field.
 It names the issuer, the subject, or the bound cluster that did not match.
 
-NOTE: The chart always uses the service account token. An exit node that
-you deploy without that token, under Azure Workload Identity, presents an
-Entra token for the app registration instead. Set `--audience`, or
-`TUNNELER_AUDIENCE`, to `$APP`. Without it, the exit node asks the
-coordinator which app to request tokens for, and refuses an answer that is
-not a client ID. The coordinator receives those tokens, so it must not
-choose what they are for.
+NOTE: The chart always uses the service account token. If you write your
+own Deployment without that token, the exit node can use Azure Workload
+Identity instead. It then presents an Entra token for the app registration.
+Set `--audience`, or `TUNNELER_AUDIENCE`, to `$APP`. Without it, the exit
+node does not start.
+
+CAUTION: This is a breaking change. Earlier versions asked the coordinator
+for this value. That was not safe, because the coordinator receives the
+token. If your own Deployment uses Azure Workload Identity, set
+`TUNNELER_AUDIENCE` before you upgrade. The chart is not affected, because
+it uses the service account token.
 
 ### 5.4 Next: offer services
 

@@ -40,8 +40,7 @@ Proves which cluster it is with, in order: the service account token at
 with insecure_exit_auth accepts.
 
 Under Azure Workload Identity it presents an Entra token for the
-coordinator's application, which --audience names. Without --audience it
-asks the coordinator, and refuses an answer that is not a client ID.
+coordinator's application, which --audience must name.
 
 Serves /healthz, and /readyz while connected to the coordinator.`,
 		Example: `$ tunneler start exit --kubernetes
@@ -61,12 +60,12 @@ $ tunneler start exit --cluster dev --server http://localhost:8443 --config exit
 					"file", tokenFile)
 				a.Token = exit.TokenFile(tokenFile)
 			} else if azure != nil {
+				if audience == "" {
+					return errors.New("--audience or $TUNNELER_AUDIENCE is required under Azure Workload Identity: the client ID of the coordinator's application")
+				}
 				log.Info("authenticating to the coordinator with Azure Workload Identity",
 					"client_id", os.Getenv("AZURE_CLIENT_ID"), "needs_role", "exit:"+a.Cluster, "audience", audience)
-				if audience == "" {
-					log.Warn("the coordinator chooses which application this exit node requests tokens for; set --audience to its client ID")
-				}
-				a.Token = exit.AzureWorkloadIdentity(azure, a.Server, audience)
+				a.Token = exit.AzureWorkloadIdentity(azure, audience)
 			} else {
 				log.Warn("connecting to the coordinator WITHOUT credentials; it will refuse unless it runs with insecure_exit_auth",
 					"no_token_file", tokenFile, "no_workload_identity", azureErr)
@@ -106,7 +105,7 @@ $ tunneler start exit --cluster dev --server http://localhost:8443 --config exit
 	cmd.Flags().StringVar(&healthAddr, "health-addr", ":8081", "Address for /healthz and /readyz; empty to disable")
 	cmd.Flags().StringVar(&a.Server, "server", "", "URL of the coordinator (default $TUNNELER_SERVER)")
 	cmd.Flags().StringVar(&tokenFile, "token-file", "/var/run/secrets/tunneler/token", "Service account token to authenticate with, if present")
-	cmd.Flags().StringVar(&audience, "audience", "", "Under Azure Workload Identity, the client ID of the coordinator's application (default $TUNNELER_AUDIENCE)")
+	cmd.Flags().StringVar(&audience, "audience", "", "Client ID of the coordinator's application; required under Azure Workload Identity (default $TUNNELER_AUDIENCE)")
 	cmd.Flags().StringVar(&path, "config", "/etc/tunneler/exit.json", "Configuration file, if present")
 	cmd.Flags().BoolVar(&kubernetes, "kubernetes", false, "Discover services from TunnelService resources")
 	return cmd

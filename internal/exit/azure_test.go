@@ -12,78 +12,40 @@ import (
 	"testing"
 )
 
-const coordinatorApp = "4f1b2c3d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
-
 func TestAzureWorkloadIdentity(t *testing.T) {
 	if _, err := NewAzureCredential(); err == nil {
 		t.Fatal("no error outside a workload identity environment")
 	}
-	server, cred, requests := fakeAzure(t, coordinatorApp)
-	token := AzureWorkloadIdentity(cred, server, "")
-	for range 3 {
-		got, err := token(context.Background())
-		if err != nil || got != "entra-access-token" {
-			t.Fatalf("token = %q, %v", got, err)
-		}
-	}
-	if got, want := requests(), []string{"config", coordinatorApp + "/.default"}; !slices.Equal(got, want) {
-		t.Errorf("requests for 3 tokens = %q, want %q; the client ID and the token should be cached", got, want)
-	}
-}
-
-// The coordinator receives the token, so it must not choose a resource for
-// it: its answer is used only if it is a client ID, and not at all if the
-// audience is set.
-func TestAzureWorkloadIdentityAudience(t *testing.T) {
-	for _, tt := range []struct {
-		name               string
-		reported, audience string
-		want               []string // requests the fakes receive, in order
-		refused            bool
-	}{
-		{"coordinator names a resource", "https://vault.azure.net", "", []string{"config"}, true},
-		{"coordinator names an application ID URI", "api://AzureADTokenExchange", "", []string{"config"}, true},
-		{"coordinator names two scopes", coordinatorApp + " https://vault.azure.net", "", []string{"config"}, true},
-		{"coordinator names a client ID", coordinatorApp, "", []string{"config", coordinatorApp + "/.default"}, false},
-		{"audience set", "https://vault.azure.net", coordinatorApp, []string{coordinatorApp + "/.default"}, false},
-		{"audience set to an application ID URI", coordinatorApp, "api://tunneler", []string{"api://tunneler/.default"}, false},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			server, cred, requests := fakeAzure(t, tt.reported)
-			_, err := AzureWorkloadIdentity(cred, server, tt.audience)(context.Background())
-			if (err != nil) != tt.refused {
-				t.Errorf("err = %v, want refused %v", err, tt.refused)
+	for _, audience := range []string{"4f1b2c3d-5e6f-4a7b-8c9d-0e1f2a3b4c5d", "api://tunneler"} {
+		t.Run(audience, func(t *testing.T) {
+			cred, scopes := fakeEntra(t)
+			token := AzureWorkloadIdentity(cred, audience)
+			for range 3 {
+				got, err := token(context.Background())
+				if err != nil || got != "entra-access-token" {
+					t.Fatalf("token = %q, %v", got, err)
+				}
 			}
-			if got := requests(); !slices.Equal(got, tt.want) {
-				t.Errorf("requests = %q, want %q", got, tt.want)
+			if got, want := scopes(), []string{audience + "/.default"}; !slices.Equal(got, want) {
+				t.Errorf("exchanges for 3 tokens = %q, want %q; the token should be cached until it nears expiry", got, want)
 			}
 		})
 	}
 }
 
-// fakeAzure serves a coordinator that reports clientID as its own, and the
-// token endpoint of the Entra tenant "my-tenant", which exchanges the pod's
-// projected token for an access token for any scope. It puts the pod in
-// that tenant under the workload identity "exit-identity", and returns the
-// coordinator's URL, a credential, and the requests served so far: "config"
-// for each question to the coordinator, and the scope of each exchange.
-func fakeAzure(t *testing.T, clientID string) (string, *AzureCredential, func() []string) {
+// fakeEntra serves the token endpoint of the Entra tenant "my-tenant", which
+// exchanges the pod's projected token for an access token for any scope, and
+// puts the pod in that tenant under the workload identity "exit-identity".
+// It returns a credential and the scope of each exchange so far.
+func fakeEntra(t *testing.T) (*AzureCredential, func() []string) {
 	var mu sync.Mutex
-	var requests []string
-	record := func(r string) {
-		mu.Lock()
-		defer mu.Unlock()
-		requests = append(requests, r)
-	}
-
+	var scopes []string
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/auth/config", func(w http.ResponseWriter, r *http.Request) {
-		record("config")
-		json.NewEncoder(w).Encode(map[string]string{"client_id": clientID})
-	})
 	mux.HandleFunc("POST /my-tenant/oauth2/v2.0/token", func(w http.ResponseWriter, r *http.Request) {
 		r.ParseForm()
-		record(r.PostForm.Get("scope"))
+		mu.Lock()
+		scopes = append(scopes, r.PostForm.Get("scope"))
+		mu.Unlock()
 		for k, want := range map[string]string{
 			"grant_type":            "client_credentials",
 			"client_id":             "exit-identity",
@@ -110,9 +72,9 @@ func fakeAzure(t *testing.T, clientID string) (string, *AzureCredential, func() 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return srv.URL, cred, func() []string {
+	return cred, func() []string {
 		mu.Lock()
 		defer mu.Unlock()
-		return slices.Clone(requests)
+		return slices.Clone(scopes)
 	}
 }
