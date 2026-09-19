@@ -45,14 +45,19 @@ The exit node of the cluster watches these resources in all namespaces. When
 you create one, the exit node tells the coordinator about the service. When
 you delete it, the service goes away. Nothing changes on the coordinator.
 
-The coordinator knows the service as `<namespace>-<name>`, for example
-`shop-postgres`. Thus two namespaces can each have a service with the name
+The coordinator knows the service as `<namespace>/<name>`, for example
+`shop/postgres`. Thus two namespaces can each have a service with the name
 `postgres`.
 
 The namespace of the exit node is the exception. It belongs to the person
 who operates tunneler, and a service there keeps its name without the
-namespace, for example `kubernetes`. If two resources give the same service
-name, the second one gets the reason `InvalidSpec`.
+namespace, for example `kubernetes`.
+
+A Kubernetes name cannot contain `/`. Thus a namespace cannot give its
+service the name of a service in a different namespace, or in the namespace
+of the exit node. If a `TunnelService` gives the name of a service
+[from a file](#7-services-from-a-file), the exit node offers the service
+from the file. Its log records that it ignores the resource.
 
 The resource contains no secret. For a kind that has a credential, the
 resource says where the credential is.
@@ -69,7 +74,7 @@ that tunneler sets:
 |---|---|
 | `cluster` | The name of the cluster, from the exit node |
 | `kind` | `postgres` or `kubernetes` |
-| `name` | The name of the service, for example `shop-postgres` |
+| `name` | The name of the service, for example `shop/postgres` |
 | `namespace` | The namespace of the `TunnelService` |
 
 A `TunnelService` cannot set these four labels. Thus a grant for
@@ -110,7 +115,7 @@ tunneler services list
 | `Connected` | The service is ready |
 | `CredentialsInvalid` | The exit node cannot read the credential that the resource refers to |
 | `Unreachable` | The exit node has the credential, and the service refuses it or does not answer |
-| `InvalidSpec` | The resource or its credential is incorrect, its service name is in use, or its kind is not permitted in its namespace. The message says why |
+| `InvalidSpec` | The resource or its credential is incorrect, or its kind is not permitted in its namespace. The message says why |
 
 The coordinator lists a service that is not ready, and refuses connections to
 it with the reason.

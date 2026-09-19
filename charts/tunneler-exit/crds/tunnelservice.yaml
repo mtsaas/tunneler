@@ -1,7 +1,8 @@
 # TunnelService registers a service with the cluster's tunneler exit node.
 # Create one per database in the namespace that owns it; the exit node
 # discovers it, checks its credentials, and advertises it to the coordinator
-# as <namespace>-<name>. Deleting it withdraws the service.
+# as <namespace>/<name>, or as <name> in the exit node's own namespace.
+# Deleting it withdraws the service.
 #
 # This file is the single definition of the resource. Helm installs it with
 # the chart; without Helm, apply it with kubectl.

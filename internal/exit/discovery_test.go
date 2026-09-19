@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -73,9 +74,9 @@ func TestDiscovery(t *testing.T) {
 	d := &Discovery{Agent: agent, Namespace: "tunneler", Dynamic: dyn, Clients: k8sfake.NewSimpleClientset(secret, ownSecret, passwordless), Log: log}
 	go d.Run(ctx)
 
-	// The pre-existing resource is discovered and named <namespace>-<name>.
-	waitFor(t, ctx, func() bool { _, ok := agent.desired()["preview-1-postgres"]; return ok })
-	svc := agent.desired()["preview-1-postgres"]
+	// The pre-existing resource is discovered and named <namespace>/<name>.
+	waitFor(t, ctx, func() bool { _, ok := agent.desired()["preview-1/postgres"]; return ok })
+	svc := agent.desired()["preview-1/postgres"]
 	if svc.advert.Labels["environment"] != "preview-1" || svc.advert.Labels["namespace"] != "preview-1" || svc.roles[0] != "readonly" {
 		t.Errorf("service = %+v", svc.advert)
 	}
@@ -99,7 +100,7 @@ func TestDiscovery(t *testing.T) {
 		c := condition(t, ctx, dyn, "preview-2", "postgres")
 		return c != nil && c.Reason == "CredentialsInvalid"
 	})
-	if _, ok := agent.desired()["preview-2-postgres"]; ok {
+	if _, ok := agent.desired()["preview-2/postgres"]; ok {
 		t.Error("service with unresolvable credentials was defined")
 	}
 
@@ -128,10 +129,6 @@ func TestDiscovery(t *testing.T) {
 		t.Errorf("namespace label = %q", got)
 	}
 
-	// Which makes a clash possible, and the later resource loses.
-	create("tunneler", "preview-1-postgres", ownDB)
-	invalid("tunneler", "preview-1-postgres", "already taken by the TunnelService preview-1/postgres")
-
 	// A tenant's DSN is not completed from the exit node's environment, so
 	// one without a password is refused.
 	create("preview-3", "postgres", map[string]any{
@@ -143,7 +140,7 @@ func TestDiscovery(t *testing.T) {
 	// A tenant cannot offer the cluster's own API.
 	create("preview-2", "kubernetes", map[string]any{"kind": "kubernetes", "grantableRoles": []any{"system:masters"}})
 	invalid("preview-2", "kubernetes", "only be registered in the exit node's namespace")
-	if _, ok := agent.desired()["preview-2-kubernetes"]; ok {
+	if _, ok := agent.desired()["preview-2/kubernetes"]; ok {
 		t.Error("a tenant's kubernetes service was defined")
 	}
 
@@ -151,7 +148,7 @@ func TestDiscovery(t *testing.T) {
 	if err := dyn.Resource(TunnelServiceGVR).Namespace("preview-1").Delete(ctx, "postgres", metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, ctx, func() bool { _, ok := agent.desired()["preview-1-postgres"]; return !ok })
+	waitFor(t, ctx, func() bool { _, ok := agent.desired()["preview-1/postgres"]; return !ok })
 }
 
 // TestDiscoveryQuotesNoSecret points TunnelServices at every key of a Secret,
@@ -201,7 +198,7 @@ func TestDiscoveryQuotesNoSecret(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	waitFor(t, ctx, func() bool { _, ok := agent.desired()["shop-uri"]; return ok })
+	waitFor(t, ctx, func() bool { _, ok := agent.desired()["shop/uri"]; return ok })
 	agent.reconcile(ctx)
 
 	for key := range values {
@@ -303,8 +300,8 @@ func TestDiscoveryKeyVault(t *testing.T) {
 		Azure: azure, KeyVaultSecrets: allowed, Log: log}
 	go d.Run(ctx)
 
-	waitFor(t, ctx, func() bool { _, ok := agent.desired()["team-a-postgres"]; return ok })
-	if got := agent.desired()["team-a-postgres"].advert.Database; got != "a" || fetchesA.Load() == 0 {
+	waitFor(t, ctx, func() bool { _, ok := agent.desired()["team-a/postgres"]; return ok })
+	if got := agent.desired()["team-a/postgres"].advert.Database; got != "a" || fetchesA.Load() == 0 {
 		t.Errorf("team A's service is on database %q after %d fetches from its vault", got, fetchesA.Load())
 	}
 
@@ -316,10 +313,10 @@ func TestDiscoveryKeyVault(t *testing.T) {
 			t.Fatal(err)
 		}
 		waitFor(t, ctx, func() bool {
-			_, defined := agent.desired()[ns+"-stolen"]
+			_, defined := agent.desired()[ns+"/stolen"]
 			return defined || condition(t, ctx, dyn, ns, "stolen") != nil
 		})
-		if _, ok := agent.desired()[ns+"-stolen"]; ok {
+		if _, ok := agent.desired()[ns+"/stolen"]; ok {
 			t.Errorf("%s was offered a service built from team B's secret", ns)
 		}
 		c := condition(t, ctx, dyn, ns, "stolen")
@@ -412,11 +409,11 @@ func TestDiscoveryKeyVaultBounded(t *testing.T) {
 	}), metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, ctx, func() bool { _, ok := agent.desired()["team-c-postgres"]; return ok })
+	waitFor(t, ctx, func() bool { _, ok := agent.desired()["team-c/postgres"]; return ok })
 	if err := dyn.Resource(TunnelServiceGVR).Namespace("team-c").Delete(ctx, "postgres", metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, ctx, func() bool { _, ok := agent.desired()["team-c-postgres"]; return !ok })
+	waitFor(t, ctx, func() bool { _, ok := agent.desired()["team-c/postgres"]; return !ok })
 
 	for ns, why := range map[string]string{"team-a": "no answer within 1s", "team-b": "larger than any secret"} {
 		if c := condition(t, ctx, dyn, ns, "postgres"); c == nil || c.Reason != "CredentialsInvalid" || !strings.Contains(c.Message, why) {
@@ -457,4 +454,55 @@ func condition(t *testing.T, ctx context.Context, dyn *dynamicfake.FakeDynamicCl
 		}
 	}
 	return nil
+}
+
+// Each resource's service has a name that no other resource can give. Joined
+// with a hyphen, shared/db passed for the operator's shared-db, team/a-db for
+// team-a/db, and shop/postgres-main for shop-postgres/main, and whichever
+// the informer listed first took the name.
+func TestDiscoveryNamesAreDistinct(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resources := []struct{ namespace, name, service string }{
+		{"tunneler", "shared-db", "shared-db"},
+		{"shared", "db", "shared/db"},
+		{"team", "a-db", "team/a-db"},
+		{"team-a", "db", "team-a/db"},
+		{"shop", "postgres-main", "shop/postgres-main"},
+		{"shop-postgres", "main", "shop-postgres/main"},
+	}
+	var objects, secrets []runtime.Object
+	want := make(map[string]string) // the namespace of each service's resource, by service name
+	for _, r := range resources {
+		objects = append(objects, tunnelService(r.namespace, r.name, map[string]any{
+			"kind":        "postgres",
+			"credentials": map[string]any{"dsnRef": map[string]any{"kubernetesSecret": map[string]any{"name": "db", "key": "dsn"}}},
+		}))
+		secrets = append(secrets, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: r.namespace},
+			Data:       map[string][]byte{"dsn": []byte("postgres://admin:pw@127.0.0.1:1/" + r.namespace + "?sslmode=disable")},
+		})
+		want[r.service] = r.namespace
+	}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{TunnelServiceGVR: "TunnelServiceList"}, objects...)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	agent := &Agent{Log: log}
+	d := &Discovery{Agent: agent, Namespace: "tunneler", Dynamic: dyn, Clients: k8sfake.NewSimpleClientset(secrets...), Log: log}
+	go d.Run(ctx)
+
+	got := func() map[string]string {
+		out := make(map[string]string)
+		for name, svc := range agent.desired() {
+			out[name] = svc.advert.Labels["namespace"]
+		}
+		return out
+	}
+	for !maps.Equal(got(), want) && ctx.Err() == nil {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !maps.Equal(got(), want) {
+		t.Errorf("namespace of each service's resource = %v, want %v", got(), want)
+	}
 }

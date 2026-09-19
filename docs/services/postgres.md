@@ -226,7 +226,7 @@ manages.
    in step 4 of [section 2](#2-prepare-the-database). `Unreachable` means
    that the connection string does not work.
 
-The coordinator knows this service as `shop-postgres`. It has the labels
+The coordinator knows this service as `shop/postgres`. It has the labels
 `cluster`, `kind`, `name`, `namespace`, and `team`. When you delete the
 `TunnelService`, the service disappears from the coordinator.
 
@@ -257,7 +257,7 @@ coordinator removes the account:
 
 ```bash
 tunneler connect cluster=prod team=shop -- psql
-tunneler connect name=shop-postgres -- pg_dump --schema-only -f schema.sql
+tunneler connect name=shop/postgres -- pg_dump --schema-only -f schema.sql
 ```
 
 Connect with `sslmode=disable`. The connection from your computer to the
@@ -281,7 +281,7 @@ The coordinator writes these records. Each has the
 
 ```json
 {"msg":"query","audit":true,"user":"alice@example.com","subject":"...","cluster":"prod",
- "service":"shop-postgres","kind":"postgres","session":"K3Q2XB7HTLW5",
+ "service":"shop/postgres","kind":"postgres","session":"K3Q2XB7HTLW5",
  "account":"tnl_alice_example_com_x7k2p9qa","sql":"select * from orders"}
 ```
 

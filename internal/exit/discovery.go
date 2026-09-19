@@ -89,7 +89,7 @@ type Discovery struct {
 	// Namespace is the namespace the exit node runs in, which belongs to
 	// whoever operates it. A service registered there keeps its plain name,
 	// and only there may a kind that offers the cluster itself be
-	// registered. Services of other namespaces are named NAMESPACE-NAME, so
+	// registered. Services of other namespaces are named NAMESPACE/NAME, so
 	// that every tenant can have its own "postgres". Empty, when the exit
 	// node runs outside the cluster, means no namespace is the operator's.
 	Namespace string
@@ -211,9 +211,9 @@ func (d *Discovery) upsert(ctx context.Context, obj any) {
 	if labels == nil {
 		labels = make(map[string]string)
 	}
-	name, invalid := d.serviceName(ts, key)
+	name := d.serviceName(ts)
+	var invalid string
 	switch {
-	case invalid != "":
 	case labels["namespace"] != "":
 		invalid = `label "namespace" is attached automatically and cannot be set`
 	case clusterKinds[ts.Spec.Kind] && d.Namespace != "" && ts.Namespace != d.Namespace:
@@ -255,20 +255,18 @@ func (d *Discovery) upsert(ctx context.Context, obj any) {
 }
 
 // serviceName returns the name the coordinator knows the resource's service
-// by, or why it cannot have one.
-func (d *Discovery) serviceName(ts *TunnelService, key string) (name, invalid string) {
-	name = ts.Namespace + "-" + ts.Name
+// by. No Kubernetes name contains "/", so no other resource can give
+// NAMESPACE/NAME. Should the exit node's file give it, the file's service
+// wins; see Agent.desired.
+//
+// ponytail: kubectl cannot reach a kubernetes service named NAMESPACE/NAME,
+// as client-go unescapes the "/" in its gateway URL. Only an exit node
+// outside a pod, where no namespace is the operator's, offers one.
+func (d *Discovery) serviceName(ts *TunnelService) string {
 	if d.Namespace != "" && ts.Namespace == d.Namespace {
-		name = ts.Name
+		return ts.Name
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	for other, svc := range d.services {
-		if other != key && svc.advert.Name == name {
-			return "", fmt.Sprintf("the service name %q is already taken by the TunnelService %s", name, other)
-		}
-	}
-	return name, ""
+	return ts.Namespace + "/" + ts.Name
 }
 
 func (d *Discovery) remove(obj any) {
