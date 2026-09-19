@@ -320,6 +320,14 @@ token and rotates it. The exit node presents it to the coordinator.
 If the coordinator log contains `exit node rejected`, read the `err` field.
 It names the issuer, the subject, or the bound cluster that did not match.
 
+NOTE: The chart always uses the service account token. An exit node that
+you deploy without that token, under Azure Workload Identity, presents an
+Entra token for the app registration instead. Set `--audience`, or
+`TUNNELER_AUDIENCE`, to `$APP`. Without it, the exit node asks the
+coordinator which app to request tokens for, and refuses an answer that is
+not a client ID. The coordinator receives those tokens, so it must not
+choose what they are for.
+
 ### 5.4 Next: offer services
 
 The cluster is now connected, and it offers nothing yet. To offer a database
