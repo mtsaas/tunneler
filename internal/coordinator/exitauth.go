@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"strings"
@@ -24,13 +25,90 @@ type kubeVerifier struct {
 	client *http.Client // nil for the default; set to trust private issuer certificates
 
 	mu        sync.Mutex
-	providers map[string]*oidc.Provider // by issuer
+	providers map[string]*oidc.Provider // by issuer; only issuers that trusts accepted
 }
 
-// trusts reports whether the token's issuer matches one of the patterns,
-// which are in path.Match syntax. It reads the unverified issuer claim, which
-// is safe: it only decides whether to try verifying against that issuer's
-// keys.
+// issuerURL is an issuer, or a pattern for issuers, split into the parts
+// that decide where discovery goes: the host's labels, the port, and the
+// path.
+type issuerURL struct {
+	labels []string
+	port   string
+	path   string
+}
+
+const (
+	labelChars   = "abcdefghijklmnopqrstuvwxyz0123456789-"
+	segmentChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+)
+
+// parseIssuer parses s as an https URL. It refuses anything that could read
+// one way as a string and another as a URL: user info, a query, a fragment,
+// percent-encoding, a host that is not DNS labels of lowercase letters,
+// digits and hyphens, and a path that is not segments of letters, digits and
+// "-._~". The path may end in "/" but has no other empty segment, and no "."
+// or "..". In a pattern, '*' may also appear in any label or segment.
+func parseIssuer(s string, pattern bool) (issuerURL, error) {
+	wild := ""
+	if pattern {
+		wild = "*"
+	}
+	u, err := url.Parse(s)
+	switch {
+	case err != nil:
+		return issuerURL{}, err
+	case u.Scheme != "https" || u.Opaque != "":
+		return issuerURL{}, errors.New("must be an https:// URL")
+	case u.User != nil || strings.ContainsAny(s, "?#%"):
+		return issuerURL{}, errors.New("must not have user info, a query, a fragment or percent-encoding")
+	}
+	host, port, hasPort := strings.Cut(u.Host, ":")
+	if hasPort && !only(port, "0123456789") {
+		return issuerURL{}, fmt.Errorf("port %q is not a number", port)
+	}
+	labels := strings.Split(host, ".")
+	for _, l := range labels {
+		if !only(l, labelChars+wild) {
+			return issuerURL{}, fmt.Errorf("host %q is not DNS labels of lowercase letters, digits and hyphens", host)
+		}
+	}
+	// With a host, the path is empty or begins with "/".
+	if p := strings.TrimSuffix(u.Path, "/"); p != "" {
+		for _, seg := range strings.Split(p[1:], "/") {
+			if seg == "." || seg == ".." || !only(seg, segmentChars+wild) {
+				return issuerURL{}, fmt.Errorf("path %q is not segments of letters, digits and \"-._~\"", u.Path)
+			}
+		}
+	}
+	return issuerURL{labels, port, u.Path}, nil
+}
+
+// only reports whether s is not empty and holds nothing but chars.
+func only(s, chars string) bool {
+	return s != "" && strings.Trim(s, chars) == ""
+}
+
+// matches reports whether p, a pattern, matches iss, an issuer: the same
+// port, as many labels, and each label and the path matching in the manner
+// of path.Match. A '*' thus never reaches past a '.' in the host or a '/' in
+// the path.
+func (p issuerURL) matches(iss issuerURL) bool {
+	if p.port != iss.port || len(p.labels) != len(iss.labels) {
+		return false
+	}
+	for i := range p.labels {
+		if ok, _ := path.Match(p.labels[i], iss.labels[i]); !ok {
+			return false
+		}
+	}
+	ok, _ := path.Match(p.path, iss.path)
+	return ok
+}
+
+// trusts reports whether the token's issuer matches one of the patterns. It
+// reads the unverified issuer claim, which is safe because the match is on
+// the parts of the parsed URL: only an issuer on a host that a pattern allows
+// is ever asked for its keys.
 func (v *kubeVerifier) trusts(token string, patterns []string) (issuer string, ok bool) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
@@ -46,8 +124,12 @@ func (v *kubeVerifier) trusts(token string, patterns []string) (issuer string, o
 	if json.Unmarshal(payload, &claims) != nil {
 		return "", false
 	}
+	iss, err := parseIssuer(claims.Issuer, false)
+	if err != nil {
+		return claims.Issuer, false
+	}
 	for _, p := range patterns {
-		if ok, _ := path.Match(p, claims.Issuer); ok {
+		if pattern, err := parseIssuer(p, true); err == nil && pattern.matches(iss) {
 			return claims.Issuer, true
 		}
 	}
