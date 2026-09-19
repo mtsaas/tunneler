@@ -27,7 +27,11 @@ type client struct {
 
 	mu    sync.Mutex // guards state, which connect refreshes from many goroutines
 	state struct {
-		Server       string `json:"server"`
+		Server string `json:"server"`
+		// The identity provider and app registration that the login was
+		// made with. Its refresh token is sent nowhere else.
+		Issuer       string `json:"issuer,omitempty"`
+		ClientID     string `json:"client_id,omitempty"`
 		IDToken      string `json:"id_token,omitempty"`
 		RefreshToken string `json:"refresh_token,omitempty"`
 	}
@@ -51,6 +55,12 @@ func loadClient() (*client, error) {
 	}
 	if err := json.Unmarshal(data, &c.state); err != nil {
 		return nil, fmt.Errorf("%s: %w", c.path, err)
+	}
+	// A login saved by an earlier version, without its issuer, cannot say
+	// where its refresh token may go, so it is not renewed. Its ID token
+	// serves until it expires, and then the person signs in again.
+	if c.state.Issuer == "" {
+		c.state.RefreshToken = ""
 	}
 	// For automation, which would rather not write a file first. A login
 	// belongs to the server it was made with, so it is not carried over.
@@ -84,23 +94,34 @@ func (logTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return resp, err
 }
 
-// oauth returns the OAuth 2.0 configuration for the coordinator's identity
-// provider.
-func (c *client) oauth(ctx context.Context) (*oauth2.Config, error) {
-	if c.Server == "" {
-		return nil, errors.New("no coordinator configured; run: tunneler config --server URL")
+// oauth returns the OAuth 2.0 configuration for the identity provider at
+// issuer, as the app registration clientID. The device code and the refresh
+// token cross the URLs it names, so they must all be https.
+func oauth(ctx context.Context, issuer, clientID string) (*oauth2.Config, error) {
+	log.Debug("discovering identity provider", "issuer", issuer, "client_id", clientID)
+	if !strings.HasPrefix(issuer, "https://") {
+		return nil, fmt.Errorf("the identity provider must be an https:// URL, not %q", issuer)
 	}
-	ac, err := c.AuthConfig(ctx)
+	provider, err := oidc.NewProvider(ctx, issuer)
 	if err != nil {
 		return nil, err
 	}
-	log.Debug("discovering identity provider", "issuer", ac.Issuer, "client_id", ac.ClientID)
-	provider, err := oidc.NewProvider(ctx, ac.Issuer)
-	if err != nil {
-		return nil, err
+	endpoint := provider.Endpoint()
+	for _, u := range []string{endpoint.DeviceAuthURL, endpoint.TokenURL} {
+		if u != "" && !strings.HasPrefix(u, "https://") {
+			return nil, fmt.Errorf("the identity provider's endpoints must be https:// URLs, not %q", u)
+		}
 	}
-	return &oauth2.Config{ClientID: ac.ClientID, Endpoint: provider.Endpoint(), Scopes: ac.Scopes}, nil
+	// The coordinator reads only the ID token, for which profile gives the
+	// person's name, and offline_access yields a refresh token. The scopes
+	// are fixed here so that a coordinator cannot have people consent to
+	// more.
+	return &oauth2.Config{ClientID: clientID, Endpoint: endpoint, Scopes: []string{"openid", "profile", "offline_access"}}, nil
 }
+
+// errProviderChanged is why a login is dropped when the coordinator names
+// an identity provider other than the one that the login was made with.
+var errProviderChanged = errors.New("the coordinator's identity provider has changed")
 
 // token returns a current ID token, refreshing and saving it if necessary.
 func (c *client) token(ctx context.Context) (string, error) {
@@ -113,7 +134,23 @@ func (c *client) token(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("%w; run: tunneler auth login", errNotLoggedIn)
 	}
 	log.Debug("ID token expired or about to; refreshing", "expired_at", jwtExpiry(c.state.IDToken))
-	conf, err := c.oauth(ctx)
+	// The refresh token goes only to the identity provider that issued it.
+	// If the coordinator now names another, the login is of no use to it
+	// anyway, so it is dropped rather than sent there.
+	ac, err := c.AuthConfig(ctx)
+	if err != nil {
+		return "", err
+	}
+	if ac.Issuer != c.state.Issuer || ac.ClientID != c.state.ClientID {
+		log.Debug("dropping the login", "issuer", c.state.Issuer, "client_id", c.state.ClientID,
+			"coordinator_issuer", ac.Issuer, "coordinator_client_id", ac.ClientID)
+		c.state.IDToken, c.state.RefreshToken = "", ""
+		if err := c.save(); err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("%w: %w; run: tunneler auth login", errNotLoggedIn, errProviderChanged)
+	}
+	conf, err := oauth(ctx, c.state.Issuer, c.state.ClientID)
 	if err != nil {
 		return "", err
 	}
@@ -175,9 +212,12 @@ func authed(ctx context.Context) (*client, error) {
 	// The identity provider's reason, such as a sign-in frequency policy,
 	// is detail for --verbose; the person needs only to sign in.
 	log.Debug("the login cannot be used", "err", err)
-	if c.state.IDToken != "" {
+	switch {
+	case errors.Is(err, errProviderChanged):
+		fmt.Fprint(os.Stderr, "The coordinator's identity provider has changed, so you need to sign in again.\n\n")
+	case c.state.IDToken != "":
 		fmt.Fprint(os.Stderr, "Your login has expired, so you need to sign in again.\n\n")
-	} else {
+	default:
 		fmt.Fprint(os.Stderr, "You are not logged in yet.\n\n")
 	}
 	err = c.login(ctx, func(da *oauth2.DeviceAuthResponse) { fmt.Fprintln(os.Stderr, signInText(da)) })
