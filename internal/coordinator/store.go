@@ -22,6 +22,11 @@ func openStore(path string) (*store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// One connection queues writers in Go, in order. With more, SQLite's busy
+	// handler retries them unfairly, and a burst of revocations (such as the
+	// sessions that expired while the coordinator was down) can outwait the
+	// busy timeout and lose a write.
+	db.SetMaxOpenConns(1)
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS sessions (
 		id         TEXT PRIMARY KEY,
 		subject    TEXT NOT NULL,
