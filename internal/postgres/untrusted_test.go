@@ -194,18 +194,22 @@ func TestUntrustedServerRefuses(t *testing.T) {
 		{"postgres://tenant:s3cret@/app", "host"},
 		{"postgres://tenant:s3cret@db1,db2/app", "only one host"},
 		{"postgres://tenant@db/app?password=s3cret", "password"},
-		{"postgres://tenant:s3cret@db/app?passfile=/etc/pgpass", `"passfile"`},
-		{"postgres://tenant:s3cret@db/app?service=admin", `"service"`},
-		{"postgres://tenant:s3cret@db/app?servicefile=/etc/pg_service.conf", `"servicefile"`},
-		{"postgres://tenant:s3cret@db/app?sslkey=/etc/key.pem", `"sslkey"`},
-		{"postgres://tenant:s3cret@db/app?sslrootcert=/etc/ca.pem", `"sslrootcert"`},
-		{"postgres://tenant:s3cret@db/app?sslmode=bogus", "the dsn is not valid: failed to configure TLS (sslmode is invalid)"},
+		{"postgres://tenant:s3cret@db/app?passfile=/etc/pgpass", "query may set only"},
+		{"postgres://tenant:s3cret@db/app?service=admin", "query may set only"},
+		{"postgres://tenant:s3cret@db/app?servicefile=/etc/pg_service.conf", "query may set only"},
+		{"postgres://tenant:s3cret@db/app?sslkey=/etc/key.pem", "query may set only"},
+		{"postgres://tenant:s3cret@db/app?sslrootcert=/etc/ca.pem", "query may set only"},
+		{"postgres://tenant:s3cret@db/app?sslmode=bogus", "the dsn is not valid"},
+		// Nor is any other part of the DSN quoted, whatever it holds.
+		{"postgres://tenant:pw@db/app?s3cret=1", "query may set only"},
+		{"postgres://tenant:pw@db/app?connect_timeout=s3cret", "the dsn is not valid"},
+		{"postgres://tenant:pw@db/%60%3A%20s3cret?sslmode=bogus", "the dsn is not valid"},
 	} {
 		_, err := NewUntrustedServer(tt.dsn)
 		if err == nil || !strings.Contains(err.Error(), tt.why) {
 			t.Errorf("%s: err = %v, want it to mention %s", tt.dsn, err, tt.why)
 		} else if strings.Contains(err.Error(), "s3cret") {
-			t.Errorf("%s: err = %v quotes the password", tt.dsn, err)
+			t.Errorf("%s: err = %v quotes the dsn", tt.dsn, err)
 		}
 	}
 }

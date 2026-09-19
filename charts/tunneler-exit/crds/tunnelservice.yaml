@@ -75,7 +75,11 @@ spec:
                         - required: [azureKeyVault]
                       properties:
                         kubernetesSecret:
-                          description: A key of a Secret in this namespace.
+                          description: >-
+                            A key of a Secret in this namespace that the exit
+                            node is allowed to read. Any TunnelService in this
+                            namespace can use any key of such a Secret, so it
+                            should hold the connection string alone.
                           type: object
                           required: [name, key]
                           properties:

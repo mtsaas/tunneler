@@ -19,7 +19,8 @@ replicas: 2
 #               RoleBinding to this chart's service account. Right for
 #               production.
 #   cluster     It may `get` any Secret in the cluster, so a registration is
-#               the TunnelService alone. Convenient for development clusters.
+#               the TunnelService alone, and any TunnelService can use any
+#               Secret of its namespace. Convenient for development clusters.
 secretAccess: namespaced
 
 # Offer this cluster's own Kubernetes API through the coordinator, for
