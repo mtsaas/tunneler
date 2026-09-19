@@ -159,6 +159,10 @@ it. Each record is one JSON line in the log of the coordinator, with
 | `kind` | `postgres` or `kubernetes` |
 | `remote` | The address that the request came from. Behind an ingress, set `trusted_proxies` in the configuration of the coordinator. Without it, this is the address of the ingress |
 
+Every record has all of these fields. A field that does not apply is
+empty, for example `service` in a record about a cluster. A record of a
+refusal names what the person asked for.
+
 Thus one search finds all that a person did, or all that occurred on a
 service, for all kinds. For example, in a log system that has these fields:
 
@@ -167,7 +171,17 @@ audit:true user:alice@example.com cluster:prod
 ```
 
 Each kind adds its own fields, for example the SQL statement or the
-Kubernetes verb. See the document of the kind.
+Kubernetes verb. A log system can select records by `msg`, which has one
+of these values:
+
+| `msg` | The coordinator writes it when |
+|---|---|
+| `session created`, `session revoked` | A session starts or ends. See [Postgres](postgres.md#6-the-audit-trail) |
+| `connection opened`, `connection closed`, `query` | A database tool uses a session. See [Postgres](postgres.md#6-the-audit-trail) |
+| `kubernetes request started`, `kubernetes request` | A tool uses the API of a cluster. See [Kubernetes](kubernetes.md#4-the-audit-trail) |
+| `access denied: selector matches no service the user's grants reach` | `tunneler connect` asked for a service that none of the person's grants reach |
+| `access denied: no such service, or no grant selects it` | A request to the API of a cluster named a service that does not exist, or that none of the person's grants reach |
+| `cluster name released; the next issuer to present it will bind it` | An admin ran `tunneler clusters forget` |
 
 ## 7. Services from a file
 

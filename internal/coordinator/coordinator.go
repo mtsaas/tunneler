@@ -214,6 +214,9 @@ func (s *session) interrupt() {
 // same for every kind so that one query answers "what did this person do"
 // or "who touched this service" across all of them. What is particular to a
 // kind, such as a session's account or a request's verb, is added beside.
+// Every record has all five: one about no service in particular, such as a
+// cluster name's release, leaves the others empty, and a refusal names what
+// the person asked for.
 //
 // The group has no name, so its attributes appear at the top level.
 func auditSubject(user, subject, cluster, service, kind string) slog.Attr {

@@ -173,4 +173,6 @@ func TestKubernetesGateway(t *testing.T) {
 	if apiErr := (*api.Error)(nil); !errors.As(err, &apiErr) || apiErr.Status != 400 || !strings.Contains(apiErr.Message, "/v1/gateway/prod/kubernetes") {
 		t.Errorf("connect to a kubernetes service: %v", err)
 	}
+
+	checkAuditFields(t, auditRecords(t, audit.String()))
 }

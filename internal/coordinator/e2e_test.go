@@ -260,6 +260,8 @@ func TestEndToEnd(t *testing.T) {
 	if exists {
 		t.Errorf("role %s was never dropped after the exit node returned", s.Username)
 	}
+
+	checkAuditFields(t, auditRecords(t, audit.String()))
 }
 
 // TestUnreadyService checks that a service whose exit node cannot reach it is
