@@ -13,7 +13,8 @@ import (
 // Gateway is the coordinator's half: it serves a cluster's Kubernetes API to
 // authenticated users, as themselves.
 type Gateway struct {
-	proxy *httputil.ReverseProxy
+	proxy     *httputil.ReverseProxy
+	transport *http.Transport
 }
 
 // NewGateway returns a Gateway that reaches the cluster's APIServer over
@@ -27,7 +28,7 @@ func NewGateway(dial func(ctx context.Context) (net.Conn, error)) *Gateway {
 		// in the clear; TLS is the tunnel's business and the exit node's.
 		DisableCompression: true,
 	}
-	return &Gateway{proxy: &httputil.ReverseProxy{
+	return &Gateway{transport: transport, proxy: &httputil.ReverseProxy{
 		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL.Scheme, pr.Out.URL.Host = "http", "kubernetes"
@@ -98,6 +99,10 @@ func (g *Gateway) ServeAs(w http.ResponseWriter, r *http.Request, user string, g
 	}()
 	g.proxy.ServeHTTP(rec, r)
 }
+
+// CloseIdleConnections closes the connections kept for reuse. Requests in
+// flight keep theirs.
+func (g *Gateway) CloseIdleConnections() { g.transport.CloseIdleConnections() }
 
 // Error answers a request the coordinator will not serve, in the way kubectl
 // expects.

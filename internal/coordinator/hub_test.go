@@ -102,12 +102,7 @@ type gatewayRig struct {
 
 func newGatewayRig(t *testing.T, audit slog.Handler, apiserver http.Handler) *gatewayRig {
 	t.Helper()
-	stand := httptest.NewTLSServer(apiserver)
-	t.Cleanup(stand.Close)
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "ca.crt"), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: stand.Certificate().Raw}), 0o600)
-	os.WriteFile(filepath.Join(dir, "token"), []byte("exit-node-token"), 0o600)
-
 	r := &gatewayRig{
 		cfg: coordinator.Config{
 			Database:         filepath.Join(dir, "t.db"),
@@ -115,7 +110,7 @@ func newGatewayRig(t *testing.T, audit slog.Handler, apiserver http.Handler) *ga
 			InsecureExitAuth: true,
 			Grants:           []coordinator.Grant{{User: "alice@example.com", Labels: map[string]string{"cluster": "prod", "kind": "kubernetes"}}},
 		},
-		api: kube.Config{Server: stand.URL, TokenFile: filepath.Join(dir, "token"), CAFile: filepath.Join(dir, "ca.crt")},
+		api: standIn(t, apiserver),
 		dir: dir,
 		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
@@ -138,13 +133,31 @@ func newGatewayRig(t *testing.T, audit slog.Handler, apiserver http.Handler) *ga
 	return r
 }
 
+// standIn serves apiserver as a stand-in for a cluster's API server, and
+// returns how an exit node reaches it.
+func standIn(t *testing.T, apiserver http.Handler) kube.Config {
+	t.Helper()
+	stand := httptest.NewTLSServer(apiserver)
+	t.Cleanup(stand.Close)
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "ca.crt"), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: stand.Certificate().Raw}), 0o600)
+	os.WriteFile(filepath.Join(dir, "token"), []byte("exit-node-token"), 0o600)
+	return kube.Config{Server: stand.URL, TokenFile: filepath.Join(dir, "token"), CAFile: filepath.Join(dir, "ca.crt")}
+}
+
 // offer writes an exit node configuration that offers the stand-in under
 // each of names, and returns its path.
 func (r *gatewayRig) offer(t *testing.T, names ...string) string {
 	t.Helper()
+	return r.offerAt(t, r.api, names...)
+}
+
+// offerAt is offer, for the API server that api reaches.
+func (r *gatewayRig) offerAt(t *testing.T, api kube.Config, names ...string) string {
+	t.Helper()
 	var services []exit.ServiceConfig
 	for _, name := range names {
-		services = append(services, exit.ServiceConfig{Name: name, Kind: "kubernetes", Kubernetes: r.api})
+		services = append(services, exit.ServiceConfig{Name: name, Kind: "kubernetes", Kubernetes: api})
 	}
 	data, _ := json.Marshal(exit.Config{Services: services})
 	path := filepath.Join(r.dir, "exit.json")
@@ -158,8 +171,15 @@ func (r *gatewayRig) offer(t *testing.T, names ...string) string {
 // of names, until ctx is done.
 func (r *gatewayRig) startExit(ctx context.Context, t *testing.T, names ...string) *exit.Agent {
 	t.Helper()
-	agent := &exit.Agent{Server: r.srv.URL, Cluster: "prod", Log: r.log}
-	if err := agent.LoadConfig(r.offer(t, names...)); err != nil {
+	return r.startExitOf(ctx, t, "prod", r.offer(t, names...))
+}
+
+// startExitOf runs an exit node of the cluster, configured by the file at
+// path, until ctx is done.
+func (r *gatewayRig) startExitOf(ctx context.Context, t *testing.T, cluster, path string) *exit.Agent {
+	t.Helper()
+	agent := &exit.Agent{Server: r.srv.URL, Cluster: cluster, Log: r.log}
+	if err := agent.LoadConfig(path); err != nil {
 		t.Fatal(err)
 	}
 	go agent.Run(ctx)
@@ -189,10 +209,16 @@ func (r *gatewayRig) await(ctx context.Context, t *testing.T, names ...string) {
 	t.Fatalf("alice can reach %v, never %v", ready, names)
 }
 
-// get makes a request as alice to a service behind the gateway.
+// get makes a request as alice to a service of prod behind the gateway.
 func (r *gatewayRig) get(ctx context.Context, t *testing.T, service, path string) *http.Response {
 	t.Helper()
-	req, _ := http.NewRequestWithContext(ctx, "GET", r.alice.GatewayURL("prod", service)+path, nil)
+	return r.getFrom(ctx, t, "prod", service, path)
+}
+
+// getFrom is get, for a service of any cluster.
+func (r *gatewayRig) getFrom(ctx context.Context, t *testing.T, cluster, service, path string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, "GET", r.alice.GatewayURL(cluster, service)+path, nil)
 	req.Header.Set("Authorization", "Bearer alice")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -204,7 +230,13 @@ func (r *gatewayRig) get(ctx context.Context, t *testing.T, service, path string
 // fetch is get, for a response that is read whole.
 func (r *gatewayRig) fetch(ctx context.Context, t *testing.T, service, path string) (int, string) {
 	t.Helper()
-	resp := r.get(ctx, t, service, path)
+	return r.fetchFrom(ctx, t, "prod", service, path)
+}
+
+// fetchFrom is fetch, for a service of any cluster.
+func (r *gatewayRig) fetchFrom(ctx context.Context, t *testing.T, cluster, service, path string) (int, string) {
+	t.Helper()
+	resp := r.getFrom(ctx, t, cluster, service, path)
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(body)

@@ -34,7 +34,8 @@ type kind struct {
 
 	// gateway is set for kinds reached per request, over HTTP. There is no
 	// session and no account: every request carries the user's login, and
-	// the handler acts for them. It is called once per service.
+	// the handler acts for them. It is called once per service, and again
+	// if the service is withdrawn and then offered anew.
 	gateway func(dial dialFunc) gatewayHandler
 }
 
@@ -47,6 +48,10 @@ type gatewayHandler interface {
 	// Error answers a request that will not be served, in the manner the
 	// kind's clients expect.
 	Error(w http.ResponseWriter, code int, message string)
+	// CloseIdleConnections closes the connections kept between requests,
+	// once the handler's service is withdrawn. Requests in flight keep
+	// theirs.
+	CloseIdleConnections()
 }
 
 // access returns the api.Service.Access of the kind.

@@ -41,6 +41,9 @@ type hub struct {
 	// node to be of cluster under the coordinator's current rules.
 	admit   func(ctx context.Context, cluster, token string) error
 	onOffer func(cluster string) // called, on its own goroutine, whenever an exit node begins to offer a service
+	// onWithdraw is called with the names of the cluster's services that no
+	// exit node offers any longer, whenever there are some.
+	onWithdraw func(cluster string, services []string)
 
 	mu    sync.Mutex
 	exits map[string]map[*exitConn]struct{} // by cluster
@@ -183,7 +186,9 @@ func (h *hub) advertise(cluster string, e *exitConn, hello api.Hello) {
 		}
 	}
 	h.exits[cluster][e] = struct{}{}
+	offered := e.services
 	e.services = services
+	withdrawn := h.unoffered(cluster, offered)
 	nodes := len(h.exits[cluster])
 	h.mu.Unlock()
 
@@ -196,6 +201,9 @@ func (h *hub) advertise(cluster string, e *exitConn, hello api.Hello) {
 	if offersMore && h.onOffer != nil {
 		go h.onOffer(cluster)
 	}
+	if len(withdrawn) > 0 && h.onWithdraw != nil {
+		h.onWithdraw(cluster, withdrawn)
+	}
 }
 
 // remove makes e unroutable once it has disconnected.
@@ -203,11 +211,31 @@ func (h *hub) remove(cluster string, e *exitConn) {
 	h.mu.Lock()
 	_, known := h.exits[cluster][e]
 	delete(h.exits[cluster], e)
+	withdrawn := h.unoffered(cluster, e.services)
 	nodes := len(h.exits[cluster])
 	h.mu.Unlock()
 	if known {
 		h.log.Warn("exit node disconnected", "cluster", cluster, "remote", e.remote, "nodes_in_cluster", nodes)
 	}
+	if len(withdrawn) > 0 && h.onWithdraw != nil {
+		h.onWithdraw(cluster, withdrawn)
+	}
+}
+
+// unoffered returns which of services no exit node of the cluster offers.
+// The caller holds h.mu.
+func (h *hub) unoffered(cluster string, services map[string]api.Service) []string {
+	var names []string
+next:
+	for name := range services {
+		for e := range h.exits[cluster] {
+			if _, ok := e.services[name]; ok {
+				continue next
+			}
+		}
+		names = append(names, name)
+	}
+	return names
 }
 
 // call has an exit node of the cluster that advertises req.Service perform
