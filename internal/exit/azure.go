@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -104,25 +105,37 @@ func (f tokenSourceFunc) Token() (*oauth2.Token, error) { return f() }
 
 // AzureWorkloadIdentity returns a TokenFunc that authenticates to the
 // coordinator at server with an access token for the coordinator's own
-// application, whose client ID is asked of the coordinator. The coordinator
-// admits it if Entra put the application role "exit:<cluster>" in it, which
-// it does when that role is assigned to the pod's managed identity.
-func AzureWorkloadIdentity(cred *AzureCredential, server string) coordinator.TokenFunc {
-	var audience string // resolved once, on first success
+// application. The coordinator admits it if Entra put the application role
+// "exit:<cluster>" in it, which it does when that role is assigned to the
+// pod's managed identity.
+//
+// The token is for audience, the application's client ID or application ID
+// URI. If audience is empty, it is for the client ID that the coordinator
+// reports, which must be a GUID. The coordinator receives the token, so it
+// must not choose a resource such as https://vault.azure.net, or it would
+// receive a Key Vault token for the managed identity. A GUID can still name
+// another application, Microsoft Graph's among them, so audience should be
+// set.
+func AzureWorkloadIdentity(cred *AzureCredential, server, audience string) coordinator.TokenFunc {
 	return func(ctx context.Context) (string, error) {
 		if audience == "" {
 			ac, err := (&coordinator.Client{Server: server}).AuthConfig(ctx)
 			if err != nil {
 				return "", fmt.Errorf("asking coordinator for its client ID: %w", err)
 			}
-			if ac.ClientID == "" {
-				return "", errors.New("coordinator reports no client ID")
+			if !clientID.MatchString(ac.ClientID) {
+				return "", fmt.Errorf("coordinator reports client ID %q, which is not a GUID; refusing to request a token for it", ac.ClientID)
 			}
+			// The first answer stands for the life of the process, so that
+			// a coordinator compromised later cannot change it.
 			audience = ac.ClientID
 		}
 		return cred.Token(ctx, audience+"/.default")
 	}
 }
+
+// clientID matches an Entra application (client) ID.
+var clientID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 // keyVaultSecret reads a secret's current value from Azure Key Vault.
 func keyVaultSecret(ctx context.Context, cred *AzureCredential, vaultURI, name string) (string, error) {
