@@ -29,7 +29,7 @@ never sees a shared password.
 
 **The coordinator reads the Postgres protocol.** It lets the person log in as
 their temporary account only, and into one database only. It records each
-SQL statement.
+SQL statement, and refuses what it cannot record in full.
 
 **The account goes away.** When the person disconnects, when an admin revokes
 the session, or when the session expires, the exit node removes the role. It
@@ -275,7 +275,7 @@ The coordinator writes these records. Each has the
 |---|---|
 | `session created` | The account exists. The record lists the roles and the expiry time |
 | `connection opened`, `connection closed` | For each connection of the database tool |
-| `query` | For each SQL statement, with the text in `sql` |
+| `query` | For each SQL statement, with the whole text in `sql` |
 | `session revoked` | The session ended. The record gives the reason |
 | `access denied` | No grant gives the person access |
 
@@ -284,6 +284,11 @@ The coordinator writes these records. Each has the
  "service":"shop-postgres","kind":"postgres","session":"K3Q2XB7HTLW5",
  "account":"tnl_alice_example_com_x7k2p9qa","sql":"select * from orders"}
 ```
+
+The coordinator refuses what it cannot record in full: a statement longer
+than 1 MiB, and a fast-path function call. The database tool gets an error,
+and the connection closes. The `connection closed` record gives the reason
+in `err`. See [Limits](#8-limits).
 
 ## 7. Problems and their causes
 
@@ -301,6 +306,8 @@ The coordinator writes these records. Each has the
 | `provisioning access failed: ... permission denied to grant role` | The administrative role cannot grant that role | `GRANT x TO tunneler_admin WITH ADMIN OPTION` |
 | `this session only permits logging in as ...` | The database tool used a different user | Use the user that `tunneler connect` printed |
 | `this session only permits database ...` | The database tool asked for a different database | Use the database that `tunneler connect` printed |
+| `this session only permits statements of up to 1 MiB ...` | The database tool sent one statement longer than 1 MiB, for example an `INSERT` of many rows | Send smaller statements, for example fewer rows in each `INSERT`. Or load the rows with `COPY` |
+| `this session only permits SQL statements, not fast-path function calls` | The tool uses the large-object functions of libpq or of the JDBC driver, for example `pg_dump` of a database that has large objects | See [Limits](#8-limits) |
 
 ## 8. Limits
 
@@ -309,8 +316,22 @@ The coordinator writes these records. Each has the
 - A session is for work that does not outlive it. The exit node drops the
   objects a session made when the account goes away, so a table you want to
   keep must live in a database you reach another way.
-- The coordinator records the text of each statement. It does not record the
-  values of parameters that the database tool sends separately.
+- The coordinator records the whole text of each statement. It does not
+  record the values of parameters that the database tool sends separately,
+  or the rows that a `COPY` sends.
+- A statement can be at most 1 MiB long. The coordinator refuses a longer
+  statement, because it records each statement in full. The record of a
+  long statement is a long line in the coordinator log. Make sure that your
+  log system keeps lines of that length, because some split or cut them.
+- The coordinator refuses fast-path function calls. Such a call runs a
+  function outside of a SQL statement, so no statement records it. libpq
+  uses these calls for large objects, and so does the JDBC driver for a
+  `Blob` or a `Clob`. Thus these do not work: `pg_dump` of a database that
+  has large objects, `pg_restore` of large objects into a database,
+  `\lo_import`, `\lo_export`, and `\lo_unlink` in psql, and the large
+  objects of psycopg2 and of JDBC. Use `pg_dump -B`, which leaves out large
+  objects. Or use the SQL functions for large objects, such as `lo_get`,
+  `lo_put`, and `lo_from_bytea`.
 - If the log of the Postgres server includes statements that create roles,
   that log contains the temporary passwords.
 - The connection string of a `TunnelService` cannot give a CA certificate

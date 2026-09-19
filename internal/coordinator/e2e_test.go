@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgproto3"
 
 	"github.com/mtsaas/tunneler/internal/api"
 	"github.com/mtsaas/tunneler/internal/coordinator"
@@ -280,6 +282,55 @@ func TestEndToEnd(t *testing.T) {
 		t.Error("a statement the trail could not record ran")
 	}
 	stopWaiting()
+
+	// The trail records a statement whole, however much filler hides it. What
+	// it could not record in full, a longer statement than its limit or a
+	// fast-path call of pg_notify, is refused, and the client is told why.
+	if conn, err = connect("alice", s.Username, s.Password); err != nil {
+		t.Fatal(err)
+	}
+	hidden := "*/ SELECT pg_notify('unaudited', 'hidden')"
+	if _, err := conn.Exec(ctx, "/*"+strings.Repeat(" ", 64<<10)+hidden); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := listener.WaitForNotification(ctx); err != nil || n.Payload != "hidden" {
+		t.Fatalf("notification = %+v, %v; want the statement behind the filler to run", n, err)
+	}
+	if !strings.Contains(audit.String(), hidden) {
+		t.Error("the statement behind the filler is not on the trail")
+	}
+	_, err = conn.Exec(ctx, "SELECT pg_notify('unaudited', 'long statement') -- "+strings.Repeat("x", 1<<20))
+	if pgErr := (*pgconn.PgError)(nil); !errors.As(err, &pgErr) || pgErr.Code != "54000" {
+		t.Errorf("a statement longer than the limit: %v, want an error with SQLSTATE 54000", err)
+	}
+	if conn, err = connect("alice", s.Username, s.Password); err != nil {
+		t.Fatal(err)
+	}
+	var notify uint32
+	if err := admin.QueryRow(ctx, "SELECT 'pg_notify'::regproc::oid").Scan(&notify); err != nil {
+		t.Fatal(err)
+	}
+	fe := conn.PgConn().Frontend()
+	fe.Send(&pgproto3.FunctionCall{Function: notify, Arguments: [][]byte{[]byte("unaudited"), []byte("fast-path call")}})
+	if err := fe.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if msg, err := fe.Receive(); err != nil {
+		t.Errorf("a fast-path call: %v, want an ErrorResponse", err)
+	} else if e, ok := msg.(*pgproto3.ErrorResponse); !ok || e.Code != "0A000" {
+		t.Errorf("a fast-path call: the client got %#v, want an ErrorResponse with SQLSTATE 0A000", msg)
+	}
+	wait, stopWaiting = context.WithTimeout(ctx, time.Second)
+	if n, err := listener.WaitForNotification(wait); err == nil {
+		t.Errorf("a refused %s ran", n.Payload)
+	}
+	stopWaiting()
+	for _, reason := range []string{"statements of up to 1 MiB", "not fast-path function calls"} {
+		if !strings.Contains(audit.String(), reason) {
+			t.Errorf("the trail does not say that the connection closed because %q", reason)
+		}
+	}
+
 	if code := call("DELETE", "/v1/sessions/"+s.ID, "alice", nil, nil); code != http.StatusNoContent {
 		t.Fatalf("revoking: status %d", code)
 	}
