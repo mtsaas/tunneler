@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -39,10 +40,18 @@ Prints a URL and a code. Open the URL in any browser and enter the code.`,
 	}
 }
 
-// login signs a person in with the device flow and saves the login. It
-// calls prompt with where they must go to do so, and returns once they have.
+// login signs a person in with the device flow, at the identity provider
+// that the coordinator names, and saves the login. It calls prompt with
+// where they must go to do so, and returns once they have.
 func (c *client) login(ctx context.Context, prompt func(*oauth2.DeviceAuthResponse)) error {
-	conf, err := c.oauth(ctx)
+	if c.Server == "" {
+		return errors.New("no coordinator configured; run: tunneler config --server URL")
+	}
+	ac, err := c.AuthConfig(ctx)
+	if err != nil {
+		return err
+	}
+	conf, err := oauth(ctx, ac.Issuer, ac.ClientID)
 	if err != nil {
 		return err
 	}
@@ -65,6 +74,9 @@ func (c *client) login(ctx context.Context, prompt func(*oauth2.DeviceAuthRespon
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// The new login replaces the old one whole. Were the old refresh token
+	// kept, for want of a new one, it would be sent to the new issuer.
+	c.state.Issuer, c.state.ClientID, c.state.RefreshToken = ac.Issuer, ac.ClientID, ""
 	return c.storeToken(tok)
 }
 
