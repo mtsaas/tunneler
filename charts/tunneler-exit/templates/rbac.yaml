@@ -20,6 +20,13 @@ rules:
     resources: ["tunnelservices/status"]
     verbs: ["patch"]
   {{- if .Values.kubernetes.enabled }}
+  {{- $groups := .Values.kubernetes.groups }}
+  {{- /* RBAC reads an empty resourceNames as every name, system:masters
+         included, and `required` lets an empty list through. [""], which
+         is what --set kubernetes.groups={} gives, is no group either. */}}
+  {{- if or (not (kindIs "slice" $groups)) (empty $groups) (has "" $groups) }}
+  {{- fail "kubernetes.groups must list at least one group when kubernetes.enabled (an empty list would let the exit node impersonate every group)" }}
+  {{- end }}
   # To act for users against this cluster's API. Any user, since people are
   # not known in advance, but only the listed groups, which is what carries
   # permissions. The exit node itself refuses system: users.
@@ -29,7 +36,7 @@ rules:
   - apiGroups: [""]
     resources: ["groups"]
     verbs: ["impersonate"]
-    resourceNames: {{ required "kubernetes.groups is required when kubernetes.enabled" .Values.kubernetes.groups | toJson }}
+    resourceNames: {{ $groups | toJson }}
   {{- end }}
   {{- if eq .Values.secretAccess "cluster" }}
   - apiGroups: [""]
