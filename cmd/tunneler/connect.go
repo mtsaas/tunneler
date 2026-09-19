@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 
 	"github.com/mtsaas/tunneler/internal/api"
 	"github.com/mtsaas/tunneler/internal/coordinator"
@@ -170,9 +169,7 @@ func selectService(clusters []api.Cluster, selector map[string]string) (cluster 
 		printServices(os.Stderr, matches, true)
 		fmt.Fprintln(os.Stderr)
 	}
-	// A person can only be asked on a terminal. A character device is not
-	// enough of a test: /dev/null, the usual stdin of scripts, is one.
-	if outputJSON || !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stderr.Fd())) {
+	if !interactive() {
 		return "", api.Service{}, ambiguous
 	}
 	fmt.Fprintf(os.Stderr, "Which one? [1-%d]: ", len(choices))

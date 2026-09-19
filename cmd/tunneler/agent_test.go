@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,14 +24,18 @@ import (
 // wrote to stdout, what fail reports for its error, and the exit status.
 func cli(t *testing.T, server string, args ...string) (stdout, stderr string, status int) {
 	t.Helper()
+	return cliAs(t, map[string]string{"server": server, "id_token": idToken(time.Now().Add(time.Hour))}, args...)
+}
+
+// cliAs is cli from the saved state given.
+func cliAs(t *testing.T, saved map[string]string, args ...string) (stdout, stderr string, status int) {
+	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(os.Getenv("HOME"), ".config"))
 	t.Setenv("TUNNELER_SERVER", "")
 	dir, _ := os.UserConfigDir()
 	os.MkdirAll(filepath.Join(dir, "tunneler"), 0o700)
-	claims, _ := json.Marshal(map[string]any{"exp": time.Now().Add(time.Hour).Unix()})
-	token := "h." + base64.RawURLEncoding.EncodeToString(claims) + ".s"
-	state, _ := json.Marshal(map[string]string{"server": server, "id_token": token})
+	state, _ := json.Marshal(saved)
 	os.WriteFile(filepath.Join(dir, "tunneler", "config.json"), state, 0o600)
 
 	r, w, _ := os.Pipe()
@@ -126,6 +131,86 @@ func TestAgentContract(t *testing.T) {
 	out, _, _ = cli(t, srv.URL, "config", "--server", "https://tunneler.example.com")
 	if want := "Saved. Run the following to authenticate:\n\n    tunneler auth login\n"; out != want {
 		t.Errorf("config output = %q, want %q", out, want)
+	}
+}
+
+// idToken returns an unsigned ID token that expires at exp, which is all
+// the CLI reads of one.
+func idToken(exp time.Time) string {
+	claims, _ := json.Marshal(map[string]any{"exp": exp.Unix()})
+	return "h." + base64.RawURLEncoding.EncodeToString(claims) + ".s"
+}
+
+// TestExpiredLogin runs a command with a login that has expired and cannot
+// be renewed, as when a sign-in frequency policy refuses the refresh token.
+// A person at a terminal is told so, signed in, and the command goes on. A
+// script is told to run "tunneler auth login", at once and as before.
+func TestExpiredLogin(t *testing.T) {
+	var srv *httptest.Server
+	var mu sync.Mutex
+	var signIns int
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/auth/config":
+			json.NewEncoder(w).Encode(api.AuthConfig{Issuer: srv.URL, ClientID: "tunneler"})
+		case "/.well-known/openid-configuration":
+			json.NewEncoder(w).Encode(map[string]string{"issuer": srv.URL, "authorization_endpoint": srv.URL + "/authorize",
+				"device_authorization_endpoint": srv.URL + "/device", "token_endpoint": srv.URL + "/token", "jwks_uri": srv.URL + "/keys"})
+		case "/device":
+			mu.Lock()
+			signIns++
+			mu.Unlock()
+			json.NewEncoder(w).Encode(map[string]any{"device_code": "d", "user_code": "WXYZ-1234",
+				"verification_uri": "https://login.example.com/device", "expires_in": 60, "interval": 1})
+		case "/token":
+			if r.FormValue("grant_type") == "refresh_token" {
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]string{"error": "invalid_grant",
+					"error_description": "AADSTS70043: The refresh token has expired due to sign-in frequency checks by conditional access."})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{"access_token": "a", "token_type": "Bearer", "expires_in": 3600,
+				"id_token": idToken(time.Now().Add(time.Hour)), "refresh_token": "renewed"})
+		case "/v1/clusters":
+			json.NewEncoder(w).Encode([]api.Cluster{})
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	expired := map[string]string{"server": srv.URL, "id_token": idToken(time.Now().Add(-time.Hour)), "refresh_token": "stale"}
+	t.Cleanup(func() { interactive = func() bool { return false } })
+
+	interactive = func() bool { return false }
+	if _, errOut, status := cliAs(t, expired, "services", "list"); status != exitNotLoggedIn || !strings.Contains(errOut, "tunneler auth login") {
+		t.Errorf("from a script: status %d, stderr %q; want %d telling it to log in", status, errOut, exitNotLoggedIn)
+	}
+	mu.Lock()
+	if signIns != 0 {
+		t.Errorf("a script was asked to sign in")
+	}
+	mu.Unlock()
+
+	interactive = func() bool { return true }
+	r, w, _ := os.Pipe()
+	stderr := os.Stderr
+	os.Stderr = w
+	_, _, status := cliAs(t, expired, "services", "list")
+	w.Close()
+	os.Stderr = stderr
+	told, _ := io.ReadAll(r)
+	if status != 0 {
+		t.Errorf("at a terminal: status %d, want the command to go on after signing in", status)
+	}
+	for _, want := range []string{"Your login has expired", "https://login.example.com/device", "WXYZ-1234", "Signed in."} {
+		if !strings.Contains(string(told), want) {
+			t.Errorf("at a terminal, stderr lacks %q:\n%s", want, told)
+		}
+	}
+	dir, _ := os.UserConfigDir()
+	if saved, _ := os.ReadFile(filepath.Join(dir, "tunneler", "config.json")); !strings.Contains(string(saved), `"renewed"`) {
+		t.Errorf("the new login was not saved: %s", saved)
 	}
 }
 

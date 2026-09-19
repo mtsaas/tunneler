@@ -366,6 +366,10 @@ Each person installs the `tunneler` command. See
    tunneler auth login
    ```
 
+   The login renews itself. When it can no longer renew, for example
+   because a sign-in frequency policy requires a new sign-in, the next
+   command that you run at a terminal tells you so and signs you in again.
+
 3. Make sure that the coordinator knows you:
 
    ```bash
