@@ -27,6 +27,8 @@ metadata:
   name: pg-admin
   namespace: tunneler
 stringData:
+  # The superuser is enough for this test cluster. In production the
+  # administrative role must not be one: see docs/services/postgres.md.
   database_uri: postgres://postgres:pw@postgres.tunneler.svc.cluster.local:5432/postgres?sslmode=disable
 ---
 apiVersion: apps/v1
