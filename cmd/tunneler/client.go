@@ -157,7 +157,9 @@ func jwtExpiry(token string) time.Time {
 }
 
 // authed loads the client and makes sure that it has a current login, so
-// that a command fails for want of one before it does anything else.
+// that a command fails for want of one before it does anything else. A
+// person at a terminal whose login has expired, or who has none, is signed
+// in there and then; a script is told to run "tunneler auth login".
 func authed(ctx context.Context) (*client, error) {
 	c, err := loadClient()
 	if err != nil {
@@ -167,5 +169,21 @@ func authed(ctx context.Context) (*client, error) {
 		return nil, errors.New("no coordinator configured; run: tunneler config --server URL")
 	}
 	_, err = c.token(ctx)
-	return c, err
+	if !errors.Is(err, errNotLoggedIn) || !interactive() {
+		return c, err
+	}
+	// The identity provider's reason, such as a sign-in frequency policy,
+	// is detail for --verbose; the person needs only to sign in.
+	log.Debug("the login cannot be used", "err", err)
+	if c.state.IDToken != "" {
+		fmt.Fprint(os.Stderr, "Your login has expired, so you need to sign in again.\n\n")
+	} else {
+		fmt.Fprint(os.Stderr, "You are not logged in yet.\n\n")
+	}
+	err = c.login(ctx, func(da *oauth2.DeviceAuthResponse) { fmt.Fprintln(os.Stderr, signInText(da)) })
+	if err != nil {
+		return c, fmt.Errorf("%w: signing in failed: %w", errNotLoggedIn, err)
+	}
+	fmt.Fprint(os.Stderr, "Signed in.\n\n")
+	return c, nil
 }

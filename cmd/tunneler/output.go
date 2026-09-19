@@ -10,6 +10,7 @@ import (
 	"os/exec"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/mtsaas/tunneler/internal/api"
 )
@@ -17,6 +18,14 @@ import (
 // outputJSON is set by --output json. Every command then writes its result
 // to stdout as JSON, reports errors on stderr as JSON, and never prompts.
 var outputJSON bool
+
+// interactive reports whether a person is at a terminal to answer
+// questions: never with --output json, nor when stdin or stderr is
+// redirected. A character device is not enough of a test: /dev/null, the
+// usual stdin of scripts, is one. It is a variable so that tests can be one.
+var interactive = func() bool {
+	return !outputJSON && term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stderr.Fd()))
+}
 
 // result writes the outcome of a command: v as JSON, or text for a person.
 // Text is printed as given, with no timestamp; timestamps belong to the
