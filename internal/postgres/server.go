@@ -115,6 +115,10 @@ func NewUntrustedServer(dsn string) (*Server, error) {
 	// And PGAPPNAME, PGOPTIONS and PGTZ arrive as run-time parameters, which
 	// the DSN has no way to set.
 	cfg.RuntimeParams = map[string]string{}
+	// The DSN's author also runs the server, and pgx would take a message of
+	// up to 1 GiB from it, well past the exit node's memory. The replies to
+	// what the exit node asks are a few KiB at most.
+	cfg.MaxProtocolMessageBodyLen = 1 << 20
 	return &Server{cfg: cfg}, nil
 }
 
