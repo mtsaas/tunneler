@@ -103,23 +103,17 @@ type tokenSourceFunc func() (*oauth2.Token, error)
 func (f tokenSourceFunc) Token() (*oauth2.Token, error) { return f() }
 
 // AzureWorkloadIdentity returns a TokenFunc that authenticates to the
-// coordinator at server with an access token for the coordinator's own
-// application, whose client ID is asked of the coordinator. The coordinator
-// admits it if Entra put the application role "exit:<cluster>" in it, which
-// it does when that role is assigned to the pod's managed identity.
-func AzureWorkloadIdentity(cred *AzureCredential, server string) coordinator.TokenFunc {
-	var audience string // resolved once, on first success
+// coordinator with an access token for the coordinator's own application,
+// which audience names by its client ID or application ID URI. The
+// coordinator admits it if Entra put the application role "exit:<cluster>"
+// in it, which it does when that role is assigned to the pod's managed
+// identity.
+//
+// The audience is never asked of the coordinator. The coordinator receives
+// the token, so it could otherwise name a resource such as Key Vault and
+// receive a token for that.
+func AzureWorkloadIdentity(cred *AzureCredential, audience string) coordinator.TokenFunc {
 	return func(ctx context.Context) (string, error) {
-		if audience == "" {
-			ac, err := (&coordinator.Client{Server: server}).AuthConfig(ctx)
-			if err != nil {
-				return "", fmt.Errorf("asking coordinator for its client ID: %w", err)
-			}
-			if ac.ClientID == "" {
-				return "", errors.New("coordinator reports no client ID")
-			}
-			audience = ac.ClientID
-		}
 		return cred.Token(ctx, audience+"/.default")
 	}
 }
