@@ -252,7 +252,6 @@ The coordinator writes these records. Each has the
 | `provisioning access failed: ... permission denied to grant role` | The administrative role cannot grant that role | `GRANT x TO tunneler_admin WITH ADMIN OPTION` |
 | `this session only permits logging in as ...` | The database tool used a different user | Use the user that `tunneler connect` printed |
 | `this session only permits database ...` | The database tool asked for a different database | Use the database that `tunneler connect` printed |
-| `server offered SCRAM-SHA-256-PLUS authentication over a non-SSL connection` | The coordinator is older than version 0.1.0 | Upgrade the coordinator |
 
 ## 8. Limits
 

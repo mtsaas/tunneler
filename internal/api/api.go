@@ -61,8 +61,7 @@ type Service struct {
 	// Access says how the service is reached, which follows from its kind:
 	// AccessSession, through a session on which a temporary account is
 	// provisioned, or AccessGateway, per request through the coordinator's
-	// gateway. It is empty for a kind the coordinator does not know, and
-	// from coordinators that predate it, which knew only session kinds.
+	// gateway. It is empty for a kind the coordinator does not know.
 	Access   string            `json:"access,omitempty"`
 	Database string            `json:"database,omitempty"` // Postgres: the one database sessions may use
 	Labels   map[string]string `json:"labels"`

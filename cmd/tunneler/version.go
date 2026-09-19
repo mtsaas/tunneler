@@ -26,11 +26,8 @@ func versionCmd() *cobra.Command {
 			}
 			out["server"] = c.state.Server
 			coordinatorVersion, err := c.Version(cmd.Context())
-			switch {
-			case err != nil:
+			if err != nil {
 				coordinatorVersion = "unreachable: " + err.Error()
-			case coordinatorVersion == "":
-				coordinatorVersion = "an old build, from before version reporting"
 			}
 			out["coordinator"] = coordinatorVersion
 			return nil

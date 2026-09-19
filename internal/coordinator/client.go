@@ -30,16 +30,12 @@ type Client struct {
 	HTTP   *http.Client // nil means http.DefaultClient
 }
 
-// Version returns the version of the coordinator, or "" if it is too old to
-// say.
+// Version returns the version of the coordinator.
 func (c *Client) Version(ctx context.Context) (string, error) {
 	var health struct {
 		Version string `json:"version"`
 	}
 	err := c.do(ctx, http.MethodGet, pathHealth, false, nil, &health)
-	if errors.Is(err, io.EOF) { // coordinators before v0.1.1 answer with an empty body
-		err = nil
-	}
 	return health.Version, err
 }
 

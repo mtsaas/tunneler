@@ -358,11 +358,6 @@ func (c *Coordinator) retryDrops(cluster string) {
 // from remote. It closes conn before returning.
 func (c *Coordinator) serveSession(ctx context.Context, s *session, conn net.Conn, remote string) {
 	defer conn.Close()
-	proxy := kinds[s.info.Kind].proxy
-	if proxy == nil { // a session resumed from a newer coordinator's database
-		c.log.Error("no proxy for session's kind", s.attrs())
-		return
-	}
 	if !s.track(conn) {
 		return
 	}
@@ -374,7 +369,7 @@ func (c *Coordinator) serveSession(ctx context.Context, s *session, conn net.Con
 	log := c.audit.With(s.attrs(), "remote", remote)
 	log.Info("connection opened")
 	start := time.Now()
-	err := proxy(ctx, conn, dial, &s.info, log)
+	err := kinds[s.info.Kind].proxy(ctx, conn, dial, &s.info, log)
 	if errors.Is(err, net.ErrClosed) {
 		err = nil // we closed it: the session was revoked
 	}
