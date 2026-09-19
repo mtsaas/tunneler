@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/binary"
 	"encoding/pem"
+	"errors"
 	"io"
 	"maps"
 	"math/big"
@@ -17,6 +18,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgproto3"
 )
 
 // operatorEnvironment gives the process what an operator might give the exit
@@ -211,5 +214,40 @@ func TestUntrustedServerRefuses(t *testing.T) {
 		} else if strings.Contains(err.Error(), "s3cret") {
 			t.Errorf("%s: err = %v quotes the dsn", tt.dsn, err)
 		}
+	}
+}
+
+// A server that announces a message larger than the exit node's memory is
+// refused on the announcement, before anything is read into memory.
+func TestUntrustedServerRefusesHugeMessage(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+	go func() {
+		c, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		if _, err := readStartup(c); err != nil {
+			return
+		}
+		hdr := []byte{'R', 0, 0, 0, 0}
+		binary.BigEndian.PutUint32(hdr[1:], 512<<20)
+		c.Write(hdr)
+		io.Copy(io.Discard, c) // and send nothing more
+	}()
+	_, port, _ := net.SplitHostPort(l.Addr().String())
+	s, err := NewUntrustedServer("postgres://u:pw@127.0.0.1:" + port + "/db?sslmode=disable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var huge *pgproto3.ExceededMaxBodyLenErr
+	if err := s.Ping(ctx); !errors.As(err, &huge) {
+		t.Fatalf("Ping = %v, want it refused as too large", err)
 	}
 }
