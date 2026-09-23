@@ -84,6 +84,7 @@ $ tunneler connect cluster=prod team=shop -- psql`
 		group(groupCore, "sessions", "List and revoke sessions", sessionsListCmd(), sessionsRevokeCmd()),
 		group(groupServer, "start", "Run the coordinator or an exit node", startCoordinatorCmd(), startExitCmd()),
 		group("", "clusters", "Manage cluster names (admins)", clustersListCmd(), clustersForgetCmd()),
+		updateCmd(),
 		versionCmd(),
 	)
 	// Run by kubectl, from the context that connect writes; not by people.

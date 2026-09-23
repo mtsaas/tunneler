@@ -20,15 +20,16 @@ import (
 const updateCheckInterval = 24 * time.Hour
 
 type updateState struct {
-	Server          string    `json:"server"`
-	CheckedAt       time.Time `json:"checked_at"`
-	Coordinator     string    `json:"coordinator"`
-	NotifiedVersion string    `json:"notified_version,omitempty"`
+	Server        string    `json:"server"`
+	CheckedAt     time.Time `json:"checked_at"`
+	Coordinator   string    `json:"coordinator"`
+	HiddenVersion string    `json:"hidden_version,omitempty"`
 }
 
 // notifyUpdate quietly checks whether this interactive client trails its
-// coordinator. Each coordinator version is shown once, after a successful
-// command. Automated output and server processes are left alone.
+// coordinator. A newer coordinator version is shown after every successful
+// command until the person hides it. Automated output and server processes
+// are left alone.
 func notifyUpdate(cmd *cobra.Command) {
 	if outputJSON || os.Getenv("TUNNELER_NO_UPDATE_CHECK") != "" || !term.IsTerminal(int(os.Stderr.Fd())) {
 		return
@@ -43,7 +44,7 @@ func notifyUpdate(cmd *cobra.Command) {
 	}
 	ctx, cancel := context.WithTimeout(cmd.Context(), time.Second)
 	defer cancel()
-	checkUpdate(ctx, filepath.Join(dir, "tunneler", "update.json"), version.String(), time.Now(), os.Stderr)
+	checkUpdate(ctx, updateStatePath(dir), version.String(), time.Now(), os.Stderr)
 }
 
 // checkUpdate writes a notice if the configured coordinator has a newer
@@ -70,14 +71,44 @@ func checkUpdate(ctx context.Context, cachePath, clientVersion string, now time.
 	clientVersion = releaseVersion(clientVersion)
 	newer := semver.IsValid(clientVersion) && semver.IsValid(state.Coordinator) &&
 		semver.Compare(state.Coordinator, clientVersion) > 0
-	if newer && state.NotifiedVersion != state.Coordinator {
-		state.NotifiedVersion = state.Coordinator
+	if newer && state.HiddenVersion != state.Coordinator {
 		if writeUpdateState(cachePath, state) == nil {
-			fmt.Fprintf(out, "\nA newer tunneler client is available: %s -> %s (your coordinator's version).\nRun the install command again to update.\n", clientVersion, state.Coordinator)
+			fmt.Fprintf(out, "\nA newer tunneler client is available: %s -> %s (your coordinator's version).\nRun the install command again to update, or `tunneler update hide` to hide this notice.\n", clientVersion, state.Coordinator)
 		}
 		return
 	}
 	_ = writeUpdateState(cachePath, state)
+}
+
+func updateCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "update",
+		Short: "Manage client update notices",
+	}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "hide",
+		Short: "Hide the current client update notice",
+		Args:  usage(cobra.NoArgs),
+		RunE: func(*cobra.Command, []string) error {
+			dir, err := os.UserCacheDir()
+			if err != nil {
+				return err
+			}
+			path := updateStatePath(dir)
+			state := readUpdateState(path)
+			state.HiddenVersion = state.Coordinator
+			if err := writeUpdateState(path, state); err != nil {
+				return err
+			}
+			result(map[string]string{"hidden": state.HiddenVersion}, "The current client update notice is hidden.")
+			return nil
+		},
+	})
+	return cmd
+}
+
+func updateStatePath(cacheDir string) string {
+	return filepath.Join(cacheDir, "tunneler", "update.json")
 }
 
 func releaseVersion(v string) string {
