@@ -260,6 +260,40 @@ tunneler connect cluster=prod team=shop -- psql
 tunneler connect name=shop/postgres -- pg_dump --schema-only -f schema.sql
 ```
 
+For several related queries, run one `psql` process with a SQL file. It uses
+one temporary account and one database connection for the whole file. Put
+session settings such as `statement_timeout` at the top so they apply to the
+queries that follow:
+
+```bash
+tunneler connect cluster=prod name=shop/postgres -- \
+  psql -X -v ON_ERROR_STOP=1 -P pager=off -f investigation.sql
+```
+
+For a short batch, send SQL on standard input instead of making a file:
+
+```bash
+tunneler connect cluster=prod name=shop/postgres -- \
+  psql -X -v ON_ERROR_STOP=1 -P pager=off -f - <<'SQL'
+SET statement_timeout = '30s';
+SELECT current_database(), current_user;
+SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';
+SQL
+```
+
+`-X` skips local `psql` startup commands, `ON_ERROR_STOP` makes a failed SQL
+statement fail the command, and `pager=off` keeps output on stdout. Scripts
+and AI agents should batch queries they can plan together. Each new
+`tunneler connect` invocation provisions and later removes an account.
+Queries in a batch remain audited.
+
+For an investigation where the next query depends on the previous result,
+keep `tunneler connect cluster=prod name=shop/postgres -- psql -X -v
+ON_ERROR_STOP=1 -P pager=off` running in a terminal and send each query to
+that `psql` process. It keeps the same connection until `psql` exits or the
+session expires. An agent with a persistent terminal should reuse that
+terminal instead of starting a new `tunneler connect` for each query.
+
 Connect with `sslmode=disable`. The connection from your computer to the
 coordinator is encrypted by tunneler. The connection from the exit node to
 Postgres uses the `sslmode` of the administrative connection string.

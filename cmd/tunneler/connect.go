@@ -50,16 +50,25 @@ holds no credential; kubectl gets your login from tunneler when it needs it.
 With "-- COMMAND", runs the command with the connection in its environment
 instead, and leaves nothing behind when it exits.
 
+For repeated Postgres queries, start one psql process in a persistent
+terminal and send each query to that process. Keep its standard input open.
+For queries already planned, give psql one SQL file with -f. Both use one
+database connection. Every new "tunneler connect" invocation creates a
+temporary account and removes it when the command exits.
+See "tunneler help agents" for the commands to use.
+
 Everything you do is logged with your identity.`,
 		Annotations: map[string]string{
 			helpArguments: selectorArguments + `
 
 After "--": a command to run. See "tunneler help environment".`,
 			helpJSON: `postgres:   {"event": "listening", "host", "port", "url", "session", "notice"}
-kubernetes: {"event": "configured", "context", "kubeconfig", "server", "notice"}`,
+kubernetes: {"event": "configured", "context", "kubeconfig", "server", "notice"}
+With -- COMMAND, stdout belongs to COMMAND and has no tunneler JSON wrapper.`,
 		},
 		Example: `$ tunneler connect cluster=prod team=shop
-$ tunneler connect env=preview-123 -- psql
+$ tunneler connect cluster=prod name=shop/postgres -- psql -X -v ON_ERROR_STOP=1 -P pager=off
+$ tunneler connect cluster=prod name=shop/postgres -- psql -X -v ON_ERROR_STOP=1 -P pager=off -f batch.sql
 $ tunneler connect cluster=prod kind=kubernetes
 $ tunneler connect cluster=prod kind=kubernetes -- kubectl get pods
 $ tunneler connect`,
