@@ -433,11 +433,17 @@ The client is now ready. To connect to a service, read
 The client has a stable contract for programs. `tunneler help output` and
 `tunneler help exit-codes` give the same information.
 
-- `--output json` makes each command write its result to stdout as JSON.
-  Errors go to stderr as `{"error", "code", "matches"}`. The command does not
-  ask questions.
-- `tunneler connect <labels> -- <command>` is the best way to run one
-  database command. It shows no credentials.
+- `--output json` makes tunneler's own command results JSON on stdout and
+  errors JSON on stderr as `{"error", "code", "matches"}`. It does not
+  prompt. With `tunneler connect -- <command>`, stdout, stderr, and the exit
+  status belong to the child command; `--output json` does not format SQL
+  results.
+- `tunneler connect <labels> -- <command>` runs a database command without
+  showing credentials. For multiple SQL statements, give one `psql` process
+  a file or standard input: `tunneler connect <labels> -- psql -X -v
+  ON_ERROR_STOP=1 -P pager=off -f batch.sql`. The whole batch uses one
+  temporary account and one database connection. See
+  [Postgres: Connect](services/postgres.md#5-connect).
 - The exit status tells you the type of failure:
 
   | Status | Meaning |

@@ -130,6 +130,27 @@ const selectorArguments = `A service is selected by its labels, as LABEL=VALUE:
 
 func helpTopics() []*cobra.Command {
 	return []*cobra.Command{
+		topic("agents", "Use PostgreSQL efficiently from an agent or script", `
+For PostgreSQL, choose a service with "tunneler services list --output json".
+Use its cluster and name labels in the commands below.
+
+When each query depends on the last result, start psql in a persistent
+terminal with standard input kept open:
+  tunneler connect cluster=prod name=shop/postgres -- psql -X -v ON_ERROR_STOP=1 -P pager=off
+Send later SQL to that same psql process. Exit psql when the investigation
+is done. The connection and temporary account live until then, or until
+the session expires.
+
+When the queries are known in advance, put them in batch.sql and run:
+  tunneler connect cluster=prod name=shop/postgres -- psql -X -v ON_ERROR_STOP=1 -P pager=off -f batch.sql
+That executes the file through one psql connection. Put session settings
+such as SET statement_timeout at the start of the file.
+
+Each new "tunneler connect" invocation provisions and removes an account.
+Reuse one psql process for related queries. SQL remains audited, and the
+command does not print credentials. "--output json" does not convert psql
+results to JSON.`),
+
 		topic("environment", "Environment variables", `
 TUNNELER_SERVER: the coordinator's URL. Overrides "tunneler config --server".
 
@@ -164,10 +185,13 @@ removed when the command exits.`),
 "tunneler connect -- COMMAND" exits with the exit code of COMMAND.`),
 
 		topic("output", "JSON output for scripts and agents", `
-With "--output json" every command:
-- writes its result to stdout as JSON, and nothing else;
-- reports an error to stderr as {"error", "code", "matches"}; and
-- never prompts.
+With "--output json", tunneler's own commands:
+- write results to stdout as JSON, and nothing else;
+- report errors to stderr as {"error", "code", "matches"}; and
+- never prompt.
+
+With "tunneler connect -- COMMAND", stdout, stderr, and the exit status
+belong to COMMAND. "--output json" does not turn SQL results into JSON.
 
 "code" is one of: usage, not_logged_in, access_denied, ambiguous_selector,
 service_unavailable, error. See "tunneler help exit-codes".
@@ -187,8 +211,11 @@ For kubernetes, once the kubeconfig context is written, and it exits:
   {"event": "device_code", "verification_uri", "user_code"}
 for them to act on, waits, then writes {"event": "logged_in"}.
 
-To run one database command, prefer "tunneler connect -- COMMAND": nothing
-has to be parsed and no credentials are shown.`),
+To run a database command, prefer "tunneler connect -- COMMAND": nothing
+has to be parsed and no credentials are shown.
+
+For repeated Postgres queries, see "tunneler help agents". Keep one psql
+process open or pass it a SQL file to avoid a new session for each query.`),
 
 		topic("selectors", "Select a service by labels", selectorArguments+`
 

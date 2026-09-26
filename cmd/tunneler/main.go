@@ -67,7 +67,8 @@ func rootCmd() *cobra.Command {
 	root.Example = `$ tunneler config --server https://tunneler.example.com
 $ tunneler auth login
 $ tunneler services list
-$ tunneler connect cluster=prod team=shop -- psql`
+$ tunneler connect cluster=prod team=shop -- psql
+$ tunneler help agents`
 
 	group := func(id, name, short string, subs ...*cobra.Command) *cobra.Command {
 		cmd := &cobra.Command{Use: name, Short: short, GroupID: id}
