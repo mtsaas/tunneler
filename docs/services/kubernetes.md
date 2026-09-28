@@ -35,8 +35,8 @@ server who the person is, for each request. Kubernetes calls this
 impersonation.
 
 **The cluster decides what a person can do.** Tunneler says who the person is
-and which groups the person has. The RBAC rules of the cluster give those
-groups their permissions. Tunneler has no list of permitted verbs or
+and which groups the person has. The RBAC rules of the cluster give that user
+and those groups their permissions. Tunneler has no list of permitted verbs or
 resources.
 
 **There is no session.** The coordinator examines the login and the grants
@@ -50,12 +50,12 @@ credential, and the person does not have it.
 coordinator and the name of a command. `kubectl` runs that command,
 `tunneler kube token`, to get the login of the person.
 
-The groups are the link between the three places that you configure:
+The user names and groups connect the places that you configure:
 
 | Place | What you write there |
 |---|---|
-| The exit node chart | The groups that people can get in this cluster |
-| The RBAC of the cluster | What each group can do |
+| The exit node chart | The user names and groups that may be impersonated in this cluster |
+| The RBAC of the cluster | What each user and group can do |
 | The grants of the coordinator | Which people get which groups |
 
 ## 2. Set up a cluster
@@ -65,7 +65,9 @@ have version 0.3.0 or later. To upgrade them, see
 [Upgrades](../self-hosting.md#upgrades).
 
 1. Select names for the groups, for example `tunneler:view` and
-   `tunneler:edit`. The names have no special meaning to Kubernetes.
+   `tunneler:edit`. The names have no special meaning to Kubernetes. Also
+   collect the exact user names of the people who will connect, such as their
+   Entra email addresses. Add and remove users in the chart as access changes.
 
 2. Give each group its permissions in the cluster:
 
@@ -80,19 +82,23 @@ have version 0.3.0 or later. To upgrade them, see
    ```yaml
    kubernetes:
      enabled: true
+     users: ["alice@example.com"]
      groups: ["tunneler:view"]
      labels: {}
    ```
 
    The chart then does two things. It registers the cluster with the exit
    node, as a `TunnelService` of kind `kubernetes` with the name
-   `kubernetes`. It also lets the exit node impersonate all users, and these
-   groups only.
+   `kubernetes`. It also lets the exit node impersonate only these users and
+   groups. A user not in `kubernetes.users` will get a Kubernetes Forbidden
+   response, even if the coordinator has a grant for that user.
 
-   `groups` must contain at least one group. If it is empty, Helm stops
-   with an error that names `kubernetes.groups`. The reason: in a
-   ClusterRole, an empty list of names permits all names, `system:masters`
-   too.
+   Both `users` and `groups` must contain at least one name. If either is
+   empty, Helm stops with an error naming the setting. In a ClusterRole, an
+   empty list of names permits all names, including privileged identities.
+   The chart also refuses `system:` user names. Before upgrading an existing
+   installation with Kubernetes access enabled, set `kubernetes.users` to the
+   exact names of its authorized users.
 
    NOTE: Helm does not upgrade the custom resource definition of a chart. If
    you installed an earlier version with Helm, apply the definition first:
@@ -195,10 +201,11 @@ impersonator.
 - The exit node refuses a group that is not in its list. This limits what a
   coordinator with a fault, or an attacker who controls the coordinator, can
   do in the cluster. Do not put `system:masters` in the list.
-- The ClusterRole of the exit node permits it to impersonate only the groups
-  in `kubernetes.groups`. This limits what an attacker who gets the service
-  account token of the exit node can do. For this reason, the chart refuses
-  an empty list.
+- The ClusterRole of the exit node permits it to impersonate only the users
+  in `kubernetes.users` and the groups in `kubernetes.groups`. This bounds
+  the identities available to anyone who obtains its service account token.
+  Review direct RoleBindings and ClusterRoleBindings for each listed user:
+  direct user permissions apply even without a listed group.
 - The exit node refuses a user whose name starts with `system:`. Those names
   are for nodes, service accounts, and the control plane.
 - The coordinator removes `Authorization` and all `Impersonate-` headers that
@@ -215,10 +222,12 @@ impersonator.
 
 | What you see | Cause | What to do |
 |---|---|---|
+| Helm stops with `kubernetes.users must list at least one user when kubernetes.enabled` | `kubernetes.enabled` is `true`, but `kubernetes.users` is empty | List the authorized user names in `kubernetes.users` |
 | Helm stops with `kubernetes.groups must list at least one group when kubernetes.enabled` | `kubernetes.enabled` is `true`, but `kubernetes.groups` is empty | Add the groups to `kubernetes.groups`. See [2. Set up a cluster](#2-set-up-a-cluster) |
 | `tunneler connect` finds no service | No exit node offers the cluster, or no grant gives you access | Run `tunneler services list` and `tunneler auth status` |
 | `Forbidden: tunneler: no such service, or access denied` | No grant selects the service | Add a grant with `kind: kubernetes` for the cluster |
 | `Forbidden: tunneler: group "x" is not one this exit node may grant` | A grant gives a group that the chart does not list | Add the group to `kubernetes.groups`, or remove it from the grant |
+| Kubernetes says the exit node cannot impersonate a user | The name is absent from `kubernetes.users` | Add the exact user name to `kubernetes.users`, then upgrade the chart |
 | `Forbidden: User "alice@..." cannot list resource ...` | The login is correct, but RBAC does not permit the action | Bind the group to a role that permits it |
 | `You must be logged in to the server` | The login expired and tunneler could not renew it | Run `tunneler auth login` |
 | `the cluster's exit node could not be reached` | The exit node is not connected | Examine the pods of the exit node and their logs |

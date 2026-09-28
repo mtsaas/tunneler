@@ -4,4 +4,5 @@ cluster: kind
 replicas: 1
 kubernetes:
   enabled: true
+  users: ["https://kubernetes.default.svc.cluster.local"]
   groups: ["tunneler:view"]
