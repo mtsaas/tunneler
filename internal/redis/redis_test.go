@@ -131,7 +131,7 @@ func testConfig(mode string, allowed []string) Config {
 		Mode:         mode,
 		AllowedNodes: allowed,
 		ACLProfiles: map[string][]string{
-			"readwrite": {"+get", "+set", "+ping", "+command", "+client|setinfo", "+cluster|slots", "+cluster|shards", "~*"},
+			"readwrite": {"+get", "+set", "+ping", "+command", "+cluster|slots", "+cluster|shards", "~*"},
 		},
 	}
 }
