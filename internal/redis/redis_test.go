@@ -227,7 +227,7 @@ func TestStandalone(t *testing.T) {
 	requireRedis(t)
 	addr := runRedis(t)
 	configureAdmin(t, addr)
-	server, err := NewServer(adminDSN(addr), testConfig(ModeStandalone, nil))
+	server, err := NewServer(adminDSN(addr), testConfig(ModeStandalone, nil), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +434,7 @@ func TestGenerationChangesAfterRestart(t *testing.T) {
 	port := freePort(t)
 	addr := runRedisAtPort(t, port)
 	configureAdmin(t, addr)
-	server, err := NewServer(adminDSN(addr), testConfig(ModeStandalone, nil))
+	server, err := NewServer(adminDSN(addr), testConfig(ModeStandalone, nil), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,7 +497,7 @@ func TestSentinel(t *testing.T) {
 	cfg := testConfig(ModeSentinel, []string{"127.0.0.1/32"})
 	cfg.MasterName = "testmaster"
 	cfg.Sentinels = []string{sentinel}
-	server, err := NewServer(adminDSN(primary), cfg)
+	server, err := NewServer(adminDSN(primary), cfg, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -581,7 +581,7 @@ func TestCluster(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	server, err := NewServer(adminDSN(addresses[0]), testConfig(ModeCluster, []string{"127.0.0.1/32"}))
+	server, err := NewServer(adminDSN(addresses[0]), testConfig(ModeCluster, []string{"127.0.0.1/32"}), "")
 	if err != nil {
 		t.Fatal(err)
 	}

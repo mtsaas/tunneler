@@ -20,7 +20,7 @@ const (
 	RolePrefix     = "tnlr_"
 )
 
-// Config is public service policy. Credentials remain in the DSN Secret.
+// Config is public service policy. Credentials remain in DSN Secrets.
 type Config struct {
 	Mode         string              `json:"mode,omitempty"`
 	MasterName   string              `json:"masterName,omitempty"`

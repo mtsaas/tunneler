@@ -127,6 +127,30 @@ spec:
                           properties:
                             vaultUri: {type: string, format: uri}
                             secretName: {type: string}
+                    sentinelDsnRef:
+                      description: >-
+                        Optional separate rediss:// URL for Sentinel
+                        authentication. Its user and password must be distinct
+                        from the Redis data-node administrator. When omitted,
+                        Sentinel is queried without credentials, using TLS if
+                        the administrative URL uses rediss://.
+                      type: object
+                      oneOf:
+                        - required: [kubernetesSecret]
+                        - required: [azureKeyVault]
+                      properties:
+                        kubernetesSecret:
+                          type: object
+                          required: [name, key]
+                          properties:
+                            name: {type: string}
+                            key: {type: string}
+                        azureKeyVault:
+                          type: object
+                          required: [vaultUri, secretName]
+                          properties:
+                            vaultUri: {type: string, format: uri}
+                            secretName: {type: string}
                 grantableRoles:
                   description: >-
                     What the coordinator may grant a user here: database roles

@@ -22,9 +22,10 @@ import (
 )
 
 type Server struct {
-	options *client.Options
-	config  Config
-	policy  addressPolicy
+	options         *client.Options
+	sentinelOptions *client.Options
+	config          Config
+	policy          addressPolicy
 
 	mu         sync.RWMutex
 	nodes      []Node
@@ -33,7 +34,7 @@ type Server struct {
 	timers     map[string]*time.Timer
 }
 
-func NewServer(dsn string, cfg Config) (*Server, error) {
+func NewServer(dsn string, cfg Config, sentinelDSN string) (*Server, error) {
 	options, err := parseDSN(dsn)
 	if err != nil {
 		return nil, err
@@ -42,11 +43,31 @@ func NewServer(dsn string, cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	var sentinelOptions *client.Options
+	if sentinelDSN != "" {
+		if cfg.Mode != ModeSentinel {
+			return nil, errors.New("redis: sentinelDsn requires Sentinel mode")
+		}
+		sentinelOptions, err = parseDSN(sentinelDSN)
+		if err != nil {
+			return nil, fmt.Errorf("redis: invalid Sentinel DSN: %w", err)
+		}
+		if sentinelOptions.TLSConfig == nil {
+			return nil, errors.New("redis: Sentinel credentials require a rediss:// URL")
+		}
+		if sentinelOptions.Password == options.Password {
+			return nil, errors.New("redis: Sentinel credentials must not reuse the data-node administrative password")
+		}
+		if !slices.Contains(cfg.Sentinels, sentinelOptions.Addr) {
+			return nil, errors.New("redis: Sentinel DSN must name a configured Sentinel address")
+		}
+	}
 	return &Server{
-		options: options,
-		config:  cfg,
-		policy:  policy,
-		timers:  make(map[string]*time.Timer),
+		options:         options,
+		sentinelOptions: sentinelOptions,
+		config:          cfg,
+		policy:          policy,
+		timers:          make(map[string]*time.Timer),
 	}, nil
 }
 
@@ -212,10 +233,7 @@ func clusterNodePort(node client.Node, secure bool) int64 {
 func (s *Server) sentinelTopology(ctx context.Context) (string, []Node, error) {
 	var lastErr error
 	for _, sentinelAddr := range s.config.Sentinels {
-		primary, nodes, err := s.querySentinel(ctx, sentinelAddr, false)
-		if err != nil && strings.Contains(err.Error(), "NOAUTH") {
-			primary, nodes, err = s.querySentinel(ctx, sentinelAddr, true)
-		}
+		primary, nodes, err := s.querySentinel(ctx, sentinelAddr)
 		if err == nil {
 			return primary, nodes, nil
 		}
@@ -224,11 +242,19 @@ func (s *Server) sentinelTopology(ctx context.Context) (string, []Node, error) {
 	return "", nil, fmt.Errorf("redis: no Sentinel answered: %w", lastErr)
 }
 
-func (s *Server) querySentinel(ctx context.Context, addr string, authenticate bool) (string, []Node, error) {
+func (s *Server) querySentinel(ctx context.Context, addr string) (string, []Node, error) {
 	options := &client.Options{Addr: addr, Protocol: 2, MaxRetries: -1}
-	if authenticate {
-		options.Username = s.options.Username
-		options.Password = s.options.Password
+	tlsOptions := s.options
+	if s.sentinelOptions != nil {
+		options.Username = s.sentinelOptions.Username
+		options.Password = s.sentinelOptions.Password
+		tlsOptions = s.sentinelOptions
+	}
+	if tlsOptions.TLSConfig != nil {
+		host, _, _ := net.SplitHostPort(addr)
+		options.TLSConfig = tlsOptions.TLSConfig.Clone()
+		options.TLSConfig.ServerName = host
+		options.TLSConfig.MinVersion = tls.VersionTLS12
 	}
 	sentinel := client.NewSentinelClient(options)
 	defer sentinel.Close()

@@ -54,13 +54,13 @@ type TunnelServiceSpec struct {
 	Labels map[string]string `json:"labels,omitempty"`
 }
 
-// Credentials say where the administrative DSN is kept.
+// Credentials say where the administrative and optional Sentinel DSNs are kept.
 type Credentials struct {
-	DSNRef DSNRef `json:"dsnRef"`
+	DSNRef         DSNRef  `json:"dsnRef"`
+	SentinelDSNRef *DSNRef `json:"sentinelDsnRef,omitempty"`
 }
 
-// DSNRef points at a complete administrative connection string; exactly one
-// field is set.
+// DSNRef points at a complete connection string; exactly one field is set.
 type DSNRef struct {
 	KubernetesSecret *SecretKeyRef `json:"kubernetesSecret,omitempty"`
 	AzureKeyVault    *KeyVaultRef  `json:"azureKeyVault,omitempty"`
@@ -121,7 +121,7 @@ type Discovery struct {
 
 	mu       sync.Mutex
 	services map[string]*service // by namespace/name
-	sources  map[string]string   // by namespace/name: the DSN and generation the service was built from
+	sources  map[string]string   // by namespace/name: the DSNs and generation the service was built from
 	statuses map[string]string   // by namespace/name: the last condition written, to avoid rewriting it
 }
 
@@ -198,9 +198,12 @@ func (d *Discovery) upsert(ctx context.Context, obj any) {
 
 	// Only some kinds have credentials to fetch; a kubernetes service is
 	// reached with the exit node's own service account.
-	var dsn string
+	var dsn, sentinelDSN string
 	if ts.Spec.Credentials != nil {
 		dsn, err = d.resolveDSN(ctx, ts)
+		if err == nil && ts.Spec.Credentials.SentinelDSNRef != nil {
+			sentinelDSN, err = d.resolveRef(ctx, ts.Namespace, *ts.Spec.Credentials.SentinelDSNRef, "sentinelDsnRef")
+		}
 	}
 	if err != nil {
 		log.Warn("TunnelService credentials cannot be resolved; not offering it", "err", err)
@@ -208,9 +211,9 @@ func (d *Discovery) upsert(ctx context.Context, obj any) {
 		d.setStatus(ctx, ts, false, "CredentialsInvalid", err.Error())
 		return
 	}
-	// Built from the same spec and the same DSN as before: nothing to do.
+	// Built from the same spec and DSNs as before: nothing to do.
 	// This is what makes status writes and resyncs cheap.
-	source := fmt.Sprintf("%d\x00%s", ts.Generation, dsn)
+	source := fmt.Sprintf("%d\x00%s\x00%s", ts.Generation, dsn, sentinelDSN)
 	d.mu.Lock()
 	unchanged := d.sources[key] == source
 	d.mu.Unlock()
@@ -239,13 +242,14 @@ func (d *Discovery) upsert(ctx context.Context, obj any) {
 	}
 	labels["namespace"] = ts.Namespace
 	svc, err := newService(ServiceConfig{
-		Name:      name,
-		Kind:      ts.Spec.Kind,
-		DSN:       dsn,
-		Redis:     ts.Spec.Redis,
-		Labels:    labels,
-		Roles:     ts.Spec.GrantableRoles,
-		untrusted: true,
+		Name:        name,
+		Kind:        ts.Spec.Kind,
+		DSN:         dsn,
+		SentinelDSN: sentinelDSN,
+		Redis:       ts.Spec.Redis,
+		Labels:      labels,
+		Roles:       ts.Spec.GrantableRoles,
+		untrusted:   true,
 	})
 	if err != nil {
 		log.Warn("TunnelService is invalid; not offering it", "err", err)
@@ -338,42 +342,54 @@ func (d *Discovery) push() {
 // keyVaultRefused returns why the resource may not use the Key Vault secret
 // it names, or "" if it names none or may use it.
 func (d *Discovery) keyVaultRefused(ts *TunnelService) string {
-	if ts.Spec.Credentials == nil || ts.Spec.Credentials.DSNRef.AzureKeyVault == nil {
+	if ts.Spec.Credentials == nil {
 		return ""
 	}
-	r := ts.Spec.Credentials.DSNRef.AzureKeyVault
-	id, err := keyVaultSecretID(r.VaultURI, r.SecretName)
-	if err != nil {
-		return err.Error()
+	refs := []DSNRef{ts.Spec.Credentials.DSNRef}
+	if ts.Spec.Credentials.SentinelDSNRef != nil {
+		refs = append(refs, *ts.Spec.Credentials.SentinelDSNRef)
 	}
-	if slices.Contains(d.KeyVaultSecrets[ts.Namespace], id) {
-		return ""
+	for _, ref := range refs {
+		if ref.AzureKeyVault == nil {
+			continue
+		}
+		r := ref.AzureKeyVault
+		id, err := keyVaultSecretID(r.VaultURI, r.SecretName)
+		if err != nil {
+			return err.Error()
+		}
+		if !slices.Contains(d.KeyVaultSecrets[ts.Namespace], id) {
+			return fmt.Sprintf("namespace %q may not use the Key Vault secret %s; the exit node's operator allows it "+
+				"by listing it under workloadIdentity.keyVaultSecrets.%s in the exit node chart (--key-vault-secret %s=%s)",
+				ts.Namespace, id, ts.Namespace, ts.Namespace, id)
+		}
 	}
-	return fmt.Sprintf("namespace %q may not use the Key Vault secret %s; the exit node's operator allows it "+
-		"by listing it under workloadIdentity.keyVaultSecrets.%s in the exit node chart (--key-vault-secret %s=%s)",
-		ts.Namespace, id, ts.Namespace, ts.Namespace, id)
+	return ""
 }
 
 // resolveDSN fetches the administrative DSN the resource refers to. It runs
 // on the informer's one handler goroutine, where waiting holds up every
 // other resource's events, so it gives up after 10 seconds, as the ping does.
 func (d *Discovery) resolveDSN(ctx context.Context, ts *TunnelService) (string, error) {
+	return d.resolveRef(ctx, ts.Namespace, ts.Spec.Credentials.DSNRef, "dsnRef")
+}
+
+func (d *Discovery) resolveRef(ctx context.Context, namespace string, ref DSNRef, name string) (string, error) {
 	timeout := cmp.Or(d.credentialTimeout, 10*time.Second)
 	ctx, cancel := context.WithTimeoutCause(ctx, timeout, fmt.Errorf("no answer within %s", timeout))
 	defer cancel()
-	ref := ts.Spec.Credentials.DSNRef
 	switch {
 	case ref.KubernetesSecret != nil && ref.AzureKeyVault != nil:
-		return "", errors.New("dsnRef names both a kubernetesSecret and an azureKeyVault; choose one")
+		return "", fmt.Errorf("%s names both a kubernetesSecret and an azureKeyVault; choose one", name)
 	case ref.KubernetesSecret != nil:
 		r := ref.KubernetesSecret
-		secret, err := d.Clients.CoreV1().Secrets(ts.Namespace).Get(ctx, r.Name, metav1.GetOptions{})
+		secret, err := d.Clients.CoreV1().Secrets(namespace).Get(ctx, r.Name, metav1.GetOptions{})
 		if err != nil {
-			return "", fmt.Errorf("secret %s/%s: %w", ts.Namespace, r.Name, err)
+			return "", fmt.Errorf("secret %s/%s: %w", namespace, r.Name, err)
 		}
 		dsn, ok := secret.Data[r.Key]
 		if !ok || len(dsn) == 0 {
-			return "", fmt.Errorf("secret %s/%s has no key %q", ts.Namespace, r.Name, r.Key)
+			return "", fmt.Errorf("secret %s/%s has no key %q", namespace, r.Name, r.Key)
 		}
 		return string(dsn), nil
 	case ref.AzureKeyVault != nil:
@@ -384,7 +400,7 @@ func (d *Discovery) resolveDSN(ctx context.Context, ts *TunnelService) (string, 
 		}
 		return dsn, nil
 	}
-	return "", errors.New("dsnRef names neither a kubernetesSecret nor an azureKeyVault")
+	return "", fmt.Errorf("%s names neither a kubernetesSecret nor an azureKeyVault", name)
 }
 
 // setStatus writes the resource's Ready condition, unless it already says
