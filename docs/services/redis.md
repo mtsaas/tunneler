@@ -137,10 +137,17 @@ Redis data node, not a Sentinel. The exit node asks Sentinel for the current
 primary and discovers its replicas. `allowedNodes` lists the data-node
 addresses that the exit node can use. It accepts CIDRs or exact hostnames.
 
-Sentinel uses the administrative URL's credentials if it requires
-authentication. Sentinel discovery uses plain TCP. A `rediss://` URL secures
-connections to the Redis data nodes, not to Sentinel. The data-node addresses
-that Sentinel returns must accept TLS on their advertised ports.
+Sentinel is queried without credentials by default. If the administrative URL
+uses `rediss://`, Sentinel discovery also uses TLS with hostname verification.
+If Sentinel requires authentication, add `credentials.sentinelDsnRef` pointing
+to a separate Secret or Key Vault value containing a `rediss://` URL with a
+dedicated Sentinel username and password. That URL must name one of the
+configured Sentinel addresses; the same credentials are used for each. The
+exit node never retries `NOAUTH` with the data-node administrator's password.
+For a service in the exit node's file, use `sentinelDsn` instead of
+`sentinelDsnRef`; `$VAR` expansion works as for `dsn`. The data-node addresses
+that Sentinel returns must accept TLS on their advertised ports when the
+administrative URL uses `rediss://`.
 
 ### Cluster
 

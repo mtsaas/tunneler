@@ -68,7 +68,7 @@ var kinds = map[string]func(ServiceConfig) (backend, error){
 		if sc.DSN == "" {
 			return nil, errors.New("a redis service needs a dsn")
 		}
-		server, err := redis.NewServer(sc.DSN, sc.Redis)
+		server, err := redis.NewServerWithSentinelDSN(sc.DSN, sc.Redis, sc.SentinelDSN)
 		return redisBackend{server}, err
 	},
 	"kubernetes": func(sc ServiceConfig) (backend, error) {

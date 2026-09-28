@@ -42,6 +42,9 @@ type ServiceConfig struct {
 	// rather than sit in the file. Being the operator's, it is also completed
 	// from the PG* variables and ~/.pgpass, as libpq would.
 	DSN string `json:"dsn,omitempty"`
+	// SentinelDSN is a separate rediss:// URL for Sentinel authentication.
+	// Its credentials are never sent to Redis data nodes.
+	SentinelDSN string `json:"sentinelDsn,omitempty"`
 	// Kubernetes says how to reach the API server of a kubernetes service.
 	// The zero value, the cluster the exit node runs in, is nearly always
 	// right.
@@ -254,6 +257,7 @@ func (a *Agent) LoadConfig(path string) error {
 	services := make(map[string]*service)
 	for i, sc := range cfg.Services {
 		sc.DSN = os.ExpandEnv(sc.DSN)
+		sc.SentinelDSN = os.ExpandEnv(sc.SentinelDSN)
 		svc, err := newService(sc)
 		if err == nil && services[sc.Name] != nil {
 			err = errors.New("duplicate name")
