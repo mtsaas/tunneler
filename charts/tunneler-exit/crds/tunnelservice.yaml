@@ -140,7 +140,11 @@ spec:
                     labels cluster, kind, name and namespace are attached
                     automatically and cannot be set here.
                   type: object
-                  additionalProperties: {type: string}
+                  maxProperties: 32
+                  x-kubernetes-validations:
+                    - rule: "self.all(k, size(k) <= 63)"
+                      message: label keys must be at most 63 characters
+                  additionalProperties: {type: string, maxLength: 256}
             status:
               type: object
               properties:

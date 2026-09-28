@@ -138,10 +138,9 @@ func (s *muxStream) Close() error {
 	return nil
 }
 
-// maxMessage bounds a message, so that a peer cannot make the reader
-// allocate without limit. An exit node's hello listing thousands of
-// services fits many times over.
-const maxMessage = 4 << 20
+// MaxMessage bounds a message so that a peer cannot make the reader allocate
+// without limit. Callers must also keep outgoing messages within this size.
+const MaxMessage = 4 << 20
 
 // WriteMessage writes v as JSON, framed with its length, for ReadMessage.
 // Unlike a line of JSON, a frame is read without reading past its end, so
@@ -151,8 +150,8 @@ func WriteMessage(w io.Writer, v any) error {
 	if err != nil {
 		return err
 	}
-	if len(data) > maxMessage {
-		return fmt.Errorf("tunnel: message of %d bytes exceeds the limit of %d", len(data), maxMessage)
+	if len(data) > MaxMessage {
+		return fmt.Errorf("tunnel: message of %d bytes exceeds the limit of %d", len(data), MaxMessage)
 	}
 	frame := binary.BigEndian.AppendUint32(make([]byte, 0, 4+len(data)), uint32(len(data)))
 	_, err = w.Write(append(frame, data...))
@@ -166,8 +165,8 @@ func ReadMessage(r io.Reader, v any) error {
 		return err
 	}
 	n := binary.BigEndian.Uint32(size[:])
-	if n > maxMessage {
-		return fmt.Errorf("tunnel: message of %d bytes exceeds the limit of %d", n, maxMessage)
+	if n > MaxMessage {
+		return fmt.Errorf("tunnel: message of %d bytes exceeds the limit of %d", n, MaxMessage)
 	}
 	data := make([]byte, n)
 	if _, err := io.ReadFull(r, data); err != nil {

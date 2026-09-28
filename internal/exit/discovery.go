@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -179,6 +180,13 @@ func (d *Discovery) upsert(ctx context.Context, obj any) {
 	key := ts.Namespace + "/" + ts.Name
 	log := d.Log.With("tunnelservice", key)
 
+	if invalid := validateServiceLabels(ts.Spec.Labels); invalid != "" {
+		log.Warn("TunnelService is invalid; not offering it", "err", invalid)
+		d.drop(key)
+		d.setStatus(ctx, ts, false, "InvalidSpec", invalid)
+		return
+	}
+
 	// Checked before anything is fetched: the workload identity could read
 	// another namespace's secret.
 	if invalid := d.keyVaultRefused(ts); invalid != "" {
@@ -256,6 +264,23 @@ func (d *Discovery) upsert(ctx context.Context, obj any) {
 	d.sources[key] = source
 	d.mu.Unlock()
 	d.push()
+}
+
+// These limits keep a tenant's labels small enough to fit comfortably in a
+// shared hello and match the TunnelService CRD schema.
+func validateServiceLabels(labels map[string]string) string {
+	if len(labels) > 32 {
+		return "labels cannot contain more than 32 entries"
+	}
+	for key, value := range labels {
+		if utf8.RuneCountInString(key) > 63 {
+			return "label key exceeds 63 characters"
+		}
+		if utf8.RuneCountInString(value) > 256 {
+			return "label value exceeds 256 characters"
+		}
+	}
+	return ""
 }
 
 // serviceName returns the name the coordinator knows the resource's service
