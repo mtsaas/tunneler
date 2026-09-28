@@ -253,6 +253,13 @@ func topologyCommand(name string, args [][]byte) string {
 
 func checkCommand(name string, args [][]byte, options ProxyOptions) error {
 	switch name {
+	case "CLIENT":
+		if len(args) > 1 && (strings.EqualFold(string(args[1]), "SETINFO") || strings.EqualFold(string(args[1]), "SETNAME")) {
+			return nil
+		}
+		return errors.New("redis: this session does not permit server control commands")
+	case "FAILOVER":
+		return errors.New("redis: this session does not permit server control commands")
 	case "AUTH":
 		if len(args) != 3 || string(args[1]) != options.Username {
 			return errors.New("redis: this session permits AUTH only as its temporary user")

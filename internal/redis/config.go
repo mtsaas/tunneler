@@ -149,8 +149,9 @@ func validProfileRule(rule string) bool {
 	switch rule[0] {
 	case '+':
 		name := strings.ToLower(rule[1:])
-		return !slices.Contains(forbiddenCommands, name) &&
-			name != "@all" && name != "@connection" && name != "client|reset"
+		command, _, _ := strings.Cut(name, "|")
+		return !slices.Contains(forbiddenCommands, command) &&
+			name != "@all" && name != "@connection"
 	case '~', '&':
 		return true
 	default:
@@ -159,7 +160,7 @@ func validProfileRule(rule string) bool {
 }
 
 var forbiddenCommands = []string{
-	"acl", "client", "config", "debug", "module", "monitor", "replicaof",
+	"acl", "client", "config", "debug", "failover", "module", "monitor", "replicaof",
 	"shutdown", "slaveof", "sync", "psync",
 }
 
