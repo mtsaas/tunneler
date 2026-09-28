@@ -115,6 +115,17 @@ func (s *Server) Connect(ctx context.Context) (net.Conn, error) {
 	if s.cfg.TLSConfig == nil {
 		return conn, nil
 	}
+	// The SSL request and its one-byte response precede tls.HandshakeContext.
+	// A peer that never responds must still be interrupted by ctx.
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
+	ready := func(c net.Conn) (net.Conn, error) {
+		if !stop() {
+			c.Close()
+			return nil, ctx.Err()
+		}
+		return c, nil
+	}
 	var resp [1]byte
 	_, err = conn.Write(binary.BigEndian.AppendUint32([]byte{0, 0, 0, 8}, codeSSL))
 	if err == nil {
@@ -125,10 +136,10 @@ func (s *Server) Connect(ctx context.Context) (net.Conn, error) {
 	case resp[0] == 'S':
 		tc := tls.Client(conn, s.cfg.TLSConfig)
 		if err = tc.HandshakeContext(ctx); err == nil {
-			return tc, nil
+			return ready(tc)
 		}
 	case s.plaintextOK():
-		return conn, nil
+		return ready(conn)
 	default:
 		err = errors.New("postgres: server refused TLS")
 	}
