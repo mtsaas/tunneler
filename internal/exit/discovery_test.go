@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"maps"
@@ -120,6 +121,27 @@ func TestDiscovery(t *testing.T) {
 	ownDB := map[string]any{
 		"kind":        "postgres",
 		"credentials": map[string]any{"dsnRef": map[string]any{"kubernetesSecret": map[string]any{"name": "db", "key": "dsn"}}},
+	}
+	tooMany := make(map[string]any)
+	for i := range 33 {
+		tooMany[fmt.Sprintf("label-%d", i)] = "value"
+	}
+	for _, tc := range []struct {
+		name   string
+		labels map[string]any
+		why    string
+	}{
+		{"labels-count", tooMany, "32 entries"},
+		{"labels-key", map[string]any{strings.Repeat("k", 64): "value"}, "label key"},
+		{"labels-value", map[string]any{"large": strings.Repeat("v", 257)}, "label value"},
+	} {
+		spec := maps.Clone(ownDB)
+		spec["labels"] = tc.labels
+		create("tunneler", tc.name, spec)
+		invalid("tunneler", tc.name, tc.why)
+		if _, ok := agent.desired()[tc.name]; ok {
+			t.Errorf("service with oversized labels %q was defined", tc.name)
+		}
 	}
 
 	// In the exit node's own namespace a service keeps its plain name.

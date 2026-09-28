@@ -469,9 +469,43 @@ func (a *Agent) readvertise(ctx context.Context, sess *tunnel.Session, adverts n
 
 // hello returns the services to advertise, with the proof of this node's
 // cluster that the coordinator requires of all it is told.
+const maxServiceAdvertisement = 64 << 10
+
 func (a *Agent) hello(ctx context.Context) (api.Hello, error) {
 	token, err := a.token(ctx)
-	return api.Hello{Services: *a.adverts.Load(), Token: token}, err
+	if err != nil {
+		return api.Hello{}, err
+	}
+	hello := api.Hello{Services: []api.Service{}, Token: token}
+	base, err := json.Marshal(hello)
+	if err != nil {
+		return api.Hello{}, err
+	}
+	if len(base) > tunnel.MaxMessage {
+		return api.Hello{}, fmt.Errorf("exit: hello token exceeds the message limit")
+	}
+	size := len(base)
+	for _, svc := range *a.adverts.Load() {
+		data, err := json.Marshal(svc)
+		if err != nil {
+			return api.Hello{}, err
+		}
+		if len(data) > maxServiceAdvertisement {
+			a.Log.Warn("service advertisement exceeds its size limit; omitting service", "service", svc.Name)
+			continue
+		}
+		additional := len(data)
+		if len(hello.Services) > 0 {
+			additional++ // comma between services
+		}
+		if size+additional > tunnel.MaxMessage {
+			a.Log.Warn("service advertisement exceeds the hello message limit; omitting service", "service", svc.Name)
+			continue
+		}
+		hello.Services = append(hello.Services, svc)
+		size += additional
+	}
+	return hello, nil
 }
 
 // requestTimeout bounds the wait for a request on a stream the coordinator
