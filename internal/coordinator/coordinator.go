@@ -392,7 +392,7 @@ func (c *Coordinator) serveSession(ctx context.Context, s *session, conn net.Con
 	dial := func(ctx context.Context) (net.Conn, error) {
 		return c.hub.call(ctx, s.info.Cluster, api.ExitRequest{Op: api.OpDial, Service: s.info.Service, NodeID: target.NodeID})
 	}
-	log := c.audit.With(s.attrs(), "remote", remote)
+	log := c.audit.With(s.attrs(), "remote", remote, "connection", rand.Text())
 	if mustAudit(ctx, log, "connection opened") != nil {
 		return // closed unused; the sink's failure is on the operational log
 	}

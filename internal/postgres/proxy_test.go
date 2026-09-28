@@ -3,6 +3,7 @@ package postgres
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -28,6 +29,24 @@ func startup(params ...string) []byte {
 	return append(binary.BigEndian.AppendUint32(nil, uint32(len(body)+4)), body...)
 }
 
+func queryAudit(record func(string) error) func(string, ...any) error {
+	return func(message string, attrs ...any) error {
+		if message != "query" {
+			return nil
+		}
+		for i := 0; i < len(attrs)-1; i += 2 {
+			if attrs[i] == "sql_bytes_base64" {
+				b, err := base64.StdEncoding.DecodeString(attrs[i+1].(string))
+				if err != nil {
+					return err
+				}
+				return record(string(b))
+			}
+		}
+		return errors.New("query has no bytes")
+	}
+}
+
 // fastPathCall is a FunctionCall message that runs pg_notify, OID 3036,
 // outside any statement.
 func fastPathCall(t *testing.T) []byte {
@@ -51,10 +70,10 @@ func TestRelayAudits(t *testing.T) {
 	)
 	var out bytes.Buffer
 	var got []string
-	err := relay(&out, bytes.NewReader(in), func(q string) error {
+	err := relay(&out, bytes.NewReader(in), queryAudit(func(q string) error {
 		got = append(got, q)
 		return nil
-	})
+	}))
 	if err != io.EOF {
 		t.Fatalf("relay: %v", err)
 	}
@@ -85,10 +104,10 @@ func TestRelayRefuses(t *testing.T) {
 		in := slices.Concat(first, tt.msg, message('Q', "SELECT 2\x00"))
 		var out bytes.Buffer
 		var got []string
-		err := relay(&out, bytes.NewReader(in), func(q string) error {
+		err := relay(&out, bytes.NewReader(in), queryAudit(func(q string) error {
 			got = append(got, q)
 			return nil
-		})
+		}))
 		if err != tt.want {
 			t.Errorf("%s: relay: %v, want %v", tt.name, err, tt.want)
 		}
@@ -119,7 +138,7 @@ func TestProxyTellsClientOfRefusal(t *testing.T) {
 		go func() {
 			done <- Proxy(context.Background(), conn, func(context.Context) (net.Conn, error) {
 				return upstream, nil
-			}, "tnl_me", "app", func(string) error { return nil })
+			}, "tnl_me", "app", func(string, ...any) error { return nil })
 		}()
 		forwarded := make(chan []byte, 1)
 		go func() {
@@ -153,12 +172,12 @@ func TestRelayRefusesUnrecorded(t *testing.T) {
 	full := errors.New("no space left on device")
 	var out bytes.Buffer
 	statements := 0
-	err := relay(&out, bytes.NewReader(in), func(string) error {
+	err := relay(&out, bytes.NewReader(in), queryAudit(func(string) error {
 		if statements++; statements == 2 {
 			return full
 		}
 		return nil
-	})
+	}))
 	if !errors.Is(err, full) {
 		t.Errorf("relay: %v, want the sink's error", err)
 	}
@@ -182,7 +201,7 @@ func TestProxyConfinesLogin(t *testing.T) {
 			done <- Proxy(context.Background(), server, func(context.Context) (net.Conn, error) {
 				dialed = true
 				return nil, io.ErrUnexpectedEOF
-			}, "tnl_me", "app", func(string) error { return nil })
+			}, "tnl_me", "app", func(string, ...any) error { return nil })
 		}()
 
 		// An SSLRequest first, as libpq sends by default; it must be declined.
@@ -220,7 +239,7 @@ func TestRelayBackendStripsChannelBinding(t *testing.T) {
 		message('R', "SCRAM-SHA-256-PLUS is just data now"), // after AuthenticationOk nothing is inspected
 	)
 	var out bytes.Buffer
-	if err := relayBackend(&out, bytes.NewReader(in)); err != nil { // io.Copy ends cleanly at EOF
+	if err := relayBackend(&out, bytes.NewReader(in), func(string, ...any) error { return nil }); err != io.EOF {
 		t.Fatalf("relayBackend: %v", err)
 	}
 	want := slices.Concat(

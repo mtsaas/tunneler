@@ -75,8 +75,8 @@ func (k kind) access() string {
 var kinds = map[string]kind{
 	"postgres": {
 		proxy: func(ctx context.Context, client net.Conn, dial dialFunc, s *api.Session, _ proxyConnection, audit *slog.Logger) error {
-			return postgres.Proxy(ctx, client, dial, s.Username, s.Database, func(query string) error {
-				return mustAudit(ctx, audit, "query", "sql", query)
+			return postgres.Proxy(ctx, client, dial, s.Username, s.Database, func(message string, attrs ...any) error {
+				return mustAudit(ctx, audit, message, attrs...)
 			})
 		},
 	},

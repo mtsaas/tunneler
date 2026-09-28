@@ -309,16 +309,45 @@ The coordinator writes these records. Each has the
 | Message | When |
 |---|---|
 | `session created` | The account exists. The record lists the roles and the expiry time |
-| `connection opened`, `connection closed` | For each connection of the database tool |
-| `query` | For each SQL statement, with the whole text in `sql` |
+| `connection opened`, `connection closed` | For each connection of the database tool, with a `connection` ID shared by its records |
+| `postgres startup` | The exact startup packet in `startup_bytes_base64`, plus its parameters for reading |
+| `query` | For each Query or Parse message, the exact statement bytes in `sql_bytes_base64`; ASCII-only statements also have `sql` |
+| `postgres frontend`, `postgres backend` | Ordered wire markers and backend parameter changes, including `client_encoding` |
 | `session revoked` | The session ended. The record gives the reason |
 | `access denied` | No grant gives the person access |
 
 ```json
 {"msg":"query","audit":true,"user":"alice@example.com","subject":"...","cluster":"prod",
  "service":"shop/postgres","kind":"postgres","session":"K3Q2XB7HTLW5",
- "account":"tnl_alice_example_com_x7k2p9qa","sql":"select * from orders"}
+ "account":"tnl_alice_example_com_x7k2p9qa","connection":"W...","frontend_seq":1,
+ "frontend_type":"Q","sql":"select * from orders","sql_bytes_base64":"c2VsZWN0ICogZnJvbSBvcmRlcnM="}
 ```
+
+`sql_bytes_base64` is authoritative. Decode it with the server's active
+`client_encoding`; the JSON handler cannot preserve arbitrary statement bytes
+as a string. The `sql` field is present only when every statement byte is
+ASCII, so it reads the same way under PostgreSQL's supported client encodings.
+An absent `sql` does not mean the statement was empty.
+
+To reconstruct the encoding for a pipelined statement, group records by
+`connection`. Sort frontend records by `frontend_seq` and backend records by
+`backend_seq`, not by log timestamp. Start with the backend's
+`client_encoding` ParameterStatus before its first ReadyForQuery (`Z`). Match
+the two streams by the PostgreSQL protocol's completion messages: `Z` ends
+a simple Query or Sync cycle, `1` completes Parse, `2` completes Bind, and
+`C` or `s` completes Execute. Apply each backend ParameterStatus change in
+backend order. Use the encoding at the start of a simple Query cycle for its
+whole message, or the encoding reported by the time Parse completes for a
+Parse message. This also handles a Parse sent before the client receives the
+reply to an earlier Execute that changed the encoding. The `postgres startup`
+record gives the parameters the client sent, including `options`; the backend
+ParameterStatus records give the settings it actually applied. The exact
+startup packet and each ParameterStatus body are also base64 encoded, since
+their strings may contain bytes that JSON cannot represent.
+
+The trail records statement text, not Bind parameter values. A backend audit
+failure after a statement has executed closes the connection and appears on
+the operational log; it cannot undo that statement.
 
 The coordinator refuses what it cannot record in full: a statement longer
 than 1 MiB, and a fast-path function call. The database tool gets an error,
