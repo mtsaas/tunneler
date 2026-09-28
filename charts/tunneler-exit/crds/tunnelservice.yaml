@@ -46,18 +46,49 @@ spec:
               type: object
               required: [kind]
               x-kubernetes-validations:
-                - rule: "self.kind != 'postgres' || has(self.credentials)"
-                  message: a postgres service needs credentials
+                - rule: "!(self.kind in ['postgres', 'redis']) || has(self.credentials)"
+                  message: postgres and redis services need credentials
                 - rule: "self.kind != 'kubernetes' || !has(self.credentials)"
                   message: a kubernetes service takes no credentials; the exit node uses its own service account
+                - rule: "self.kind != 'redis' || has(self.redis)"
+                  message: a redis service needs ACL profiles and topology configuration
               properties:
                 kind:
                   description: >-
                     postgres: a database, reached with "tunneler connect".
+                    redis: Redis standalone, Sentinel, or Cluster, reached with
+                    "tunneler connect".
                     kubernetes: this cluster's API, reached with kubectl after
                     "tunneler kube config".
                   type: string
-                  enum: [postgres, kubernetes]
+                  enum: [postgres, redis, kubernetes]
+                redis:
+                  type: object
+                  required: [aclProfiles]
+                  properties:
+                    mode:
+                      type: string
+                      enum: [standalone, sentinel, cluster]
+                      default: standalone
+                    masterName: {type: string}
+                    sentinels:
+                      type: array
+                      items: {type: string}
+                    allowedNodes:
+                      description: >-
+                        CIDRs or exact hostnames that Sentinel or Cluster may
+                        advertise as Redis data nodes.
+                      type: array
+                      items: {type: string}
+                    aclProfiles:
+                      description: >-
+                        Redis ACL command, key, and channel rules for each
+                        grantable role. The exit node creates one selector per
+                        profile on a temporary Redis user.
+                      type: object
+                      additionalProperties:
+                        type: array
+                        items: {type: string}
                 credentials:
                   type: object
                   required: [dsnRef]
@@ -65,9 +96,9 @@ spec:
                     dsnRef:
                       description: >-
                         Where the administrative connection string is kept. It
-                        must be a postgres:// URL that gives the host, the user
-                        and the password; after the "?" it can set only
-                        sslmode and connect_timeout. The exit node adds nothing
+                        must be a postgres:// URL for postgres or a redis://
+                        or rediss:// URL for Redis, with an administrative
+                        user and password. The exit node adds nothing
                         from its own environment or files. Exactly one of
                         kubernetesSecret and azureKeyVault.
                       type: object
@@ -99,7 +130,8 @@ spec:
                 grantableRoles:
                   description: >-
                     What the coordinator may grant a user here: database roles
-                    for postgres, groups to impersonate for kubernetes.
+                    for postgres, ACL profile names for redis, or groups to
+                    impersonate for kubernetes.
                   type: array
                   items: {type: string}
                 labels:

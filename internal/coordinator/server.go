@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -381,11 +382,57 @@ func (c *Coordinator) handleConnect(w http.ResponseWriter, r *http.Request, id *
 		writeError(w, http.StatusForbidden, "access withdrawn")
 		return
 	}
+	target := proxyConnection{}
+	if s.info.Kind == "redis" {
+		if svc.RedisGeneration != s.info.RedisGeneration || !slices.Equal(svc.RedisNodes, s.info.RedisNodes) {
+			c.revoke(s.info.ID, "Redis restarted or its topology changed")
+			writeError(w, http.StatusConflict, "Redis restarted or its topology changed; start a new session")
+			return
+		}
+		target.Nodes = svc.RedisNodes
+		if s.info.RedisMode == "cluster" {
+			var err error
+			target, err = redisProxyTarget(r, svc.RedisNodes)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		} else if r.URL.Query().Has("node") || r.URL.Query().Has("port") {
+			writeError(w, http.StatusBadRequest, "node selection is only available for Redis Cluster")
+			return
+		}
+	}
 	conn, err := tunnel.Accept(w, r)
 	if err != nil {
 		return
 	}
-	c.serveSession(r.Context(), s, conn, c.remote(r))
+	c.serveSession(r.Context(), s, conn, c.remote(r), target)
+}
+
+func redisProxyTarget(r *http.Request, nodes []api.RedisNode) (proxyConnection, error) {
+	query := r.URL.Query()
+	target := proxyConnection{NodeID: query.Get("node"), Nodes: nodes, Ports: make(map[string]int)}
+	if target.NodeID == "" || len(query["node"]) != 1 || len(query["port"]) != len(nodes) {
+		return proxyConnection{}, errors.New("Redis Cluster needs a node ID and one local port per node")
+	}
+	known := make(map[string]bool, len(nodes))
+	for _, node := range nodes {
+		known[node.ID] = true
+	}
+	if !known[target.NodeID] {
+		return proxyConnection{}, errors.New("unknown Redis Cluster node")
+	}
+	used := make(map[int]bool, len(nodes))
+	for _, entry := range query["port"] {
+		id, value, found := strings.Cut(entry, ":")
+		port, err := strconv.Atoi(value)
+		if !found || !known[id] || target.Ports[id] != 0 || err != nil || port < 1 || port > 65535 || used[port] {
+			return proxyConnection{}, errors.New("invalid Redis Cluster local port map")
+		}
+		target.Ports[id] = port
+		used[port] = true
+	}
+	return target, nil
 }
 
 // handleSessionEvents streams SessionEvents until the session ends, so that

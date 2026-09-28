@@ -9,12 +9,19 @@ import (
 	"github.com/mtsaas/tunneler/internal/api"
 	"github.com/mtsaas/tunneler/internal/kube"
 	"github.com/mtsaas/tunneler/internal/postgres"
+	"github.com/mtsaas/tunneler/internal/redis"
 )
 
 // dialFunc opens a connection to a service through one of its cluster's exit
 // nodes. What it returns speaks whatever the exit node's half of the kind
 // put on the other end.
 type dialFunc func(ctx context.Context) (net.Conn, error)
+
+type proxyConnection struct {
+	NodeID string
+	Ports  map[string]int
+	Nodes  []api.RedisNode
+}
 
 // A kind is how the coordinator fronts one type of service. It is the
 // coordinator's half; the exit node holds the other, under the same name.
@@ -30,7 +37,7 @@ type kind struct {
 	// protocol with the client, admits only the session's account, records
 	// what the client does on audit, refusing what is not recorded first
 	// (see mustAudit), and closes client before returning.
-	proxy func(ctx context.Context, client net.Conn, dial dialFunc, s *api.Session, audit *slog.Logger) error
+	proxy func(ctx context.Context, client net.Conn, dial dialFunc, s *api.Session, target proxyConnection, audit *slog.Logger) error
 
 	// gateway is set for kinds reached per request, over HTTP. There is no
 	// session and no account: every request carries the user's login, and
@@ -67,9 +74,30 @@ func (k kind) access() string {
 
 var kinds = map[string]kind{
 	"postgres": {
-		proxy: func(ctx context.Context, client net.Conn, dial dialFunc, s *api.Session, audit *slog.Logger) error {
+		proxy: func(ctx context.Context, client net.Conn, dial dialFunc, s *api.Session, _ proxyConnection, audit *slog.Logger) error {
 			return postgres.Proxy(ctx, client, dial, s.Username, s.Database, func(query string) error {
 				return mustAudit(ctx, audit, "query", "sql", query)
+			})
+		},
+	},
+	"redis": {
+		proxy: func(ctx context.Context, conn net.Conn, dial dialFunc, s *api.Session, target proxyConnection, audit *slog.Logger) error {
+			nodes := make([]redis.Node, len(target.Nodes))
+			for i, node := range target.Nodes {
+				nodes[i] = redis.Node{ID: node.ID, Addr: node.Addr}
+			}
+			mode := redis.ModeStandalone
+			if target.NodeID != "" {
+				mode = redis.ModeCluster
+			}
+			return redis.Proxy(ctx, conn, dial, redis.ProxyOptions{
+				Username: s.Username,
+				Mode:     mode,
+				Nodes:    nodes,
+				Ports:    target.Ports,
+				Audit: func(command string, arguments []string) error {
+					return mustAudit(ctx, audit, "command", "name", command, "arguments", arguments)
+				},
 			})
 		},
 	},

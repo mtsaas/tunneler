@@ -25,6 +25,7 @@ type connectOptions struct {
 // CLI's part of a kind, beside the coordinator's and the exit node's.
 var connectors = map[string]func(ctx context.Context, c *client, cluster string, svc api.Service, opts connectOptions) error{
 	"postgres":   connectSession,
+	"redis":      connectSession,
 	"kubernetes": connectKubernetes,
 }
 
@@ -42,6 +43,10 @@ What connecting means depends on the kind of service.
 postgres: creates a temporary account for you, and opens a local port for
 your database tool. Ctrl-C disconnects and removes the account. The port for
 a service is the same every time.
+
+redis: creates a temporary Redis ACL user and opens a local port. For Redis
+Cluster, it opens one port per node and translates cluster redirects to those
+ports. Ctrl-C revokes the user.
 
 kubernetes: adds a context to your kubeconfig, and exits. kubectl and other
 tools then reach the cluster through the coordinator, as you. The context
@@ -63,12 +68,14 @@ Everything you do is logged with your identity.`,
 
 After "--": a command to run. See "tunneler help environment".`,
 			helpJSON: `postgres:   {"event": "listening", "host", "port", "url", "session", "notice"}
+redis:      {"event": "listening", "host", "port", "url", "session", "notice"}
 kubernetes: {"event": "configured", "context", "kubeconfig", "server", "notice"}
 With -- COMMAND, stdout belongs to COMMAND and has no tunneler JSON wrapper.`,
 		},
 		Example: `$ tunneler connect cluster=prod team=shop
 $ tunneler connect cluster=prod name=shop/postgres -- psql -X -v ON_ERROR_STOP=1 -P pager=off
 $ tunneler connect cluster=prod name=shop/postgres -- psql -X -v ON_ERROR_STOP=1 -P pager=off -f batch.sql
+$ tunneler connect cluster=prod kind=redis -- redis-cli
 $ tunneler connect cluster=prod kind=kubernetes
 $ tunneler connect cluster=prod kind=kubernetes -- kubectl get pods
 $ tunneler connect`,
@@ -93,7 +100,7 @@ $ tunneler connect`,
 	}
 	cmd.Flags().StringVar(&cluster, "cluster", "", "Same as the label cluster=NAME")
 	cmd.Flags().StringVar(&name, "service", "", "Same as the label name=NAME")
-	cmd.Flags().IntVar(&opts.port, "port", 0, "postgres: local port to listen on (default: fixed per service)")
+	cmd.Flags().IntVar(&opts.port, "port", 0, "postgres or redis: local port to listen on (default: fixed per service)")
 	cmd.Flags().StringVar(&opts.context, "context", "", "kubernetes: name of the context (default: tunneler-CLUSTER)")
 	cmd.Flags().BoolVar(&use, "use", true, "kubernetes: make the context current")
 	return cmd

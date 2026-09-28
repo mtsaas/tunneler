@@ -7,6 +7,7 @@ them. Each kind of service has its own document:
 | Kind | What people get | Document |
 |---|---|---|
 | `postgres` | A temporary database account, and a local port for a database tool | [Postgres](postgres.md) |
+| `redis` | A temporary Redis ACL user, and local ports for Redis clients | [Redis](redis.md) |
 | `kubernetes` | The Kubernetes API of the cluster, for `kubectl` and other tools | [Kubernetes](kubernetes.md) |
 
 Tunneler must be installed first: a coordinator, and an exit node in the
@@ -73,7 +74,7 @@ that tunneler sets:
 | Label | Value |
 |---|---|
 | `cluster` | The name of the cluster, from the exit node |
-| `kind` | `postgres` or `kubernetes` |
+| `kind` | `postgres`, `redis`, or `kubernetes` |
 | `name` | The name of the service, for example `shop/postgres` |
 | `namespace` | The namespace of the `TunnelService` |
 
@@ -90,6 +91,7 @@ of a role depends on the kind:
 | Kind | A role is |
 |---|---|
 | `postgres` | A database role. The temporary account becomes a member of it |
+| `redis` | An ACL profile. The temporary user gets its command, key, and channel permissions |
 | `kubernetes` | A group. The cluster sees the person as a member of it |
 
 `grantableRoles` in the `TunnelService` is a limit. It lists the roles that
@@ -134,8 +136,8 @@ command lists them and asks you to select one. `name=<service>` always
 matches one service at most. With no labels, the command lists all services
 that you can reach.
 
-What the command does then depends on the kind. For `postgres`, it opens a
-local port and continues to run. For `kubernetes`, it adds a context to your
+What the command does then depends on the kind. For `postgres` and `redis`, it opens
+local ports and continues to run. For `kubernetes`, it adds a context to your
 kubeconfig and stops. See the document of the kind.
 
 For all kinds, a command after `--` runs with the connection in its
@@ -161,7 +163,7 @@ it. Each record is one JSON line in the log of the coordinator, with
 | `subject` | The same person, by the permanent ID from the identity provider |
 | `cluster` | The cluster of the service |
 | `service` | The name of the service |
-| `kind` | `postgres` or `kubernetes` |
+| `kind` | `postgres`, `redis`, or `kubernetes` |
 | `remote` | The address that the request came from. Behind an ingress, set `trusted_proxies` in the configuration of the coordinator. Without it, this is the address of the ingress |
 
 Every record has all of these fields. A field that does not apply is

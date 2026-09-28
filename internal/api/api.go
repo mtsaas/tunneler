@@ -67,14 +67,25 @@ type Service struct {
 	// AccessSession, through a session on which a temporary account is
 	// provisioned, or AccessGateway, per request through the coordinator's
 	// gateway. It is empty for a kind the coordinator does not know.
-	Access   string            `json:"access,omitempty"`
-	Database string            `json:"database,omitempty"` // Postgres: the one database sessions may use
-	Labels   map[string]string `json:"labels"`
+	Access          string            `json:"access,omitempty"`
+	Database        string            `json:"database,omitempty"` // Postgres: the one database sessions may use
+	RedisMode       string            `json:"redis_mode,omitempty"`
+	RedisNodes      []RedisNode       `json:"redis_nodes,omitempty"`
+	RedisGeneration string            `json:"redis_generation,omitempty"`
+	Labels          map[string]string `json:"labels"`
 	// Ready reports whether the exit node can reach the service with its
 	// credentials; Status says why not. Sessions are refused on a service
 	// that is not ready.
 	Ready  bool   `json:"ready"`
 	Status string `json:"status,omitempty"`
+}
+
+// RedisNode identifies a Redis Cluster node. The address is used only by the
+// coordinator to translate topology replies to the CLI's local listeners;
+// the exit node resolves the ID against its current topology before dialing.
+type RedisNode struct {
+	ID   string `json:"id"`
+	Addr string `json:"addr"`
 }
 
 // How a service is reached; see Service.Access.
@@ -95,15 +106,18 @@ type SessionRequest struct {
 
 // Session is provisioned, time-limited access to a service.
 type Session struct {
-	ID        string    `json:"id"`
-	Owner     string    `json:"owner"`
-	Cluster   string    `json:"cluster"`
-	Service   string    `json:"service"`
-	Kind      string    `json:"kind"`
-	Database  string    `json:"database"`
-	Username  string    `json:"username"`
-	Password  string    `json:"password,omitempty"` // only returned on creation
-	ExpiresAt time.Time `json:"expires_at"`
+	ID              string      `json:"id"`
+	Owner           string      `json:"owner"`
+	Cluster         string      `json:"cluster"`
+	Service         string      `json:"service"`
+	Kind            string      `json:"kind"`
+	Database        string      `json:"database"`
+	RedisMode       string      `json:"redis_mode,omitempty"`
+	RedisNodes      []RedisNode `json:"redis_nodes,omitempty"`
+	RedisGeneration string      `json:"redis_generation,omitempty"`
+	Username        string      `json:"username"`
+	Password        string      `json:"password,omitempty"` // only returned on creation
+	ExpiresAt       time.Time   `json:"expires_at"`
 }
 
 // SessionEvent is one line of the stream at GET /v1/sessions/{id}/events.
@@ -150,6 +164,7 @@ const (
 type ExitRequest struct {
 	Op      string `json:"op,omitempty"`
 	Service string `json:"service,omitempty"`
+	NodeID  string `json:"node_id,omitempty"`
 	Role    *Role  `json:"role,omitempty"`
 }
 
