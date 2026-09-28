@@ -223,6 +223,64 @@ func testProxyOptions(role api.Role, mode string) ProxyOptions {
 	}
 }
 
+func TestForbiddenCommandsStayDeniedByRedisACL(t *testing.T) {
+	requireRedis(t)
+	addr := runRedis(t)
+	configureAdmin(t, addr)
+	cfg := testConfig(ModeStandalone, nil)
+	cfg.ACLProfiles["readwrite"] = []string{"+@admin", "+@dangerous", "+@slow", "~*"}
+	server, err := NewServer(adminDSN(addr), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	role := createTestUser(t, server)
+	admin := client.NewClient(&client.Options{Addr: addr, Username: "admin", Password: testPassword, Protocol: 2})
+	defer admin.Close()
+	for _, command := range [][]string{
+		{"CLIENT", "LIST"},
+		{"CLIENT", "KILL", "ID", "0"},
+		{"CLIENT", "PAUSE", "100"},
+		{"FAILOVER"},
+	} {
+		t.Run(strings.Join(command, " "), func(t *testing.T) {
+			args := []any{"ACL", "DRYRUN", role.Name}
+			for _, part := range command {
+				args = append(args, part)
+			}
+			result, err := admin.Do(context.Background(), args...).Result()
+			if err != nil || !strings.Contains(fmt.Sprint(result), "has no permissions to run") {
+				t.Fatalf("ACL DRYRUN %v = %v, %v, want command denial", command, result, err)
+			}
+		})
+	}
+}
+
+func TestForbiddenCommandsBlockedBeforeRedis(t *testing.T) {
+	options := ProxyOptions{Username: "temporary", Mode: ModeStandalone}
+	for _, command := range [][]string{
+		{"CLIENT", "LIST"},
+		{"CLIENT", "KILL"},
+		{"CLIENT", "PAUSE"},
+		{"FAILOVER"},
+	} {
+		args := make([][]byte, len(command))
+		for i, part := range command {
+			args[i] = []byte(part)
+		}
+		if err := checkCommand(command[0], args, options); err == nil {
+			t.Errorf("proxy allowed %v", command)
+		}
+	}
+}
+
+func TestForbiddenACLSubcommandsAreNotProfileRules(t *testing.T) {
+	for _, rule := range []string{"+client|list", "+client|kill", "+client|pause", "+FAILOVER"} {
+		if validProfileRule(rule) {
+			t.Errorf("profile accepted forbidden rule %q", rule)
+		}
+	}
+}
+
 func TestStandalone(t *testing.T) {
 	requireRedis(t)
 	addr := runRedis(t)

@@ -378,7 +378,7 @@ func (s *Server) CreateRole(ctx context.Context, role api.Role) error {
 }
 
 var mandatoryDenies = []string{
-	"-acl", "-config", "-debug", "-module", "-monitor",
+	"-acl", "-client", "-config", "-debug", "-failover", "-module", "-monitor",
 	"-replicaof", "-shutdown", "-slaveof", "-sync", "-psync",
 	"-select", "-swapdb", "-move", "-migrate", "-copy",
 	"-reset", "-flushall", "-flushdb",
