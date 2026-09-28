@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"net"
@@ -379,14 +380,24 @@ func (s *service) reap(ctx context.Context, log *slog.Logger) {
 // reapInterval is how often accounts past their expiry are swept up.
 const reapInterval = time.Hour
 
+// backendTimeout leaves time for a response before the coordinator's 30s
+// request deadline, even when a service does not answer.
+const backendTimeout = 20 * time.Second
+
 // reapLoop drops expired accounts at startup and periodically after. It is
 // the cleanup of last resort, needing nothing from the coordinator: whatever
 // crashed or lost its state, no account outlives its expiry by much.
 func (a *Agent) reapLoop(ctx context.Context) {
 	for {
+		var wg sync.WaitGroup
 		for _, svc := range *a.advertised.Load() {
-			svc.reap(ctx, a.Log)
+			wg.Go(func() {
+				reapCtx, cancel := context.WithTimeout(ctx, backendTimeout)
+				defer cancel()
+				svc.reap(reapCtx, a.Log)
+			})
 		}
+		wg.Wait()
 		select {
 		case <-time.After(reapInterval):
 		case <-ctx.Done():
@@ -530,8 +541,22 @@ func (a *Agent) handle(ctx context.Context, stream net.Conn) {
 
 	log := a.Log.With("op", req.Op, "service", req.Service)
 	start := time.Now()
+	// The coordinator closes its stream when it gives up. While the backend
+	// works, reads have no other purpose, so EOF cancels that work promptly.
+	// Stop the reader before a successful dial starts carrying client data.
+	opCtx, cancel := context.WithTimeout(ctx, backendTimeout)
+	defer cancel()
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		io.Copy(io.Discard, stream)
+		cancel()
+	}()
 	svc := (*a.advertised.Load())[req.Service]
-	target, err := a.do(ctx, svc, req, log)
+	target, err := a.do(opCtx, svc, req, log)
+	stream.SetReadDeadline(time.Now())
+	<-watchDone
+	stream.SetReadDeadline(time.Time{})
 	log.Debug("request handled", "took", time.Since(start).Round(time.Millisecond).String(), "err", err)
 	res := api.ExitResult{}
 	if err != nil {
