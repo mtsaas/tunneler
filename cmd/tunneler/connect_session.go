@@ -44,15 +44,18 @@ func connectSession(ctx context.Context, c *client, cluster string, svc api.Serv
 	defer cancel(nil)
 
 	var err error
-	// An explicit port is claimed before provisioning, so that finding it
-	// busy costs nothing upstream.
+	// Claim the local endpoint before provisioning a temporary account. A
+	// busy stable port must fail rather than send saved clients to its owner.
 	var ln net.Listener
 	if port != 0 {
-		if ln, err = net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port)); err != nil {
-			return err
-		}
-		defer ln.Close()
+		ln, err = net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	} else {
+		ln, err = listenStable(&api.Session{Cluster: cluster, Service: svc.Name})
 	}
+	if err != nil {
+		return err
+	}
+	defer ln.Close()
 
 	log.Info(fmt.Sprintf("Requesting access to %s/%s...", cluster, svc.Name))
 	s, err := c.CreateSession(ctx, map[string]string{"cluster": cluster, "name": svc.Name})
@@ -83,12 +86,6 @@ func connectSession(ctx context.Context, c *client, cluster string, svc api.Serv
 		}
 	}()
 
-	if ln == nil {
-		if ln, err = listenStable(s); err != nil {
-			return err
-		}
-		defer ln.Close()
-	}
 	addr := ln.Addr().(*net.TCPAddr)
 	listeners := []net.Listener{ln}
 	ports := make(map[string]int)
@@ -157,17 +154,16 @@ func connectSession(ctx context.Context, c *client, cluster string, svc api.Serv
 }
 
 // listenStable listens on the loopback port derived from the service's
-// name, so that the endpoint is the same from one session to the next, or on
-// any free port if that one is taken.
+// name, so that the endpoint is the same from one session to the next.
 func listenStable(s *api.Session) (net.Listener, error) {
 	h := fnv.New32a()
 	h.Write([]byte(s.Cluster + "/" + s.Service))
 	port := 49152 + h.Sum32()%16384 // the dynamic range, where nothing is registered
-	if ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port)); err == nil {
-		return ln, nil
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return nil, fmt.Errorf("cannot use the usual port %d for this service; choose another with --port: %w", port, err)
 	}
-	log.Warn(fmt.Sprintf("The usual port for this service, %d, is in use; using another.", port))
-	return net.Listen("tcp", "127.0.0.1:0")
+	return ln, nil
 }
 
 // runSessionCommand runs a command with the session in its environment,
