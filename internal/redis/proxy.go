@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -28,9 +29,9 @@ type ProxyOptions struct {
 	Audit    func(command string, arguments []string) error
 }
 
-// Proxy keeps the client's authentication end to end with Redis. It inspects
-// complete commands for session restrictions and audit, then forwards the
-// original wire bytes. Cluster replies are translated to local node ports.
+// Proxy requires Redis to authenticate the temporary user before forwarding
+// other commands. It then audits complete commands and forwards their original
+// wire bytes. Cluster replies are translated to local node ports.
 func Proxy(ctx context.Context, local net.Conn, dial func(context.Context) (net.Conn, error), options ProxyOptions) error {
 	defer local.Close()
 	upstream, err := dial(ctx)
@@ -39,21 +40,28 @@ func Proxy(ctx context.Context, local net.Conn, dial func(context.Context) (net.
 		return err
 	}
 	defer upstream.Close()
+	budget := &byteBudget{Reader: local, Limit: 2 * maxCommandBytes}
+	reader := redcon.NewReader(budget)
+	initialCommand, firstReplyByte, err := authenticate(upstream, reader, budget, options)
+	if err != nil {
+		writeProxyError(local, err.Error())
+		return err
+	}
 
 	if options.Mode == ModeCluster {
-		return proxyCluster(local, upstream, options)
+		return proxyCluster(local, upstream, reader, budget, initialCommand, firstReplyByte, options)
 	}
-	return proxySingle(local, upstream, options)
+	return proxySingle(local, upstream, reader, budget, firstReplyByte, options)
 }
 
-func proxySingle(local, upstream net.Conn, options ProxyOptions) error {
+func proxySingle(local, upstream net.Conn, reader *redcon.Reader, budget *byteBudget, firstReplyByte byte, options ProxyOptions) error {
 	results := make(chan error, 2)
 	go func() {
-		_, err := io.Copy(local, upstream)
+		_, err := io.Copy(local, io.MultiReader(bytes.NewReader([]byte{firstReplyByte}), upstream))
 		results <- err
 	}()
 	go func() {
-		results <- forwardCommands(local, upstream, options, nil, nil)
+		results <- forwardCommands(reader, budget, upstream, options, nil, nil)
 	}()
 	err := <-results
 	upstream.Close()
@@ -68,7 +76,8 @@ func proxySingle(local, upstream net.Conn, options ProxyOptions) error {
 	return err
 }
 
-func proxyCluster(local, upstream net.Conn, options ProxyOptions) error {
+func proxyCluster(local, upstream net.Conn, reader *redcon.Reader, budget *byteBudget,
+	initialCommand string, firstReplyByte byte, options ProxyOptions) error {
 	redirects := make(map[string]string)
 	ports := make(map[string]int)
 	for _, node := range options.Nodes {
@@ -81,14 +90,16 @@ func proxyCluster(local, upstream net.Conn, options ProxyOptions) error {
 	}
 
 	requests := make(chan string, 32)
+	requests <- initialCommand
 	results := make(chan error, 2)
 	done := make(chan struct{})
 	go func() {
 		defer close(requests)
-		results <- forwardCommands(local, upstream, options, requests, done)
+		results <- forwardCommands(reader, budget, upstream, options, requests, done)
 	}()
 	go func() {
 		reader := newReplyReader(upstream)
+		reader.pending = []byte{firstReplyByte}
 		for command := range requests {
 			reply, err := reader.Next(maxReplyBytes)
 			if err != nil {
@@ -129,23 +140,76 @@ func writeProxyError(conn net.Conn, message string) {
 	_, _ = conn.Write(redcon.AppendError(nil, "ERR tunneler: "+message))
 }
 
-// forwardCommands uses redcon's command reader; byteBudget prevents its
-// internal buffer from growing without bound on a malformed client frame.
-func forwardCommands(local, upstream net.Conn, options ProxyOptions, requests chan<- string, done <-chan struct{}) error {
-	budget := &byteBudget{Reader: local, Limit: 2 * maxCommandBytes}
-	reader := redcon.NewReader(budget)
+// authenticate leaves Redis to check the password, but does not let a client
+// use the connection as Redis's default user before that check succeeds.
+func authenticate(upstream net.Conn, reader *redcon.Reader, budget *byteBudget, options ProxyOptions) (string, byte, error) {
+	command, err := readCommand(reader, budget)
+	if err != nil {
+		return "", 0, err
+	}
+	name := strings.ToUpper(string(command.Args[0]))
+	if name != "AUTH" && (name != "HELLO" || !helloAuthenticates(command.Args)) {
+		return "", 0, errors.New("redis: authenticate as the temporary user before sending other commands")
+	}
+	if err := checkCommand(name, command.Args, options); err != nil {
+		return "", 0, err
+	}
+	if err := options.Audit(name, auditArguments(name, command.Args)); err != nil {
+		return "", 0, fmt.Errorf("redis: audit failed: %w", err)
+	}
+	if _, err := upstream.Write(command.Raw); err != nil {
+		return "", 0, err
+	}
+	var first [1]byte
+	if _, err := io.ReadFull(upstream, first[:]); err != nil {
+		return "", 0, err
+	}
+	if first[0] == '-' {
+		return "", 0, errors.New("redis: temporary user authentication failed")
+	}
+	if name == "AUTH" && first[0] != '+' || name == "HELLO" && first[0] != '*' && first[0] != '%' {
+		return "", 0, errors.New("redis: invalid authentication reply")
+	}
+	return name, first[0], nil
+}
+
+func readCommand(reader *redcon.Reader, budget *byteBudget) (redcon.Command, error) {
+	budget.Reset()
+	command, err := reader.ReadCommand()
+	if err != nil {
+		return redcon.Command{}, err
+	}
+	if len(command.Raw) == 0 || len(command.Raw) > maxCommandBytes || len(command.Args) == 0 ||
+		len(command.Args) > 1024 || command.Raw[0] != '*' {
+		return redcon.Command{}, errors.New("redis: command must be a RESP array of at most 1 MiB and 1,024 arguments")
+	}
+	return command, nil
+}
+
+func helloAuthenticates(args [][]byte) bool {
+	for _, arg := range args[1:] {
+		if strings.EqualFold(string(arg), "AUTH") {
+			return true
+		}
+	}
+	return false
+}
+
+// forwardCommands uses the same reader as authenticate, retaining any client
+// commands that arrived in the same packet as the authentication handshake.
+func forwardCommands(reader *redcon.Reader, budget *byteBudget, upstream net.Conn,
+	options ProxyOptions, requests chan<- string, done <-chan struct{}) error {
 	for {
-		budget.Reset()
-		command, err := reader.ReadCommand()
+		command, err := readCommand(reader, budget)
 		if err != nil {
 			return err
-		}
-		if len(command.Raw) > maxCommandBytes || len(command.Args) == 0 || len(command.Args) > 1024 || command.Raw[0] != '*' {
-			return errors.New("redis: command must be a RESP array of at most 1 MiB and 1,024 arguments")
 		}
 		name := strings.ToUpper(string(command.Args[0]))
 		if err := checkCommand(name, command.Args, options); err != nil {
 			return err
+		}
+		if name == "AUTH" || name == "HELLO" && helloAuthenticates(command.Args) {
+			return errors.New("redis: this connection is already authenticated as its temporary user")
 		}
 		if err := options.Audit(name, auditArguments(name, command.Args)); err != nil {
 			return fmt.Errorf("redis: audit failed: %w", err)

@@ -30,23 +30,28 @@ Cluster response modes.
 
 Redis ACLs are not scoped to numbered databases. Services therefore require
 database 0. Mandatory ACL removals deny `SELECT` and other database-changing
-commands. Every data node must have its `default` user off. This means a new
-data connection can do nothing until Redis accepts the temporary user's
-credentials.
+commands.
+
+Redis can authenticate a new connection as the `default` user without an
+`AUTH` command when that user has `nopass`. The proxy therefore forwards no
+data command until Redis accepts the temporary user's credentials. It also
+prevents reauthentication and commands that reset the connection's identity.
+This keeps the tunnel session bound to its temporary ACL user without
+requiring a change to the deployment's `default` user.
 
 Cluster node selection crosses the coordinator-to-exit protocol as a node ID,
 not as a caller-supplied address. The exit resolves that ID against its
 validated, allowlisted topology. The coordinator accepts local port mappings
 only for nodes advertised by the exit. The exit also advertises a fingerprint
-of each Redis node's run ID. A new connection revokes its session if Redis
-restarted or the advertised topology changed, because the temporary ACL user
-may no longer exist on that server.
+of each Redis node's run ID. If Redis restarts or the topology changes,
+tunneler revokes the session when a client reconnects. The temporary ACL user
+can be absent from the new node.
 
 Redis ACL users have no native expiry. The coordinator stops forwarding at
-session expiry, while the exit node deletes the user on revocation, schedules
-a local timer, and reaps expired tunnel-owned names after restart. Direct
-Redis access may outlive expiry if all exit nodes are down; operators should
-account for this difference from Postgres's `VALID UNTIL`.
+session expiry. The exit node deletes the user on revocation, schedules a
+local timer, and reaps expired tunnel-owned names after restart. Direct
+If all exit nodes are down at expiry, direct Redis access can continue until
+an exit node removes the user. Postgres's `VALID UNTIL` does not have this gap.
 
 The integration tests start real local Redis processes for standalone,
 Sentinel with a primary failover, and a three-primary Redis Cluster. They
