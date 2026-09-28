@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -43,9 +44,17 @@ type replyReader struct {
 func newReplyReader(conn net.Conn) *replyReader { return &replyReader{conn: conn} }
 
 func (r *replyReader) Next(limit int) (redcon.RESP, error) {
+	var frame replyFrame
 	for {
-		n, reply := redcon.ReadNextRESP(r.pending)
+		n, err := frame.advance(r.pending, limit)
+		if err != nil {
+			return redcon.RESP{}, err
+		}
 		if n > 0 {
+			reply, err := parseReply(r.pending[:n])
+			if err != nil {
+				return redcon.RESP{}, err
+			}
 			r.pending = r.pending[n:]
 			return reply, nil
 		}
@@ -53,12 +62,132 @@ func (r *replyReader) Next(limit int) (redcon.RESP, error) {
 			return redcon.RESP{}, errors.New("redis: Cluster reply exceeds 64 MiB")
 		}
 		var buf [32 << 10]byte
-		n, err := r.conn.Read(buf[:min(len(buf), limit-len(r.pending))])
+		n, err = r.conn.Read(buf[:min(len(buf), limit-len(r.pending))])
 		r.pending = append(r.pending, buf[:n]...)
 		if err != nil {
 			return redcon.RESP{}, err
 		}
 	}
+}
+
+const maxReplyDepth = 64
+
+// replyFrame scans each byte once before handing a complete reply to redcon.
+// Its fixed stack also bounds redcon's recursive array parser.
+type replyFrame struct {
+	offset   int
+	lineScan int
+	bulkEnd  int
+	depth    int
+	left     [maxReplyDepth]int
+}
+
+func (f *replyFrame) finishValue() bool {
+	for f.depth > 0 {
+		f.left[f.depth-1]--
+		if f.left[f.depth-1] > 0 {
+			return false
+		}
+		f.depth--
+	}
+	return true
+}
+
+func (f *replyFrame) advance(b []byte, limit int) (int, error) {
+	for {
+		if f.bulkEnd != 0 {
+			if len(b) < f.bulkEnd {
+				return 0, nil
+			}
+			if b[f.bulkEnd-2] != '\r' || b[f.bulkEnd-1] != '\n' {
+				return 0, errors.New("redis: invalid Cluster bulk reply")
+			}
+			f.offset = f.bulkEnd
+			f.bulkEnd = 0
+			if f.finishValue() {
+				return f.offset, nil
+			}
+			continue
+		}
+		if f.offset == len(b) {
+			return 0, nil
+		}
+		if f.lineScan <= f.offset {
+			f.lineScan = f.offset + 1
+		}
+		nl := bytes.IndexByte(b[f.lineScan:], '\n')
+		if nl < 0 {
+			f.lineScan = len(b)
+			return 0, nil
+		}
+		nl += f.lineScan
+		if nl <= f.offset+1 || b[nl-1] != '\r' {
+			return 0, errors.New("redis: invalid Cluster reply line")
+		}
+		headerEnd := nl + 1
+		data := b[f.offset+1 : nl-1]
+		switch b[f.offset] {
+		case '+', '-', ':':
+			f.offset = headerEnd
+			if f.finishValue() {
+				return f.offset, nil
+			}
+		case '$':
+			count, err := replyCount(data)
+			if err != nil || count < -1 || count > limit-headerEnd-2 {
+				return 0, errors.New("redis: invalid Cluster bulk length")
+			}
+			f.offset = headerEnd
+			if count == -1 {
+				if f.finishValue() {
+					return f.offset, nil
+				}
+			} else {
+				f.bulkEnd = headerEnd + count + 2
+			}
+		case '*':
+			count, err := replyCount(data)
+			if err != nil || count < -1 || count > (limit-headerEnd)/3 {
+				return 0, errors.New("redis: invalid Cluster array length")
+			}
+			f.offset = headerEnd
+			if count <= 0 {
+				if f.finishValue() {
+					return f.offset, nil
+				}
+			} else {
+				if f.depth == maxReplyDepth {
+					return 0, errors.New("redis: Cluster reply exceeds nesting depth")
+				}
+				f.left[f.depth] = count
+				f.depth++
+			}
+		default:
+			return 0, errors.New("redis: invalid Cluster reply type")
+		}
+		f.lineScan = f.offset + 1
+	}
+}
+
+func replyCount(data []byte) (int, error) {
+	if len(data) == 0 || len(data) > 20 {
+		return 0, errors.New("invalid count")
+	}
+	return strconv.Atoi(string(data))
+}
+
+func parseReply(raw []byte) (reply redcon.RESP, err error) {
+	defer func() {
+		if recover() != nil {
+			reply = redcon.RESP{}
+			err = errors.New("redis: invalid Cluster reply")
+		}
+	}()
+	n, reply := redcon.ReadNextRESP(raw)
+	if n != len(raw) {
+		return redcon.RESP{}, errors.New("redis: invalid Cluster reply")
+	}
+	return reply, nil
 }
 
 func translateReply(command string, reply redcon.RESP, ports map[string]int, redirects map[string]string) ([]byte, error) {
