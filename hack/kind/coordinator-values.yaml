@@ -12,9 +12,10 @@ config:
     client_id: tunneler-users
     ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
     # A service account's subject is a system: user, which exit nodes rightly
-    # refuse to impersonate. The token's unique ID stands in for a person's
-    # name; the grant below matches on the subject, as the user ID.
-    username_claim: jti
+    # refuse to impersonate. The issuer is a stable stand-in for a person's
+    # name in this test cluster; the grant below still matches the subject,
+    # so another service account from this issuer gets no access.
+    username_claim: iss
     user_id_claim: sub
   grants:
     - user: system:serviceaccount:tunneler:e2e-user

@@ -21,18 +21,27 @@ rules:
     verbs: ["patch"]
   {{- if .Values.kubernetes.enabled }}
   {{- $groups := .Values.kubernetes.groups }}
+  {{- $users := .Values.kubernetes.users }}
   {{- /* RBAC reads an empty resourceNames as every name, system:masters
          included, and `required` lets an empty list through. [""], which
          is what --set kubernetes.groups={} gives, is no group either. */}}
   {{- if or (not (kindIs "slice" $groups)) (empty $groups) (has "" $groups) }}
   {{- fail "kubernetes.groups must list at least one group when kubernetes.enabled (an empty list would let the exit node impersonate every group)" }}
   {{- end }}
-  # To act for users against this cluster's API. Any user, since people are
-  # not known in advance, but only the listed groups, which is what carries
-  # permissions. The exit node itself refuses system: users.
+  {{- if or (not (kindIs "slice" $users)) (empty $users) (has "" $users) }}
+  {{- fail "kubernetes.users must list at least one user when kubernetes.enabled (an empty list would let the exit node impersonate every user)" }}
+  {{- end }}
+  {{- range $users }}
+  {{- if hasPrefix "system:" . }}
+  {{- fail "kubernetes.users must not include system: users" }}
+  {{- end }}
+  {{- end }}
+  # Bound the service account's credential even if it is used outside the
+  # exit process, where the request checks below do not run.
   - apiGroups: [""]
     resources: ["users"]
     verbs: ["impersonate"]
+    resourceNames: {{ $users | toJson }}
   - apiGroups: [""]
     resources: ["groups"]
     verbs: ["impersonate"]
