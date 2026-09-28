@@ -57,11 +57,15 @@ func Proxy(ctx context.Context, local net.Conn, dial func(context.Context) (net.
 func proxySingle(local, upstream net.Conn, reader *redcon.Reader, budget *byteBudget, firstReplyByte byte, options ProxyOptions) error {
 	results := make(chan error, 2)
 	go func() {
-		_, err := io.Copy(local, io.MultiReader(bytes.NewReader([]byte{firstReplyByte}), upstream))
-		results <- err
+		proxyWorker(results, func() error {
+			_, err := io.Copy(local, io.MultiReader(bytes.NewReader([]byte{firstReplyByte}), upstream))
+			return err
+		})
 	}()
 	go func() {
-		results <- forwardCommands(reader, budget, upstream, options, nil, nil)
+		proxyWorker(results, func() error {
+			return forwardCommands(reader, budget, upstream, options, nil, nil)
+		})
 	}()
 	err := <-results
 	upstream.Close()
@@ -95,27 +99,29 @@ func proxyCluster(local, upstream net.Conn, reader *redcon.Reader, budget *byteB
 	done := make(chan struct{})
 	go func() {
 		defer close(requests)
-		results <- forwardCommands(reader, budget, upstream, options, requests, done)
+		proxyWorker(results, func() error {
+			return forwardCommands(reader, budget, upstream, options, requests, done)
+		})
 	}()
 	go func() {
-		reader := newReplyReader(upstream)
-		reader.pending = []byte{firstReplyByte}
-		for command := range requests {
-			reply, err := reader.Next(maxReplyBytes)
-			if err != nil {
-				results <- err
-				return
+		proxyWorker(results, func() error {
+			reader := newReplyReader(upstream)
+			reader.pending = []byte{firstReplyByte}
+			for command := range requests {
+				reply, err := reader.Next(maxReplyBytes)
+				if err != nil {
+					return err
+				}
+				translated, err := translateReply(command, reply, ports, redirects)
+				if err == nil {
+					_, err = local.Write(translated)
+				}
+				if err != nil {
+					return err
+				}
 			}
-			translated, err := translateReply(command, reply, ports, redirects)
-			if err == nil {
-				_, err = local.Write(translated)
-			}
-			if err != nil {
-				results <- err
-				return
-			}
-		}
-		results <- io.EOF
+			return io.EOF
+		})
 	}()
 
 	err := <-results
@@ -130,6 +136,17 @@ func proxyCluster(local, upstream net.Conn, reader *redcon.Reader, budget *byteB
 		return nil
 	}
 	return err
+}
+
+// Keep a parser panic inside its connection. The proxy closes both sides and
+// returns the error to its caller, which logs the closed connection.
+func proxyWorker(results chan<- error, work func() error) {
+	defer func() {
+		if recover() != nil {
+			results <- errors.New("redis: proxy connection panicked")
+		}
+	}()
+	results <- work()
 }
 
 func isClosed(err error) bool {
