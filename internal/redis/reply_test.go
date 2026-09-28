@@ -1,9 +1,12 @@
 package redis
 
 import (
+	"bufio"
+	"context"
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tidwall/redcon"
 )
@@ -65,5 +68,83 @@ func TestReplyReaderHandlesSplitHeadersAndBulk(t *testing.T) {
 	reply, err := newReplyReader(reader).Next(maxReplyBytes)
 	if err != nil || len(respItems(reply)) != 2 || string(reply.Raw) != "*2\r\n$3\r\none\r\n*1\r\n+two\r\n" {
 		t.Fatalf("reply = %q, %v", reply.Raw, err)
+	}
+}
+
+func TestTranslateShardsRejectsOddNodeFields(t *testing.T) {
+	for _, finalKey := range []string{"role", "port"} {
+		t.Run(finalKey, func(t *testing.T) {
+			wire := redcon.AppendArray(nil, 1) // one shard
+			wire = redcon.AppendArray(wire, 2)
+			wire = redcon.AppendBulkString(wire, "nodes")
+			wire = redcon.AppendArray(wire, 1) // one node
+			wire = redcon.AppendArray(wire, 3) // odd number of node fields
+			wire = redcon.AppendBulkString(wire, "id")
+			wire = redcon.AppendBulkString(wire, "node-1")
+			wire = redcon.AppendBulkString(wire, finalKey)
+
+			reply, err := readPipeReply(t, string(wire))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = translateReply("CLUSTER SHARDS", reply, map[string]int{"node-1": 6379}, nil)
+			if err == nil || !strings.Contains(err.Error(), "invalid CLUSTER SHARDS reply") {
+				t.Fatalf("translateReply() error = %v, want invalid CLUSTER SHARDS reply", err)
+			}
+		})
+	}
+}
+
+func TestProxyContainsWorkerPanic(t *testing.T) {
+	client, local := net.Pipe()
+	upstream, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	if err := client.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	serverDone := make(chan error, 1)
+	go func() {
+		_, err := redcon.NewReader(server).ReadCommand()
+		if err == nil {
+			_, err = server.Write([]byte("+OK\r\n"))
+		}
+		serverDone <- err
+	}()
+	proxyDone := make(chan error, 1)
+	go func() {
+		proxyDone <- Proxy(context.Background(), local, func(context.Context) (net.Conn, error) {
+			return upstream, nil
+		}, ProxyOptions{
+			Username: "temporary",
+			Mode:     ModeStandalone,
+			Audit: func(command string, _ []string) error {
+				if command == "PING" {
+					panic("unexpected worker failure")
+				}
+				return nil
+			},
+		})
+	}()
+
+	if _, err := client.Write(respCommand("AUTH", "temporary", "secret")); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(client)
+	if reply, err := reader.ReadString('\n'); err != nil || reply != "+OK\r\n" {
+		t.Fatalf("authentication reply = %q, %v", reply, err)
+	}
+	if _, err := client.Write(respCommand("PING")); err != nil {
+		t.Fatal(err)
+	}
+	if reply, err := reader.ReadString('\n'); err != nil || !strings.Contains(reply, "proxy connection panicked") {
+		t.Fatalf("panic reply = %q, %v", reply, err)
+	}
+	if err := <-proxyDone; err == nil || !strings.Contains(err.Error(), "proxy connection panicked") {
+		t.Fatalf("Proxy() error = %v, want contained worker panic", err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
 	}
 }

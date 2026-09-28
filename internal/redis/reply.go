@@ -227,6 +227,9 @@ func translateShards(reply redcon.RESP, ports map[string]int) ([]byte, error) {
 	shards := respItems(reply)
 	result := redcon.AppendArray(nil, len(shards))
 	for _, shard := range shards {
+		if shard.Type != redcon.Array {
+			return nil, errors.New("redis: invalid CLUSTER SHARDS reply")
+		}
 		fields := respItems(shard)
 		if len(fields)%2 != 0 {
 			return nil, errors.New("redis: invalid CLUSTER SHARDS reply")
@@ -238,23 +241,32 @@ func translateShards(reply redcon.RESP, ports map[string]int) ([]byte, error) {
 				result = append(result, fields[i+1].Raw...)
 				continue
 			}
+			if fields[i+1].Type != redcon.Array {
+				return nil, errors.New("redis: invalid CLUSTER SHARDS reply")
+			}
 			nodes := respItems(fields[i+1])
 			result = redcon.AppendArray(result, len(nodes))
 			for _, node := range nodes {
+				if node.Type != redcon.Array {
+					return nil, errors.New("redis: invalid CLUSTER SHARDS reply")
+				}
+				nodeFields := respItems(node)
+				if len(nodeFields)%2 != 0 {
+					return nil, errors.New("redis: invalid CLUSTER SHARDS reply")
+				}
 				id := node.MapGet("id").String()
 				port := ports[id]
 				if port == 0 {
 					return nil, errors.New("redis: CLUSTER SHARDS contains an unadvertised node")
 				}
-				result = appendVirtualNode(result, node, port)
+				result = appendVirtualNode(result, nodeFields, port)
 			}
 		}
 	}
 	return result, nil
 }
 
-func appendVirtualNode(result []byte, node redcon.RESP, port int) []byte {
-	fields := respItems(node)
+func appendVirtualNode(result []byte, fields []redcon.RESP, port int) []byte {
 	result = redcon.AppendArray(result, len(fields))
 	for i := 0; i < len(fields); i += 2 {
 		result = append(result, fields[i].Raw...)
