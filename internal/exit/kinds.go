@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strconv"
 
 	"github.com/mtsaas/tunneler/internal/api"
 	"github.com/mtsaas/tunneler/internal/kube"
 	"github.com/mtsaas/tunneler/internal/postgres"
+	"github.com/mtsaas/tunneler/internal/redis"
 )
 
 // A backend is one service, of some kind, as the exit node reaches it from
@@ -62,6 +64,13 @@ var kinds = map[string]func(ServiceConfig) (backend, error){
 		s, err := newServer(sc.DSN)
 		return postgresBackend{s}, err
 	},
+	"redis": func(sc ServiceConfig) (backend, error) {
+		if sc.DSN == "" {
+			return nil, errors.New("a redis service needs a dsn")
+		}
+		server, err := redis.NewServer(sc.DSN, sc.Redis)
+		return redisBackend{server}, err
+	},
 	"kubernetes": func(sc ServiceConfig) (backend, error) {
 		if sc.DSN != "" {
 			return nil, errors.New("a kubernetes service takes no dsn: the exit node uses its own service account")
@@ -84,3 +93,16 @@ func (b postgresBackend) CreateRole(ctx context.Context, r api.Role) error {
 }
 
 func (b postgresBackend) describe(svc *api.Service) { svc.Database = b.Database() }
+
+type redisBackend struct{ *redis.Server }
+
+func (b redisBackend) describe(svc *api.Service) {
+	svc.Database = strconv.Itoa(b.Database())
+	svc.RedisMode = b.Mode()
+	svc.RedisGeneration = b.Generation()
+	nodes := b.Nodes()
+	svc.RedisNodes = make([]api.RedisNode, len(nodes))
+	for i, node := range nodes {
+		svc.RedisNodes[i] = api.RedisNode{ID: node.ID, Addr: node.Addr}
+	}
+}

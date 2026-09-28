@@ -12,6 +12,8 @@ import (
 	"net"
 	"net/http"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +21,7 @@ import (
 
 	"github.com/mtsaas/tunneler/internal/api"
 	"github.com/mtsaas/tunneler/internal/postgres"
+	"github.com/mtsaas/tunneler/internal/redis"
 )
 
 // Coordinator is the central server.
@@ -252,16 +255,24 @@ func (c *Coordinator) createSession(ctx context.Context, id *Identity, cluster s
 		return nil, fmt.Errorf("this coordinator cannot open sessions on services of kind %q", svc.Kind)
 	}
 	ttl := time.Duration(c.config().SessionTTL)
+	expiresAt := time.Now().Add(ttl).Truncate(time.Second)
+	username := roleName(id.Username)
+	if svc.Kind == "redis" {
+		username = redisRoleName(id.Username, expiresAt)
+	}
 	s := &session{
 		info: api.Session{
-			ID:        rand.Text(),
-			Owner:     id.Username,
-			Cluster:   cluster,
-			Service:   svc.Name,
-			Kind:      svc.Kind,
-			Database:  svc.Database,
-			Username:  roleName(id.Username),
-			ExpiresAt: time.Now().Add(ttl).Truncate(time.Second),
+			ID:              rand.Text(),
+			Owner:           id.Username,
+			Cluster:         cluster,
+			Service:         svc.Name,
+			Kind:            svc.Kind,
+			Database:        svc.Database,
+			RedisMode:       svc.RedisMode,
+			RedisNodes:      slices.Clone(svc.RedisNodes),
+			RedisGeneration: svc.RedisGeneration,
+			Username:        username,
+			ExpiresAt:       expiresAt,
 		},
 		subject: id.Subject,
 		roles:   roles,
@@ -371,7 +382,7 @@ func (c *Coordinator) retryDrops(cluster string) {
 
 // serveSession proxies one client connection on behalf of a session, made
 // from remote. It closes conn before returning.
-func (c *Coordinator) serveSession(ctx context.Context, s *session, conn net.Conn, remote string) {
+func (c *Coordinator) serveSession(ctx context.Context, s *session, conn net.Conn, remote string, target proxyConnection) {
 	defer conn.Close()
 	if !s.track(conn) {
 		return
@@ -379,14 +390,14 @@ func (c *Coordinator) serveSession(ctx context.Context, s *session, conn net.Con
 	defer s.untrack(conn)
 
 	dial := func(ctx context.Context) (net.Conn, error) {
-		return c.hub.call(ctx, s.info.Cluster, api.ExitRequest{Op: api.OpDial, Service: s.info.Service})
+		return c.hub.call(ctx, s.info.Cluster, api.ExitRequest{Op: api.OpDial, Service: s.info.Service, NodeID: target.NodeID})
 	}
 	log := c.audit.With(s.attrs(), "remote", remote)
 	if mustAudit(ctx, log, "connection opened") != nil {
 		return // closed unused; the sink's failure is on the operational log
 	}
 	start := time.Now()
-	err := kinds[s.info.Kind].proxy(ctx, conn, dial, &s.info, log)
+	err := kinds[s.info.Kind].proxy(ctx, conn, dial, &s.info, target, log)
 	if errors.Is(err, net.ErrClosed) {
 		err = nil // we closed it: the session was revoked
 	}
@@ -410,6 +421,26 @@ func roleName(username string) string {
 	}
 	// The suffix keeps concurrent sessions of one user, and usernames that
 	// sanitize to the same text, from sharing a role.
+	b.WriteByte('_')
+	b.WriteString(strings.ToLower(rand.Text()[:8]))
+	return b.String()
+}
+
+func redisRoleName(username string, expiry time.Time) string {
+	var b strings.Builder
+	b.WriteString(redis.RolePrefix)
+	b.WriteString(strconv.FormatInt(expiry.Unix(), 36))
+	b.WriteByte('_')
+	for _, r := range strings.ToLower(username) {
+		if b.Len() >= 48 {
+			break
+		}
+		if 'a' <= r && r <= 'z' || '0' <= r && r <= '9' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
 	b.WriteByte('_')
 	b.WriteString(strings.ToLower(rand.Text()[:8]))
 	return b.String()

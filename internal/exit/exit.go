@@ -23,6 +23,7 @@ import (
 	"github.com/mtsaas/tunneler/internal/api"
 	"github.com/mtsaas/tunneler/internal/coordinator"
 	"github.com/mtsaas/tunneler/internal/kube"
+	"github.com/mtsaas/tunneler/internal/redis"
 	"github.com/mtsaas/tunneler/internal/tunnel"
 )
 
@@ -34,7 +35,7 @@ type Config struct {
 // ServiceConfig describes one service the exit node offers.
 type ServiceConfig struct {
 	Name string `json:"name"` // unique within the cluster
-	Kind string `json:"kind"` // "postgres" or "kubernetes"; see kinds
+	Kind string `json:"kind"` // see kinds
 	// DSN is the administrative connection string of a postgres service,
 	// using in-cluster DNS. $VAR references are expanded from the
 	// environment, so credentials can come from a Secret via secretKeyRef
@@ -44,7 +45,8 @@ type ServiceConfig struct {
 	// Kubernetes says how to reach the API server of a kubernetes service.
 	// The zero value, the cluster the exit node runs in, is nearly always
 	// right.
-	Kubernetes kube.Config `json:"kubernetes,omitzero"`
+	Kubernetes kube.Config  `json:"kubernetes,omitzero"`
+	Redis      redis.Config `json:"redis,omitzero"`
 	// Labels are what grants match and what users select services by. The
 	// labels "cluster", "kind" and "name" are attached automatically.
 	Labels map[string]string `json:"labels"`
@@ -215,6 +217,11 @@ func (a *Agent) reconcile(ctx context.Context) {
 		advert := svc.advert
 		advert.Status = results[svc]
 		advert.Ready = advert.Status == ""
+		if advert.Ready {
+			if d, ok := svc.backend.(describer); ok {
+				d.describe(&advert)
+			}
+		}
 		adverts = append(adverts, advert)
 	}
 	a.advertised.Store(&desired)
@@ -541,7 +548,17 @@ func (a *Agent) do(ctx context.Context, svc *service, req api.ExitRequest, log *
 
 	switch req.Op {
 	case api.OpDial:
-		target, err := svc.backend.Connect(ctx)
+		var target net.Conn
+		var err error
+		if req.NodeID == "" {
+			target, err = svc.backend.Connect(ctx)
+		} else if nodes, ok := svc.backend.(interface {
+			ConnectNode(context.Context, string) (net.Conn, error)
+		}); ok {
+			target, err = nodes.ConnectNode(ctx, req.NodeID)
+		} else {
+			return nil, errors.New("service does not support node selection")
+		}
 		if err != nil {
 			return nil, fmt.Errorf("connecting to %s: %w", svc.backend.Addr(), err)
 		}

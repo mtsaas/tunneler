@@ -105,6 +105,16 @@ func (c *Client) DialSession(ctx context.Context, id string) (net.Conn, error) {
 	return dialStream(ctx, c.Server+pathSessionConnect(id), c.Token)
 }
 
+// DialRedisNode opens one of the local endpoints advertised to a Redis
+// Cluster client. The coordinator uses ports only to rewrite topology replies.
+func (c *Client) DialRedisNode(ctx context.Context, id, node string, ports map[string]int) (net.Conn, error) {
+	query := url.Values{"node": {node}}
+	for id, port := range ports {
+		query.Add("port", fmt.Sprintf("%s:%d", id, port))
+	}
+	return dialStream(ctx, c.Server+pathSessionConnect(id)+"?"+query.Encode(), c.Token)
+}
+
 // ClusterBindings returns which cluster owns each cluster name. Admins only.
 func (c *Client) ClusterBindings(ctx context.Context) ([]api.ClusterBinding, error) {
 	var bindings []api.ClusterBinding

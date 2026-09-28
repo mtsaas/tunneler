@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -88,20 +90,44 @@ func connectSession(ctx context.Context, c *client, cluster string, svc api.Serv
 		defer ln.Close()
 	}
 	addr := ln.Addr().(*net.TCPAddr)
-	go func() {
+	listeners := []net.Listener{ln}
+	ports := make(map[string]int)
+	if s.Kind == "redis" && s.RedisMode == "cluster" {
+		if len(s.RedisNodes) == 0 {
+			return errors.New("Redis Cluster advertised no nodes")
+		}
+		ports[s.RedisNodes[0].ID] = addr.Port
+		for _, node := range s.RedisNodes[1:] {
+			nodeListener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				return err
+			}
+			defer nodeListener.Close()
+			listeners = append(listeners, nodeListener)
+			ports[node.ID] = nodeListener.Addr().(*net.TCPAddr).Port
+		}
+	}
+	serve := func(listener net.Listener, nodeID string) {
 		var n atomic.Int64
 		for {
-			conn, err := ln.Accept()
+			conn, err := listener.Accept()
 			if err != nil {
 				return
 			}
 			go func() {
-				if err := c.forward(ctx, conn, s.ID, n.Add(1)); err != nil {
+				if err := c.forwardNode(ctx, conn, s.ID, nodeID, ports, n.Add(1)); err != nil {
 					cancel(err)
 				}
 			}()
 		}
-	}()
+	}
+	for i, listener := range listeners {
+		nodeID := ""
+		if len(ports) != 0 {
+			nodeID = s.RedisNodes[i].ID
+		}
+		go serve(listener, nodeID)
+	}
 
 	if len(command) > 0 {
 		if !outputJSON {
@@ -147,22 +173,42 @@ func listenStable(s *api.Session) (net.Listener, error) {
 // runSessionCommand runs a command with the session in its environment,
 // until it exits or the session ends.
 func runSessionCommand(ctx context.Context, command []string, s *api.Session, addr *net.TCPAddr) error {
-	child := exec.CommandContext(ctx, command[0], command[1:]...)
+	child := exec.CommandContext(ctx, command[0], sessionCommandArgs(command, s, addr)...)
 	child.Stdin, child.Stdout, child.Stderr = os.Stdin, os.Stdout, os.Stderr
-	child.Env = append(os.Environ(),
-		"PGHOST="+addr.IP.String(),
-		fmt.Sprintf("PGPORT=%d", addr.Port),
-		"PGUSER="+s.Username,
-		"PGPASSWORD="+s.Password,
-		"PGDATABASE="+s.Database,
-		"PGSSLMODE=disable", // the hop to the coordinator is TLS; the loopback hop has no need
-		"DATABASE_URL="+sessionURL(s, addr),
-	)
+	if s.Kind == "redis" {
+		child.Env = append(os.Environ(),
+			"REDIS_URL="+sessionURL(s, addr),
+			"REDISCLI_AUTH="+s.Password,
+		)
+	} else {
+		child.Env = append(os.Environ(),
+			"PGHOST="+addr.IP.String(),
+			fmt.Sprintf("PGPORT=%d", addr.Port),
+			"PGUSER="+s.Username,
+			"PGPASSWORD="+s.Password,
+			"PGDATABASE="+s.Database,
+			"PGSSLMODE=disable", // the hop to the coordinator is TLS; the loopback hop has no need
+			"DATABASE_URL="+sessionURL(s, addr),
+		)
+	}
 	err := child.Run()
 	if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
 		return cause // the session ended under the command
 	}
 	return err
+}
+
+// redis-cli does not read REDIS_URL. Give it the local endpoint and ACL user
+// directly; REDISCLI_AUTH supplies the password without putting it in argv.
+func sessionCommandArgs(command []string, s *api.Session, addr *net.TCPAddr) []string {
+	if s.Kind != "redis" || filepath.Base(command[0]) != "redis-cli" {
+		return command[1:]
+	}
+	args := []string{"-h", addr.IP.String(), "-p", strconv.Itoa(addr.Port), "--user", s.Username}
+	if s.RedisMode == "cluster" {
+		args = append(args, "-c")
+	}
+	return append(args, command[1:]...)
 }
 
 // watchSession follows the session's events until the coordinator reports
@@ -195,11 +241,21 @@ func (c *client) watchSession(ctx context.Context, sessionID string) string {
 // forward carries one local connection, the n'th, to the coordinator. It
 // returns an error only if the session as a whole is over.
 func (c *client) forward(ctx context.Context, local net.Conn, sessionID string, n int64) error {
+	return c.forwardNode(ctx, local, sessionID, "", nil, n)
+}
+
+func (c *client) forwardNode(ctx context.Context, local net.Conn, sessionID, nodeID string, ports map[string]int, n int64) error {
 	defer local.Close()
 	log.Info(fmt.Sprintf("Connection %d: opened by a local client; tunneling to the coordinator.", n), "local", local.RemoteAddr())
 
 	start := time.Now()
-	stream, err := c.DialSession(ctx, sessionID)
+	var stream net.Conn
+	var err error
+	if nodeID == "" {
+		stream, err = c.DialSession(ctx, sessionID)
+	} else {
+		stream, err = c.DialRedisNode(ctx, sessionID, nodeID, ports)
+	}
 	if refused := (*api.Error)(nil); errors.As(err, &refused) &&
 		(refused.Status == http.StatusNotFound || refused.Status == http.StatusForbidden) {
 		return errors.New("the coordinator no longer honors this session: it was revoked, or your access was withdrawn")
@@ -217,6 +273,9 @@ func (c *client) forward(ctx context.Context, local net.Conn, sessionID string, 
 // auditNotice tells the person, every time a session starts, that what they
 // do in it is recorded under their name.
 func auditNotice(s *api.Session) string {
+	if s.Kind == "redis" {
+		return fmt.Sprintf("NOTICE: This session is audited. Every command you run is logged with your identity (%s).", printable(s.Owner))
+	}
 	return fmt.Sprintf("NOTICE: This session is audited. Every query you run is logged with your identity (%s).", printable(s.Owner))
 }
 
@@ -235,11 +294,27 @@ func printSession(s *api.Session, addr *net.TCPAddr) {
 		dsn := sessionURL(s, addr)
 		fmt.Printf("\n  URL:       %s\n  psql:      psql '%s'\n", dsn, dsn)
 	}
+	if s.Kind == "redis" {
+		dsn := sessionURL(s, addr)
+		fmt.Printf("\n  URL:       %s\n  redis-cli: redis-cli -u '%s'", dsn, dsn)
+		if s.RedisMode == "cluster" {
+			fmt.Print(" -c")
+		}
+		fmt.Println()
+	}
 	fmt.Println()
 }
 
 // sessionURL returns the connection URL for the session's local endpoint.
 func sessionURL(s *api.Session, addr *net.TCPAddr) string {
+	if s.Kind == "redis" {
+		return (&url.URL{
+			Scheme: "redis",
+			User:   url.UserPassword(s.Username, s.Password),
+			Host:   addr.String(),
+			Path:   "/" + s.Database,
+		}).String()
+	}
 	u := url.URL{
 		Scheme: s.Kind,
 		User:   url.UserPassword(s.Username, s.Password),

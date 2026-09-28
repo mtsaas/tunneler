@@ -21,6 +21,8 @@ import (
 	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
+
+	"github.com/mtsaas/tunneler/internal/redis"
 )
 
 // TunnelServiceGVR identifies the TunnelService custom resource. Its
@@ -38,7 +40,8 @@ type TunnelService struct {
 }
 
 type TunnelServiceSpec struct {
-	Kind string `json:"kind"`
+	Kind  string       `json:"kind"`
+	Redis redis.Config `json:"redis,omitempty"`
 	// Credentials say where the administrative DSN is kept, for kinds that
 	// have one.
 	Credentials *Credentials `json:"credentials,omitempty"`
@@ -231,6 +234,7 @@ func (d *Discovery) upsert(ctx context.Context, obj any) {
 		Name:      name,
 		Kind:      ts.Spec.Kind,
 		DSN:       dsn,
+		Redis:     ts.Spec.Redis,
 		Labels:    labels,
 		Roles:     ts.Spec.GrantableRoles,
 		untrusted: true,
