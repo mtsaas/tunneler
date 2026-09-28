@@ -35,7 +35,7 @@ func TestSentinelNOAUTHDoesNotDiscloseAdminPassword(t *testing.T) {
 	cfg := testConfig(ModeSentinel, []string{"127.0.0.1/32"})
 	cfg.MasterName = "primary"
 	cfg.Sentinels = []string{listener.Addr().String()}
-	server, err := NewServer("redis://admin:"+testPassword+"@127.0.0.1:6379/0", cfg, "")
+	server, err := NewServer("redis://admin:"+testPassword+"@127.0.0.1:6379/0", cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestSentinelUsesTLSForRediss(t *testing.T) {
 	cfg := testConfig(ModeSentinel, []string{"127.0.0.1/32"})
 	cfg.MasterName = "primary"
 	cfg.Sentinels = []string{listener.Addr().String()}
-	server, err := NewServer("rediss://admin:"+testPassword+"@127.0.0.1:6379/0", cfg, "")
+	server, err := NewServer("rediss://admin:"+testPassword+"@127.0.0.1:6379/0", cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestSentinelUsesTLSForRediss(t *testing.T) {
 		t.Fatalf("TLS Sentinel lookup = %q, %v", primary, err)
 	}
 	sentinelDSN := "rediss://sentinel:sentinel-only-password@" + listener.Addr().String() + "/0"
-	withAuth, err := NewServer("rediss://admin:"+testPassword+"@127.0.0.1:6379/0", cfg, sentinelDSN)
+	withAuth, err := NewServerWithSentinelDSN("rediss://admin:"+testPassword+"@127.0.0.1:6379/0", cfg, sentinelDSN)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestSentinelCredentialValidation(t *testing.T) {
 		{"unlisted Sentinel", "rediss://sentinel:separate@127.0.0.1:26380/0", "configured Sentinel"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := NewServer("rediss://admin:"+testPassword+"@127.0.0.1:6379/0", cfg, tc.dsn)
+			_, err := NewServerWithSentinelDSN("rediss://admin:"+testPassword+"@127.0.0.1:6379/0", cfg, tc.dsn)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("NewServer error = %v, want %q", err, tc.want)
 			}

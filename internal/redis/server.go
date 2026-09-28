@@ -34,7 +34,12 @@ type Server struct {
 	timers     map[string]*time.Timer
 }
 
-func NewServer(dsn string, cfg Config, sentinelDSN string) (*Server, error) {
+func NewServer(dsn string, cfg Config) (*Server, error) {
+	return NewServerWithSentinelDSN(dsn, cfg, "")
+}
+
+// NewServerWithSentinelDSN configures separate TLS credentials for Sentinel.
+func NewServerWithSentinelDSN(dsn string, cfg Config, sentinelDSN string) (*Server, error) {
 	options, err := parseDSN(dsn)
 	if err != nil {
 		return nil, err
