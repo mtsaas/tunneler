@@ -70,8 +70,29 @@ func TestUnrecordedGatewayRequests(t *testing.T) {
 	r.await(ctx, t, "kubernetes")
 
 	failing.Store(true)
-	if code, body := r.fetch(ctx, t, "kubernetes", "/api/v1/pods?watch=true"); code != http.StatusServiceUnavailable || !strings.Contains(body, "audit trail") {
-		t.Errorf("a watch the trail cannot record: status %d, body %s; want 503 saying why", code, body)
+	for _, path := range []string{
+		"/api/v1/pods?watch=true",
+		"/api/v1/pods?watch=True",
+		"/api/v1/pods?watch=yes",
+		"/api/v1/pods?watch=f",
+		"/api/v1/pods?watch=",
+		"/api/v1/pods?watch=TRUE&watch=false",
+		"/api/v1/namespaces/shop/pods/web-0/log?follow=1",
+		"/api/v1/namespaces/shop/pods/web-0/log?follow=TRUE",
+		"/api/v1/namespaces/shop/pods/web-0/log?follow=yes&follow=false",
+	} {
+		code, body := r.fetch(ctx, t, "kubernetes", path)
+		if code != http.StatusServiceUnavailable || !strings.Contains(body, "audit trail") {
+			t.Errorf("%s with a failed audit sink: status %d, body %s; want 503 saying why", path, code, body)
+		}
+	}
+	for _, path := range []string{
+		"/api/v1/pods?watch=0&watch=true",
+		"/api/v1/namespaces/shop/pods/web-0/log?follow=false&follow=true",
+	} {
+		if code, body := r.fetch(ctx, t, "kubernetes", path); code != http.StatusOK {
+			t.Errorf("%s with a false first value: status %d, body %s; want 200", path, code, body)
+		}
 	}
 	if code, body := r.fetch(ctx, t, "kubernetes", "/api/v1/pods"); code != http.StatusOK {
 		t.Errorf("a request that completes at once: status %d, body %s; want it served", code, body)

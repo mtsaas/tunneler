@@ -2,6 +2,7 @@ package kube
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -64,9 +65,8 @@ func ParseRequest(r *http.Request) RequestInfo {
 
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
-		q := r.URL.Query().Get("watch")
 		switch {
-		case watch || q == "true" || q == "1":
+		case watch || kubernetesBoolParam(r.URL.Query(), "watch"):
 			info.Verb = "watch"
 		case info.Name == "":
 			info.Verb = "list"
@@ -86,4 +86,11 @@ func ParseRequest(r *http.Request) RequestInfo {
 		}
 	}
 	return info
+}
+
+// kubernetesBoolParam matches the API server's query parameter conversion:
+// it uses the first value, and only "0" or "false" mean false when present.
+func kubernetesBoolParam(query url.Values, name string) bool {
+	values := query[name]
+	return len(values) > 0 && values[0] != "0" && !strings.EqualFold(values[0], "false")
 }

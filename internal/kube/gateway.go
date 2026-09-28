@@ -70,7 +70,7 @@ func (g *Gateway) ServeAs(w http.ResponseWriter, r *http.Request, user string, g
 	// Requests that stay open are also recorded when they start, since when
 	// they end may be hours away: watches, followed logs, and the upgrades
 	// of exec, attach and port-forward.
-	longLived := info.Verb == "watch" || r.Header.Get("Upgrade") != "" || r.URL.Query().Get("follow") == "true"
+	longLived := info.Verb == "watch" || r.Header.Get("Upgrade") != "" || kubernetesBoolParam(r.URL.Query(), "follow")
 	if longLived {
 		// It may stay open for hours, so it goes ahead only once it is on the
 		// trail.
