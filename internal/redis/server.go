@@ -140,15 +140,6 @@ func (s *Server) checkNode(ctx context.Context, addr string) (string, error) {
 	if isCluster != (s.config.Mode == ModeCluster) {
 		return "", errors.New("server cluster mode does not match the service mode")
 	}
-	users, err := c.ACLList(ctx).Result()
-	if err != nil {
-		return "", err
-	}
-	for _, user := range users {
-		if strings.HasPrefix(user, "user default ") && !strings.Contains(user, " off ") {
-			return "", errors.New("the default ACL user must be off")
-		}
-	}
 	runID := infoField(info, "run_id")
 	if runID == "" {
 		return "", errors.New("Redis did not report a run ID")
@@ -190,10 +181,11 @@ func (s *Server) clusterTopology(ctx context.Context) ([]Node, error) {
 			}
 		}
 		for _, node := range shard.Nodes {
-			if node.ID == "" || node.Endpoint == "" || node.Port < 1 || node.Port > 65535 {
+			port := clusterNodePort(node, s.options.TLSConfig != nil)
+			if node.ID == "" || node.Endpoint == "" || port < 1 || port > 65535 {
 				return nil, errors.New("redis: cluster advertised an incomplete node")
 			}
-			addr := net.JoinHostPort(node.Endpoint, strconv.FormatInt(node.Port, 10))
+			addr := net.JoinHostPort(node.Endpoint, strconv.FormatInt(port, 10))
 			if !s.policy.permits(addr) {
 				return nil, errors.New("redis: cluster advertised a node outside allowedNodes")
 			}
@@ -208,6 +200,13 @@ func (s *Server) clusterTopology(ctx context.Context) ([]Node, error) {
 	}
 	slices.SortFunc(nodes, func(a, b Node) int { return strings.Compare(a.ID, b.ID) })
 	return nodes, nil
+}
+
+func clusterNodePort(node client.Node, secure bool) int64 {
+	if secure && node.TLSPort > 0 {
+		return node.TLSPort
+	}
+	return node.Port
 }
 
 func (s *Server) sentinelTopology(ctx context.Context) (string, []Node, error) {

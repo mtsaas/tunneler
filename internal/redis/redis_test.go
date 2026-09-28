@@ -1,9 +1,14 @@
 package redis
 
 import (
+	"bufio"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"io"
 	"net"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -89,6 +94,46 @@ func waitRedis(t *testing.T, addr string) {
 	t.Fatalf("Redis did not listen on %s", addr)
 }
 
+func tlsToRedis(t *testing.T, redisAddr string) (string, *x509.CertPool) {
+	t.Helper()
+	certificateServer := httptest.NewTLSServer(nil)
+	certificates := certificateServer.TLS.Certificates
+	roots := x509.NewCertPool()
+	roots.AddCert(certificateServer.Certificate())
+	certificateServer.Close()
+
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: certificates})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	go func() {
+		for {
+			secure, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer secure.Close()
+				backend, err := net.Dial("tcp", redisAddr)
+				if err != nil {
+					return
+				}
+				defer backend.Close()
+				done := make(chan struct{})
+				go func() {
+					_, _ = io.Copy(backend, secure)
+					close(done)
+				}()
+				_, _ = io.Copy(secure, backend)
+				secure.Close()
+				<-done
+			}()
+		}
+	}()
+	return listener.Addr().String(), roots
+}
+
 func configureAdmin(t *testing.T, addr string) {
 	t.Helper()
 	ctx := context.Background()
@@ -99,6 +144,21 @@ func configureAdmin(t *testing.T, addr string) {
 	}
 	if err := c.Do(ctx, "ACL", "SETUSER", "default", "off").Err(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func configureAdminWithDefault(t *testing.T, addr, defaultPassword string) {
+	t.Helper()
+	c := client.NewClient(&client.Options{Addr: addr, Protocol: 2})
+	defer c.Close()
+	ctx := context.Background()
+	if err := c.Do(ctx, "ACL", "SETUSER", "admin", "reset", "on", ">"+testPassword, "+@all", "~*", "&*").Err(); err != nil {
+		t.Fatal(err)
+	}
+	if defaultPassword != "" {
+		if err := c.Do(ctx, "ACL", "SETUSER", "default", "resetpass", ">"+defaultPassword).Err(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -198,6 +258,163 @@ func TestStandalone(t *testing.T) {
 	if err := c.Do(ctx, "AUTH", "admin", testPassword).Err(); err == nil || !strings.Contains(err.Error(), "temporary user") {
 		t.Fatalf("the proxy must keep the connection bound to its audited identity: %v", err)
 	}
+}
+
+func TestEnabledDefaultUser(t *testing.T) {
+	requireRedis(t)
+	for _, tc := range []struct {
+		name     string
+		password string
+	}{
+		{name: "password", password: "default-password"},
+		{name: "nopass"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			addr := runRedis(t)
+			configureAdminWithDefault(t, addr, tc.password)
+			server, err := NewServer(adminDSN(addr), testConfig(ModeStandalone, nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			role := createTestUser(t, server)
+			proxyAddr := proxyListener(t, testProxyOptions(role, ModeStandalone), server.Connect)
+
+			defaultClient := client.NewClient(&client.Options{Addr: addr, Password: tc.password, Protocol: 2})
+			defer defaultClient.Close()
+			if err := defaultClient.Set(context.Background(), "default:key", "direct", 0).Err(); err != nil {
+				t.Fatalf("existing default-user access: %v", err)
+			}
+
+			conn, err := net.Dial("tcp", proxyAddr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := conn.Write(respCommand("GET", "default:key")); err != nil {
+				t.Fatal(err)
+			}
+			reply, err := bufio.NewReader(conn).ReadString('\n')
+			conn.Close()
+			if err != nil || !strings.Contains(reply, "authenticate as the temporary user") {
+				t.Fatalf("pre-auth command reply = %q, %v", reply, err)
+			}
+
+			c := client.NewClient(&client.Options{Addr: proxyAddr, Username: role.Name, Password: role.Password, Protocol: 3})
+			defer c.Close()
+			if err := c.Set(context.Background(), "temporary:key", "through tunnel", 0).Err(); err != nil {
+				t.Fatalf("temporary user on RESP3 connection: %v", err)
+			}
+			if value, err := c.Get(context.Background(), "temporary:key").Result(); err != nil || value != "through tunnel" {
+				t.Fatalf("GET = %q, %v", value, err)
+			}
+		})
+	}
+}
+
+func TestRedissWithEnabledDefaultUser(t *testing.T) {
+	requireRedis(t)
+	addr := runRedis(t)
+	configureAdminWithDefault(t, addr, "default-password")
+	tlsAddr, roots := tlsToRedis(t, addr)
+	server, err := NewServer("rediss://admin:"+testPassword+"@"+tlsAddr+"/0", testConfig(ModeStandalone, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.options.TLSConfig.RootCAs = roots
+	role := createTestUser(t, server)
+	proxyAddr := proxyListener(t, testProxyOptions(role, ModeStandalone), server.Connect)
+	c := client.NewClient(&client.Options{Addr: proxyAddr, Username: role.Name, Password: role.Password, Protocol: 2})
+	defer c.Close()
+	if err := c.Set(context.Background(), "rediss:key", "value", 0).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if value, err := c.Get(context.Background(), "rediss:key").Result(); err != nil || value != "value" {
+		t.Fatalf("GET through rediss:// = %q, %v", value, err)
+	}
+}
+
+func TestClusterNodePort(t *testing.T) {
+	node := client.Node{Port: 6379, TLSPort: 6380}
+	if got := clusterNodePort(node, false); got != 6379 {
+		t.Errorf("redis:// port = %d, want 6379", got)
+	}
+	if got := clusterNodePort(node, true); got != 6380 {
+		t.Errorf("rediss:// port = %d, want 6380", got)
+	}
+	node.TLSPort = 0
+	if got := clusterNodePort(node, true); got != 6379 {
+		t.Errorf("rediss:// fallback port = %d, want 6379", got)
+	}
+}
+
+func TestAuthenticationPipeline(t *testing.T) {
+	requireRedis(t)
+	addr := runRedis(t)
+	configureAdminWithDefault(t, addr, "")
+	server, err := NewServer(adminDSN(addr), testConfig(ModeStandalone, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	role := createTestUser(t, server)
+	proxyAddr := proxyListener(t, testProxyOptions(role, ModeStandalone), server.Connect)
+	admin := client.NewClient(&client.Options{Addr: addr, Username: "admin", Password: testPassword, Protocol: 2})
+	defer admin.Close()
+
+	conn, err := net.Dial("tcp", proxyAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := append(respCommand("AUTH", role.Name, "wrong-password"), respCommand("SET", "wrong:key", "value")...)
+	if _, err := conn.Write(request); err != nil {
+		t.Fatal(err)
+	}
+	reply, err := bufio.NewReader(conn).ReadString('\n')
+	conn.Close()
+	if err != nil || !strings.Contains(reply, "authentication failed") {
+		t.Fatalf("failed AUTH reply = %q, %v", reply, err)
+	}
+	if exists, err := admin.Exists(context.Background(), "wrong:key").Result(); err != nil || exists != 0 {
+		t.Fatalf("pipelined command after failed AUTH reached Redis: %d, %v", exists, err)
+	}
+
+	conn, err = net.Dial("tcp", proxyAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	request = append(respCommand("AUTH", role.Name, role.Password), respCommand("SET", "right:key", "value")...)
+	if _, err := conn.Write(request); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(conn)
+	for i := 0; i < 2; i++ {
+		reply, err = reader.ReadString('\n')
+		if err != nil || reply != "+OK\r\n" {
+			t.Fatalf("successful pipeline reply %d = %q, %v", i, reply, err)
+		}
+	}
+	if value, err := admin.Get(context.Background(), "right:key").Result(); err != nil || value != "value" {
+		t.Fatalf("pipelined SET = %q, %v", value, err)
+	}
+
+	request = append(respCommand("AUTH", role.Name, "wrong-password"), respCommand("SET", "reauth:key", "value")...)
+	if _, err := conn.Write(request); err != nil {
+		t.Fatal(err)
+	}
+	reply, err = reader.ReadString('\n')
+	if err != nil || !strings.Contains(reply, "already authenticated") {
+		t.Fatalf("reauthentication reply = %q, %v", reply, err)
+	}
+	if exists, err := admin.Exists(context.Background(), "reauth:key").Result(); err != nil || exists != 0 {
+		t.Fatalf("pipelined command after reauthentication reached Redis: %d, %v", exists, err)
+	}
+}
+
+func respCommand(args ...string) []byte {
+	command := redcon.AppendArray(nil, len(args))
+	for _, arg := range args {
+		command = redcon.AppendBulkString(command, arg)
+	}
+	return command
 }
 
 func TestMandatoryDenies(t *testing.T) {
@@ -342,7 +559,7 @@ func TestCluster(t *testing.T) {
 		t.Fatalf("forming Redis Cluster: %v\n%s", err, output)
 	}
 	for _, addr := range addresses {
-		configureAdmin(t, addr)
+		configureAdminWithDefault(t, addr, "default-password")
 	}
 	deadline := time.Now().Add(10 * time.Second)
 	for {
@@ -399,6 +616,18 @@ func TestCluster(t *testing.T) {
 		}()
 	}
 	seed := listeners[0].Addr().String()
+	helloConn, err := net.Dial("tcp", seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer helloConn.Close()
+	if _, err := helloConn.Write(respCommand("HELLO", "2", "AUTH", role.Name, role.Password)); err != nil {
+		t.Fatal(err)
+	}
+	helloReply, err := newReplyReader(helloConn).Next(maxReplyBytes)
+	if err != nil || helloReply.Type != redcon.Array {
+		t.Fatalf("Cluster HELLO 2 AUTH reply = %q, %v", helloReply.Raw, err)
+	}
 	c := client.NewClusterClient(&client.ClusterOptions{
 		Addrs: []string{seed}, Username: role.Name, Password: role.Password, Protocol: 2,
 	})
