@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -36,7 +37,7 @@ const (
 //
 // Authentication itself is end-to-end between the client and Postgres; the
 // proxy only observes it. Proxy closes client before returning.
-func Proxy(ctx context.Context, client net.Conn, dial func(context.Context) (net.Conn, error), role, database string, audit func(query string) error) error {
+func Proxy(ctx context.Context, client net.Conn, dial func(context.Context) (net.Conn, error), role, database string, audit func(message string, attrs ...any) error) error {
 	defer client.Close()
 
 	pkt, err := readStartup(client)
@@ -69,6 +70,12 @@ func Proxy(ctx context.Context, client net.Conn, dial func(context.Context) (net
 		writeFatal(client, "3D000", fmt.Sprintf("this session only permits database %q", database))
 		return fmt.Errorf("postgres: client requested database %q, want %q", db, database)
 	}
+	// The original packet is canonical: startup parameters can be duplicated
+	// and their bytes need not be valid UTF-8 for a JSON sink to preserve them.
+	if err := audit("postgres startup", "startup_parameters", params,
+		"startup_bytes_base64", base64.StdEncoding.EncodeToString(pkt)); err != nil {
+		return fmt.Errorf("postgres: startup not forwarded: %w", err)
+	}
 
 	upstream, err := dial(ctx)
 	if err != nil {
@@ -81,7 +88,7 @@ func Proxy(ctx context.Context, client net.Conn, dial func(context.Context) (net
 	}
 
 	errc := make(chan error, 2)
-	go func() { errc <- relayBackend(client, upstream) }()
+	go func() { errc <- relayBackend(client, upstream, audit) }()
 	go func() { errc <- relay(upstream, client, audit) }()
 	err = <-errc
 	upstream.Close()
@@ -234,9 +241,10 @@ var (
 //
 // ponytail: Bind parameter values are not audited, only statement text.
 // Decode 'B' messages here if the values matter.
-func relay(dst io.Writer, src io.Reader, audit func(string) error) error {
+func relay(dst io.Writer, src io.Reader, audit func(string, ...any) error) error {
 	br := bufio.NewReader(src)
 	bw := bufio.NewWriter(dst)
+	var seq uint64
 	for {
 		var hdr [5]byte
 		if _, err := io.ReadFull(br, hdr[:]); err != nil {
@@ -250,6 +258,7 @@ func relay(dst io.Writer, src io.Reader, audit func(string) error) error {
 		// What was recorded before it still goes, pipelined or not.
 		var body []byte
 		var refused error
+		seq++
 		switch {
 		case hdr[0] == 'F':
 			refused = errFunctionCall
@@ -260,8 +269,27 @@ func relay(dst io.Writer, src io.Reader, audit func(string) error) error {
 			if _, err := io.ReadFull(br, body); err != nil {
 				return err
 			}
-			if err := audit(statementText(hdr[0], body)); err != nil {
+			// Raw bytes are the only lossless representation. The client encoding
+			// may differ from UTF-8 and may change in an earlier pipelined query.
+			statement := statementBytes(hdr[0], body)
+			attrs := []any{"frontend_seq", seq, "frontend_type", string(hdr[0]),
+				"sql_bytes_base64", base64.StdEncoding.EncodeToString(statement)}
+			ascii := true
+			for _, b := range statement {
+				if b >= 0x80 {
+					ascii = false
+					break
+				}
+			}
+			if ascii {
+				attrs = append(attrs, "sql", string(statement))
+			}
+			if err := audit("query", attrs...); err != nil {
 				refused = fmt.Errorf("postgres: statement not forwarded: %w", err)
+			}
+		case hdr[0] == 'B' || hdr[0] == 'E' || hdr[0] == 'S' || hdr[0] == 'D' || hdr[0] == 'C' || hdr[0] == 'H':
+			if err := audit("postgres frontend", "frontend_seq", seq, "frontend_type", string(hdr[0])); err != nil {
+				refused = fmt.Errorf("postgres: message not forwarded: %w", err)
 			}
 		}
 		if refused != nil {
@@ -299,8 +327,9 @@ const (
 // through a proxy in any case: it ties the login to the TLS endpoint, which
 // here is the exit node. Without the offer, clients pick SCRAM-SHA-256 and
 // declare no channel binding support, which the server accepts.
-func relayBackend(dst io.Writer, src io.Reader) error {
+func relayBackend(dst io.Writer, src io.Reader, audit func(string, ...any) error) error {
 	br := bufio.NewReader(src)
+	var seq uint64
 	for {
 		var hdr [5]byte
 		if _, err := io.ReadFull(br, hdr[:]); err != nil {
@@ -310,7 +339,45 @@ func relayBackend(dst io.Writer, src io.Reader) error {
 		if n < 0 {
 			return fmt.Errorf("postgres: invalid length in %q message", hdr[0])
 		}
+		if hdr[0] == 'S' {
+			if n > maxStatementLen {
+				return fmt.Errorf("postgres: parameter status too long: %d", n)
+			}
+			body := make([]byte, n)
+			if _, err := io.ReadFull(br, body); err != nil {
+				return err
+			}
+			name, rest, ok := bytes.Cut(body, []byte{0})
+			if !ok {
+				return errors.New("postgres: malformed parameter status")
+			}
+			value, tail, ok := bytes.Cut(rest, []byte{0})
+			if !ok || len(tail) != 0 {
+				return errors.New("postgres: malformed parameter status")
+			}
+			seq++
+			if err := audit("postgres backend", "backend_seq", seq, "backend_type", "S",
+				"parameter_name", string(name), "parameter_value", string(value),
+				"parameter_bytes_base64", base64.StdEncoding.EncodeToString(body)); err != nil {
+				return err
+			}
+			if _, err := dst.Write(hdr[:]); err != nil {
+				return err
+			}
+			if _, err := dst.Write(body); err != nil {
+				return err
+			}
+			continue
+		}
 		if hdr[0] != 'R' || n > maxStartupLen {
+			// These markers let an audit reader match the independent frontend
+			// and backend streams, including queries sent before earlier replies.
+			if bytes.IndexByte([]byte("123CsIEZntT"), hdr[0]) >= 0 {
+				seq++
+				if err := audit("postgres backend", "backend_seq", seq, "backend_type", string(hdr[0])); err != nil {
+					return err
+				}
+			}
 			if _, err := dst.Write(hdr[:]); err != nil {
 				return err
 			}
@@ -335,11 +402,6 @@ func relayBackend(dst io.Writer, src io.Reader) error {
 		if _, err := dst.Write(append(pkt, body...)); err != nil {
 			return err
 		}
-		if code == authOK {
-			// Authenticated: the rest of the session needs no inspection.
-			_, err := io.Copy(dst, br)
-			return err
-		}
 	}
 }
 
@@ -361,14 +423,14 @@ func withoutChannelBinding(body []byte) []byte {
 	return append(out, 0)
 }
 
-// statementText extracts the SQL from a Query ('Q') or Parse ('P') message
+// statementBytes extracts the SQL from a Query ('Q') or Parse ('P') message
 // body. The server, too, ends the statement at its first NUL.
-func statementText(typ byte, body []byte) string {
+func statementBytes(typ byte, body []byte) []byte {
 	if typ == 'P' { // skip the prepared statement's name
 		_, body, _ = bytes.Cut(body, []byte{0})
 	}
 	body, _, _ = bytes.Cut(body, []byte{0})
-	return string(body)
+	return body
 }
 
 // writeFatal sends the client a FATAL ErrorResponse with the given SQLSTATE.
