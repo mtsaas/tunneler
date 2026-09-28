@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,12 +27,16 @@ func TestListenStable(t *testing.T) {
 	}
 	port := first.Addr().(*net.TCPAddr).Port
 
-	// While the usual port is taken, another is used rather than failing.
+	// A port held by another local process must not redirect saved clients
+	// to a listener that tunneler does not own.
 	second, err := listenStable(s)
-	if err != nil || second.Addr().(*net.TCPAddr).Port == port {
-		t.Fatalf("second listener: %v, %v", second, err)
+	if second != nil {
+		second.Close()
+		t.Fatal("busy stable port opened a fallback listener")
 	}
-	second.Close()
+	if err == nil {
+		t.Fatal("busy stable port did not fail")
+	}
 	first.Close()
 
 	// Once free again, the same service gets the same port.
@@ -39,6 +47,41 @@ func TestListenStable(t *testing.T) {
 	defer again.Close()
 	if got := again.Addr().(*net.TCPAddr).Port; got != port {
 		t.Errorf("port = %d, then %d; want the same", port, got)
+	}
+}
+
+func TestBusyStablePortDoesNotProvisionSession(t *testing.T) {
+	s := &api.Session{Cluster: "prod", Service: "busy-port-test"}
+	occupied, err := listenStable(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+
+	var created atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /v1/clusters":
+			json.NewEncoder(w).Encode([]api.Cluster{{Name: s.Cluster, Services: []api.Service{{
+				Name: s.Service, Kind: "postgres", Ready: true,
+				Labels: map[string]string{"cluster": s.Cluster, "name": s.Service},
+			}}}})
+		case "POST /v1/sessions":
+			created.Add(1)
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(api.Error{Message: "session must not be created"})
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	_, stderr, status := cli(t, srv.URL, "connect", "cluster="+s.Cluster, "name="+s.Service)
+	if status == 0 || !strings.Contains(stderr, "address already in use") {
+		t.Errorf("busy port: status %d, stderr %q", status, stderr)
+	}
+	if got := created.Load(); got != 0 {
+		t.Errorf("session requests = %d, want 0", got)
 	}
 }
 

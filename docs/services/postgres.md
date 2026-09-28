@@ -248,7 +248,8 @@ account.
 
 The port for one database is the same each time. A saved connection in a
 database tool continues to work, and only the user and the password change.
-Use `--port` to select a different port.
+If that port is occupied, the command exits before creating an account. Use
+`--port` to select a different port, and update the saved connection to match.
 
 To run one command, put it after `--`. The command gets the connection in
 its environment (`PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`,
