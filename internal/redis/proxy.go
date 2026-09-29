@@ -40,21 +40,20 @@ func Proxy(ctx context.Context, local net.Conn, dial func(context.Context) (net.
 		return err
 	}
 	defer upstream.Close()
-	budget := &byteBudget{Reader: local, Limit: 2 * maxCommandBytes}
-	reader := redcon.NewReader(budget)
-	initialCommand, firstReplyByte, err := authenticate(upstream, reader, budget, options)
+	reader := newCommandReader(local)
+	initialCommand, firstReplyByte, err := authenticate(upstream, reader, options)
 	if err != nil {
 		writeProxyError(local, err.Error())
 		return err
 	}
 
 	if options.Mode == ModeCluster {
-		return proxyCluster(local, upstream, reader, budget, initialCommand, firstReplyByte, options)
+		return proxyCluster(local, upstream, reader, initialCommand, firstReplyByte, options)
 	}
-	return proxySingle(local, upstream, reader, budget, firstReplyByte, options)
+	return proxySingle(local, upstream, reader, firstReplyByte, options)
 }
 
-func proxySingle(local, upstream net.Conn, reader *redcon.Reader, budget *byteBudget, firstReplyByte byte, options ProxyOptions) error {
+func proxySingle(local, upstream net.Conn, reader *commandReader, firstReplyByte byte, options ProxyOptions) error {
 	results := make(chan error, 2)
 	go func() {
 		proxyWorker(results, func() error {
@@ -64,7 +63,7 @@ func proxySingle(local, upstream net.Conn, reader *redcon.Reader, budget *byteBu
 	}()
 	go func() {
 		proxyWorker(results, func() error {
-			return forwardCommands(reader, budget, upstream, options, nil, nil)
+			return forwardCommands(reader, upstream, options, nil, nil)
 		})
 	}()
 	err := <-results
@@ -80,7 +79,7 @@ func proxySingle(local, upstream net.Conn, reader *redcon.Reader, budget *byteBu
 	return err
 }
 
-func proxyCluster(local, upstream net.Conn, reader *redcon.Reader, budget *byteBudget,
+func proxyCluster(local, upstream net.Conn, reader *commandReader,
 	initialCommand string, firstReplyByte byte, options ProxyOptions) error {
 	redirects := make(map[string]string)
 	ports := make(map[string]int)
@@ -100,7 +99,7 @@ func proxyCluster(local, upstream net.Conn, reader *redcon.Reader, budget *byteB
 	go func() {
 		defer close(requests)
 		proxyWorker(results, func() error {
-			return forwardCommands(reader, budget, upstream, options, requests, done)
+			return forwardCommands(reader, upstream, options, requests, done)
 		})
 	}()
 	go func() {
@@ -159,8 +158,8 @@ func writeProxyError(conn net.Conn, message string) {
 
 // authenticate leaves Redis to check the password, but does not let a client
 // use the connection as Redis's default user before that check succeeds.
-func authenticate(upstream net.Conn, reader *redcon.Reader, budget *byteBudget, options ProxyOptions) (string, byte, error) {
-	command, err := readCommand(reader, budget)
+func authenticate(upstream net.Conn, reader *commandReader, options ProxyOptions) (string, byte, error) {
+	command, err := reader.ReadCommand()
 	if err != nil {
 		return "", 0, err
 	}
@@ -190,19 +189,6 @@ func authenticate(upstream net.Conn, reader *redcon.Reader, budget *byteBudget, 
 	return name, first[0], nil
 }
 
-func readCommand(reader *redcon.Reader, budget *byteBudget) (redcon.Command, error) {
-	budget.Reset()
-	command, err := reader.ReadCommand()
-	if err != nil {
-		return redcon.Command{}, err
-	}
-	if len(command.Raw) == 0 || len(command.Raw) > maxCommandBytes || len(command.Args) == 0 ||
-		len(command.Args) > 1024 || command.Raw[0] != '*' {
-		return redcon.Command{}, errors.New("redis: command must be a RESP array of at most 1 MiB and 1,024 arguments")
-	}
-	return command, nil
-}
-
 func helloAuthenticates(args [][]byte) bool {
 	for _, arg := range args[1:] {
 		if strings.EqualFold(string(arg), "AUTH") {
@@ -214,10 +200,10 @@ func helloAuthenticates(args [][]byte) bool {
 
 // forwardCommands uses the same reader as authenticate, retaining any client
 // commands that arrived in the same packet as the authentication handshake.
-func forwardCommands(reader *redcon.Reader, budget *byteBudget, upstream net.Conn,
+func forwardCommands(reader *commandReader, upstream net.Conn,
 	options ProxyOptions, requests chan<- string, done <-chan struct{}) error {
 	for {
-		command, err := readCommand(reader, budget)
+		command, err := reader.ReadCommand()
 		if err != nil {
 			return err
 		}
