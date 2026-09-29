@@ -22,19 +22,24 @@ rules:
   {{- if .Values.kubernetes.enabled }}
   {{- $groups := .Values.kubernetes.groups }}
   {{- $users := .Values.kubernetes.users }}
-  {{- /* RBAC reads an empty resourceNames as every name, system:masters
-         included, and `required` lets an empty list through. [""], which
-         is what --set kubernetes.groups={} gives, is no group either. */}}
+  {{- /* RBAC reads an empty resourceNames as every name. [""], which is
+         what --set kubernetes.groups={} gives, is no group either. */}}
   {{- if or (not (kindIs "slice" $groups)) (empty $groups) (has "" $groups) }}
   {{- fail "kubernetes.groups must list at least one group when kubernetes.enabled (an empty list would let the exit node impersonate every group)" }}
   {{- end }}
-  {{- if or (not (kindIs "slice" $users)) (empty $users) (has "" $users) }}
-  {{- fail "kubernetes.users must list at least one user when kubernetes.enabled (an empty list would let the exit node impersonate every user)" }}
+  {{- if not (kindIs "slice" $users) }}
+  {{- fail "kubernetes.users must be a list" }}
+  {{- end }}
+  {{- if has "" $users }}
+  {{- fail "kubernetes.users must not contain an empty name" }}
   {{- end }}
   {{- range $users }}
   {{- if hasPrefix "system:" . }}
   {{- fail "kubernetes.users must not include system: users" }}
   {{- end }}
+  {{- end }}
+  {{- if empty $users }}
+  {{- $users = list (include "tunneler-exit.groupUser" .) }}
   {{- end }}
   # Bound the service account's credential even if it is used outside the
   # exit process, where the request checks below do not run.

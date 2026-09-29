@@ -43,6 +43,9 @@ spec:
             - start
             - exit
             - --kubernetes
+            {{- if and .Values.kubernetes.enabled (empty .Values.kubernetes.users) }}
+            - {{ printf "--kubernetes-impersonate-user=%s" (include "tunneler-exit.groupUser" .) | quote }}
+            {{- end }}
             {{- range $namespace, $secrets := .Values.workloadIdentity.keyVaultSecrets }}
             {{- range $secrets }}
             - {{ printf "--key-vault-secret=%s=%s" $namespace . | quote }}

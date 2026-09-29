@@ -30,9 +30,10 @@ secretAccess: namespaced
 kubernetes:
   enabled: false
   name: kubernetes
-  # The only user names the exit service account may impersonate. Required
-  # when enabled, with at least one name. Keep this list in step with the
-  # people who can receive coordinator grants. Never include system: users.
+  # Leave empty for group-managed access: the chart gives the exit service
+  # account one release-specific synthetic user name, and access follows
+  # coordinator grants and the groups below. List names to retain per-user
+  # Kubernetes impersonation. Never include system: users.
   users: []
   # - alice@example.com
   # The only groups a user may be given here. The exit node is allowed to
