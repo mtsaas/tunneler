@@ -73,6 +73,10 @@ type cluster struct {
 }
 
 func newCluster(t *testing.T, groups []string, apiserver http.HandlerFunc) *cluster {
+	return newClusterWithUser(t, groups, "", apiserver)
+}
+
+func newClusterWithUser(t *testing.T, groups []string, fixedUser string, apiserver http.HandlerFunc) *cluster {
 	c := &cluster{t: t}
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c.mu.Lock()
@@ -92,7 +96,7 @@ func newCluster(t *testing.T, groups []string, apiserver http.HandlerFunc) *clus
 	os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: upstream.Certificate().Raw}), 0o600)
 	os.WriteFile(c.tokenFile, []byte("exit-node-token\n"), 0o600)
 
-	api, err := NewAPIServer(Config{Server: upstream.URL, TokenFile: c.tokenFile, CAFile: caFile}, groups)
+	api, err := NewAPIServer(Config{Server: upstream.URL, TokenFile: c.tokenFile, CAFile: caFile, ImpersonateUser: fixedUser}, groups)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,11 +106,60 @@ func newCluster(t *testing.T, groups []string, apiserver http.HandlerFunc) *clus
 	gw := NewGateway(api.Connect)
 	audit := slog.New(slog.NewJSONHandler(&lockedWriter{w: &c.logs, mu: &c.mu}, nil))
 	c.gateway = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// The coordinator has authenticated the caller as alice by now.
-		gw.ServeAs(w, r, "alice@example.com", strings.Split(r.Header.Get("X-Test-Groups"), ","), audit)
+		// The coordinator has authenticated the caller by now.
+		user := r.Header.Get("X-Test-User")
+		if user == "" {
+			user = "alice@example.com"
+		}
+		gw.ServeAs(w, r, user, strings.Split(r.Header.Get("X-Test-Groups"), ","), audit.With("user", user))
 	}))
 	t.Cleanup(c.gateway.Close)
 	return c
+}
+
+func TestGroupManagedUser(t *testing.T) {
+	const fixedUser = "tunneler:group-managed:default:x"
+	c := newClusterWithUser(t, []string{"tunneler:view"}, fixedUser, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	for i, user := range []string{"alice@example.com", "bob@example.com"} {
+		resp := c.get("/api/v1/pods", http.Header{
+			"X-Test-User":      {user},
+			"Impersonate-User": {"system:admin"},
+		})
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("%s: status %d", user, resp.StatusCode)
+		}
+		if got := c.last().Header.Get("Impersonate-User"); got != fixedUser {
+			t.Errorf("%s: impersonated %q, want %q", user, got, fixedUser)
+		}
+		if got := c.waitForRecords(i + 1)[i]["user"]; got != user {
+			t.Errorf("audit user = %v, want %q", got, user)
+		}
+	}
+	resp := c.get("/api/v1/secrets", http.Header{"X-Test-Groups": {"system:masters"}})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("unlisted group: status %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestGroupManagedUserRequiresGroup(t *testing.T) {
+	api, err := NewAPIServer(Config{Server: "https://127.0.0.1:1", ImpersonateUser: "tunneler:group-managed:default:x"}, []string{"tunneler:view"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("GET", "/api/v1/pods", nil)
+	req.Header.Set("Impersonate-User", "alice@example.com")
+	rec := httptest.NewRecorder()
+	api.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("no group: status %d, want 403", rec.Code)
+	}
+	if _, err := NewAPIServer(Config{Server: "https://127.0.0.1:1", ImpersonateUser: "system:admin"}, nil); err == nil {
+		t.Error("system: user was accepted as a fixed impersonation name")
+	}
 }
 
 type lockedWriter struct {

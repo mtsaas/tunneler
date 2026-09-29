@@ -23,6 +23,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 
+	"github.com/mtsaas/tunneler/internal/kube"
 	"github.com/mtsaas/tunneler/internal/redis"
 )
 
@@ -97,6 +98,9 @@ type Discovery struct {
 	// that every tenant can have its own "postgres". Empty, when the exit
 	// node runs outside the cluster, means no namespace is the operator's.
 	Namespace string
+	// KubernetesUser is the fixed name used for group-managed Kubernetes
+	// access. Empty keeps per-person impersonation.
+	KubernetesUser string
 
 	Dynamic dynamic.Interface
 	Clients kubernetes.Interface
@@ -249,6 +253,7 @@ func (d *Discovery) upsert(ctx context.Context, obj any) {
 		Redis:       ts.Spec.Redis,
 		Labels:      labels,
 		Roles:       ts.Spec.GrantableRoles,
+		Kubernetes:  kube.Config{ImpersonateUser: d.KubernetesUser},
 		untrusted:   true,
 	})
 	if err != nil {

@@ -26,26 +26,29 @@ const (
 // Config says how the exit node reaches its cluster's API server. The zero
 // value means the cluster the process runs in.
 type Config struct {
-	Server    string `json:"server,omitempty"`     // URL; default from KUBERNETES_SERVICE_HOST and _PORT
-	TokenFile string `json:"token_file,omitempty"` // service account token; re-read for every request
-	CAFile    string `json:"ca_file,omitempty"`    // PEM bundle that signs the API server's certificate
+	Server          string `json:"server,omitempty"`           // URL; default from KUBERNETES_SERVICE_HOST and _PORT
+	TokenFile       string `json:"token_file,omitempty"`       // service account token; re-read for every request
+	CAFile          string `json:"ca_file,omitempty"`          // PEM bundle that signs the API server's certificate
+	ImpersonateUser string `json:"impersonate_user,omitempty"` // fixed user for group-managed access; empty uses the person
 }
 
 // APIServer is the exit node's half: the cluster's API server, reached with
 // the exit node's own service account, which must be allowed to impersonate
-// users and the configured groups.
+// the configured user and groups.
 type APIServer struct {
 	server    *url.URL
 	tokenFile string
 	groups    []string // the only groups a request may impersonate
+	user      string   // fixed impersonated user, or empty to use the person's name
 	transport *http.Transport
 
 	serve    sync.Once
 	listener *pipeListener
 }
 
-// NewAPIServer returns the API server that cfg describes. Requests may
-// impersonate any user, but no group outside groups.
+// NewAPIServer returns the API server that cfg describes. Without a fixed
+// user, requests impersonate the authenticated person. No request may
+// impersonate a group outside groups.
 func NewAPIServer(cfg Config, groups []string) (*APIServer, error) {
 	if cfg.Server == "" {
 		host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
@@ -74,7 +77,10 @@ func NewAPIServer(cfg Config, groups []string) (*APIServer, error) {
 			return nil, fmt.Errorf("kube: %s holds no certificates", cfg.CAFile)
 		}
 	}
-	return &APIServer{server: server, tokenFile: cfg.TokenFile, groups: groups, transport: transport}, nil
+	if strings.HasPrefix(cfg.ImpersonateUser, "system:") {
+		return nil, fmt.Errorf("kube: refusing to impersonate system user %q", cfg.ImpersonateUser)
+	}
+	return &APIServer{server: server, tokenFile: cfg.TokenFile, groups: groups, user: cfg.ImpersonateUser, transport: transport}, nil
 }
 
 // Addr returns the API server's address, for logs.
@@ -134,6 +140,9 @@ func (s *APIServer) Handler() http.Handler {
 			// Nodes, service accounts and the control plane are not people.
 			WriteStatus(w, http.StatusForbidden, fmt.Sprintf("tunneler: refusing to act as the system user %q", user))
 			return
+		case s.user != "" && len(groups) == 0:
+			WriteStatus(w, http.StatusForbidden, "tunneler: group-managed access requires a granted group")
+			return
 		}
 		for _, group := range groups {
 			if !slices.Contains(s.groups, group) {
@@ -144,6 +153,9 @@ func (s *APIServer) Handler() http.Handler {
 		// Only the user and the vetted groups survive: not an Impersonate-Uid
 		// or -Extra the API server would also honor.
 		stripIdentity(r.Header)
+		if s.user != "" {
+			user = s.user
+		}
 		r.Header.Set(headerUser, user)
 		for _, group := range groups {
 			r.Header.Add(headerGroup, group)

@@ -216,10 +216,27 @@ contexts: [{name: tunneler, context: {cluster: tunneler, user: me, namespace: tu
 		t.Fatalf("kubectl get pods: %v\n%s", err, out)
 	}
 
-	// The cluster knows the person by the identity the coordinator gave, and
-	// its own RBAC decides what they may do.
-	if out, err := kubectl("auth", "whoami", "-o", "jsonpath={.status.userInfo.groups}"); err != nil || !strings.Contains(out, "tunneler:view") {
+	// Group-managed access reaches the cluster through one synthetic user;
+	// its own RBAC decides what the granted group may do.
+	if out, err := kubectl("auth", "whoami", "-o", "jsonpath={.status.userInfo.username} {.status.userInfo.groups}"); err != nil ||
+		!strings.Contains(out, "tunneler:group-managed:tunneler:tunneler-exit") || !strings.Contains(out, "tunneler:view") {
 		t.Errorf("kubectl auth whoami: %v\n%s", err, out)
+	}
+	// The ServiceAccount credential is bounded even outside the exit process.
+	for _, tc := range []struct {
+		resource, want string
+	}{
+		{"users/tunneler:group-managed:tunneler:tunneler-exit", "yes"},
+		{"users/system:admin", "no"},
+		{"groups/tunneler:view", "yes"},
+		{"groups/system:masters", "no"},
+	} {
+		cmd := exec.CommandContext(ctx, "kubectl", "--context", "kind-"+cluster, "auth", "can-i", "impersonate", tc.resource,
+			"--as=system:serviceaccount:tunneler:tunneler-exit")
+		out, _ := cmd.CombinedOutput() // kubectl exits 1 for "no"
+		if got := strings.TrimSpace(string(out)); got != tc.want {
+			t.Errorf("exit credential impersonate %s: %q, want %q", tc.resource, got, tc.want)
+		}
 	}
 	if out, err := kubectl("delete", "pod", "tunneler-coordinator-0"); err == nil || !strings.Contains(out, "forbidden") {
 		t.Errorf("deleting a pod with only view: %v\n%s", err, out)

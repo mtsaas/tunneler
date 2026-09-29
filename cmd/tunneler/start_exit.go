@@ -21,7 +21,7 @@ import (
 )
 
 func startExitCmd() *cobra.Command {
-	var path, healthAddr, tokenFile, audience string
+	var path, healthAddr, tokenFile, audience, kubernetesUser string
 	var kubernetes bool
 	var keyVaultSecrets []string
 	a := &exit.Agent{}
@@ -96,6 +96,7 @@ $ tunneler start exit --cluster dev --server http://localhost:8443 --config exit
 					return err
 				}
 				d.KeyVaultSecrets = allowed
+				d.KubernetesUser = kubernetesUser
 				go func() {
 					if err := d.Run(ctx); !errors.Is(err, context.Canceled) {
 						log.Error("TunnelService discovery stopped", "err", err)
@@ -116,6 +117,7 @@ $ tunneler start exit --cluster dev --server http://localhost:8443 --config exit
 	cmd.Flags().StringVar(&audience, "audience", "", "Client ID of the coordinator's application; required under Azure Workload Identity (default $TUNNELER_AUDIENCE)")
 	cmd.Flags().StringVar(&path, "config", "/etc/tunneler/exit.json", "Configuration file, if present")
 	cmd.Flags().BoolVar(&kubernetes, "kubernetes", false, "Discover services from TunnelService resources")
+	cmd.Flags().StringVar(&kubernetesUser, "kubernetes-impersonate-user", "", "Fixed impersonated user for discovered Kubernetes services; empty uses each person's name")
 	cmd.Flags().StringArrayVar(&keyVaultSecrets, "key-vault-secret", nil,
 		"Let TunnelService resources in NAMESPACE use a Key Vault secret, as NAMESPACE=https://VAULT.vault.azure.net/secrets/NAME; repeat for more")
 	return cmd
