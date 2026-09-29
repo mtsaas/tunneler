@@ -124,7 +124,7 @@ func TestGroupManagedUser(t *testing.T) {
 	})
 	for i, user := range []string{"alice@example.com", "bob@example.com"} {
 		resp := c.get("/api/v1/pods", http.Header{
-			"X-Test-User":     {user},
+			"X-Test-User":      {user},
 			"Impersonate-User": {"system:admin"},
 		})
 		resp.Body.Close()
