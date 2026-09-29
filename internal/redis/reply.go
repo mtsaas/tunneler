@@ -4,34 +4,12 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"strconv"
 	"strings"
 
 	"github.com/tidwall/redcon"
 )
-
-type byteBudget struct {
-	io.Reader
-	Limit int
-	used  int
-}
-
-func (b *byteBudget) Reset() { b.used = 0 }
-
-func (b *byteBudget) Read(p []byte) (int, error) {
-	remaining := b.Limit - b.used
-	if remaining <= 0 {
-		return 0, errors.New("redis: command exceeds the read limit")
-	}
-	if len(p) > remaining {
-		p = p[:remaining]
-	}
-	n, err := b.Reader.Read(p)
-	b.used += n
-	return n, err
-}
 
 // replyReader uses redcon's RESP2 parser. A Cluster session explicitly
 // rejects HELLO 3, so all replies use this format. Non-Cluster sessions

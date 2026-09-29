@@ -148,3 +148,56 @@ func TestProxyContainsWorkerPanic(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestProxyRejectsOverflowingCommandLength(t *testing.T) {
+	client, local := net.Pipe()
+	upstream, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	client.SetDeadline(time.Now().Add(5 * time.Second))
+	server.SetDeadline(time.Now().Add(5 * time.Second))
+
+	serverDone := make(chan error, 1)
+	go func() {
+		reader := redcon.NewReader(server)
+		_, err := reader.ReadCommand()
+		if err == nil {
+			_, err = server.Write([]byte("+OK\r\n"))
+		}
+		if err == nil {
+			var next [1]byte
+			_, err = server.Read(next[:])
+		}
+		serverDone <- err
+	}()
+	proxyDone := make(chan error, 1)
+	go func() {
+		proxyDone <- Proxy(context.Background(), local, func(context.Context) (net.Conn, error) {
+			return upstream, nil
+		}, ProxyOptions{
+			Username: "temporary",
+			Mode:     ModeStandalone,
+			Audit:    func(string, []string) error { return nil },
+		})
+	}()
+
+	if _, err := client.Write(respCommand("AUTH", "temporary", "secret")); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(client)
+	if reply, err := reader.ReadString('\n'); err != nil || reply != "+OK\r\n" {
+		t.Fatalf("authentication reply = %q, %v", reply, err)
+	}
+	if _, err := client.Write([]byte("*1\r\n$9223372036854775807\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	if reply, err := reader.ReadString('\n'); err != nil || !strings.Contains(reply, "invalid bulk length") {
+		t.Fatalf("command reply = %q, %v, want invalid bulk length", reply, err)
+	}
+	if err := <-proxyDone; err == nil || !strings.Contains(err.Error(), "invalid bulk length") {
+		t.Fatalf("Proxy() error = %v, want invalid bulk length", err)
+	}
+	if err := <-serverDone; err == nil {
+		t.Fatal("invalid command reached Redis")
+	}
+}
