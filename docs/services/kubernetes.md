@@ -172,7 +172,7 @@ The coordinator writes one record for each request, with the message
 
 ```json
 {"msg":"kubernetes request","audit":true,"user":"alice@example.com","subject":"...","cluster":"prod",
- "service":"kubernetes","kind":"kubernetes","verb":"delete","resource":"pods",
+ "target_service":"kubernetes","kind":"kubernetes","verb":"delete","resource":"pods",
  "namespace":"shop","name":"web-0","status":403,"duration":"2ms"}
 ```
 

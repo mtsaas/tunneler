@@ -68,7 +68,7 @@ func (c *Coordinator) handleGateway(w http.ResponseWriter, r *http.Request) {
 		err = fmt.Errorf("token has no %q claim", c.config().OIDC.UsernameClaim)
 	}
 	if err != nil {
-		c.log.Info("gateway request rejected: bad or expired ID token", "cluster", cluster, "service", name, "remote", c.remote(r), "err", err)
+		c.log.Info("gateway request rejected: bad or expired ID token", "cluster", cluster, "target_service", name, "remote", c.remote(r), "err", err)
 		refuseGateway(w, http.StatusUnauthorized, "not logged in, or login expired; run: tunneler auth login")
 		return
 	}

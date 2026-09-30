@@ -4,6 +4,9 @@ metadata:
   name: {{ .Release.Name }}
   labels:
     app.kubernetes.io/name: {{ .Release.Name }}
+    {{- with .Values.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 spec:
   serviceName: {{ .Release.Name }}
   # One: the coordinator keeps its state in a SQLite file and its exit node
@@ -19,6 +22,9 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: {{ .Release.Name }}
+        {{- with .Values.labels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       # No checksum of the ConfigMap here, on purpose: the coordinator reloads
       # its configuration itself, and a restart would disconnect everyone.
     spec:

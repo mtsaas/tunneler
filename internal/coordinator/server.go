@@ -325,7 +325,7 @@ func (c *Coordinator) handleCreateSession(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err != nil {
-		c.log.Error("creating session", "user", id.Username, "cluster", cluster, "service", svc.Name, "err", err)
+		c.log.Error("creating session", "user", id.Username, "cluster", cluster, "target_service", svc.Name, "err", err)
 		writeError(w, http.StatusBadGateway, "provisioning access failed: "+err.Error())
 		return
 	}

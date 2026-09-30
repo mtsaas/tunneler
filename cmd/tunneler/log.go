@@ -18,7 +18,8 @@ var log = slog.New(statusHandler{w: os.Stderr, mu: new(sync.Mutex)})
 // command is doing; the result of a command is written by result instead.
 // Servers always log JSON. The client prints plain, timestamped status lines
 // for a person to read; with --output json it logs JSON to stderr, and with
-// --verbose everything it does as structured text.
+// --verbose everything it does as structured text. target_service names a
+// service it is handling; deployment metadata can identify this process.
 func newLogger(server, verbose bool) *slog.Logger {
 	level := slog.LevelInfo
 	if verbose {
