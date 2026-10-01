@@ -81,6 +81,7 @@ $ tunneler help agents`
 		group(groupCore, "auth", "Log in and check your access", authLoginCmd(), authStatusCmd()),
 		config,
 		connect,
+		shareCmd(),
 		group(groupCore, "services", "List services you can reach", servicesListCmd()),
 		group(groupCore, "sessions", "List and revoke sessions", sessionsListCmd(), sessionsRevokeCmd()),
 		group(groupServer, "start", "Run the coordinator or an exit node", startCoordinatorCmd(), startExitCmd()),

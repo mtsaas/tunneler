@@ -5,17 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 )
 
 // Identity is an authenticated user or, when it has no Username, workload.
 type Identity struct {
-	Subject  string   // stable and unique; what audit trails should key on
-	UserID   string   // how the provider's directory names the user, for grants; may equal Subject
-	Username string   // human-readable; used to name provisioned accounts
-	Groups   []string // what grants are matched against
-	Roles    []string // application roles; "exit:<cluster>" lets a workload be that cluster's exit node
+	Issuer    string
+	ExpiresAt time.Time // verified token expiry; long-lived publishers enforce it
+	Subject   string    // stable and unique; what audit trails should key on
+	UserID    string    // how the provider's directory names the user, for grants; may equal Subject
+	Username  string    // human-readable; used to name provisioned accounts
+	Groups    []string  // what grants are matched against
+	Roles     []string  // application roles; "exit:<cluster>" lets a workload be that cluster's exit node
 }
 
 // Is reports whether principal names this identity: its user ID, or its
@@ -60,7 +63,7 @@ func NewOIDCAuthenticator(ctx context.Context, cfg OIDCConfig) (Authenticator, e
 			return nil, errors.New("token has a groups overage; configure the app registration to emit only groups assigned to the application")
 		}
 
-		id := &Identity{Subject: idToken.Subject}
+		id := &Identity{Subject: idToken.Subject, Issuer: idToken.Issuer, ExpiresAt: idToken.Expiry}
 		id.Username, _ = claims[cfg.UsernameClaim].(string)
 		if id.UserID, _ = claims[cfg.UserIDClaim].(string); id.UserID == "" {
 			id.UserID = idToken.Subject

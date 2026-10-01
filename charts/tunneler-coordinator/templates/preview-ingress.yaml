@@ -1,0 +1,38 @@
+{{- if .Values.ingress.preview.enabled }}
+{{- if not .Values.ingress.enabled }}
+{{- fail "ingress.enabled must be true when ingress.preview.enabled is true" }}
+{{- end }}
+{{- $sharing := .Values.config.sharing | default dict }}
+{{- $domain := required "config.sharing.domain is required for preview ingress" $sharing.domain }}
+{{- $secret := required "ingress.preview.tlsSecretName is required for wildcard preview TLS" .Values.ingress.preview.tlsSecretName }}
+{{- $host := printf "*.%s" $domain }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-preview
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Release.Name }}
+  {{- with .Values.ingress.preview.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  tls:
+    - hosts: [{{ $host | quote }}]
+      secretName: {{ $secret | quote }}
+  rules:
+    - host: {{ $host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}
+                port:
+                  name: http
+{{- end }}

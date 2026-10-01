@@ -72,12 +72,7 @@ func (c *client) login(ctx context.Context, prompt func(*oauth2.DeviceAuthRespon
 		}
 		return err
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	// The new login replaces the old one whole. Were the old refresh token
-	// kept, for want of a new one, it would be sent to the new issuer.
-	c.state.Issuer, c.state.ClientID, c.state.RefreshToken = ac.Issuer, ac.ClientID, ""
-	return c.storeToken(tok)
+	return c.storeLogin(ctx, tok, ac.Issuer, ac.ClientID)
 }
 
 // signInText tells a person where to sign in. The identity provider, which

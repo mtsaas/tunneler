@@ -69,7 +69,33 @@ func classify(err error) (code string, status int) {
 		return "usage", exitUsage
 	case errors.Is(err, errNotLoggedIn):
 		return "not_logged_in", exitNotLoggedIn
+	case errors.As(err, new(shareError)):
+		var shareErr shareError
+		errors.As(err, &shareErr)
+		return shareErr.code, shareErr.status
 	case errors.As(err, &apiErr):
+		switch apiErr.Code {
+		case "usage", "idempotency_conflict":
+			return apiErr.Code, exitUsage
+		case "quota_exceeded", "upstream_unavailable", "share_ended", "startup_timeout", "startup_expired", "publisher_attached", "invalid_attachment":
+			return apiErr.Code, exitUnavailable
+		case "unknown_share", "unknown_operation":
+			return apiErr.Code, exitDenied
+		}
+		if apiErr.Code != "" {
+			status := exitFailure
+			switch apiErr.Status {
+			case http.StatusBadRequest:
+				status = exitUsage
+			case http.StatusUnauthorized:
+				status = exitNotLoggedIn
+			case http.StatusForbidden, http.StatusNotFound:
+				status = exitDenied
+			case http.StatusConflict, http.StatusGone, http.StatusTooManyRequests, http.StatusServiceUnavailable, http.StatusBadGateway, http.StatusGatewayTimeout:
+				status = exitUnavailable
+			}
+			return apiErr.Code, status
+		}
 		switch apiErr.Status {
 		case http.StatusUnauthorized:
 			return "not_logged_in", exitNotLoggedIn
@@ -92,12 +118,17 @@ func fail(w io.Writer, err error) int {
 	}
 	if outputJSON {
 		out := struct {
-			Error   string        `json:"error"`
-			Code    string        `json:"code"`
-			Matches []api.Cluster `json:"matches,omitempty"`
+			Error     string        `json:"error"`
+			Code      string        `json:"code"`
+			Matches   []api.Cluster `json:"matches,omitempty"`
+			ShareID   string        `json:"share_id,omitempty"`
+			RequestID string        `json:"request_id,omitempty"`
 		}{Error: err.Error(), Code: code}
 		if apiErr := (*api.Error)(nil); errors.As(err, &apiErr) {
 			out.Matches = apiErr.Matches
+		}
+		if shareErr := (shareError{}); errors.As(err, &shareErr) {
+			out.ShareID, out.RequestID = shareErr.shareID, shareErr.requestID
 		}
 		json.NewEncoder(w).Encode(out)
 		return status

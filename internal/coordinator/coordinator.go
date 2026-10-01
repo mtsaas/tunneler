@@ -34,6 +34,7 @@ type Coordinator struct {
 	log   *slog.Logger
 	// gateways serve the services of per-request kinds; see gateway.go.
 	gateways gateways
+	shares   *shareManager
 	audit    *slog.Logger
 
 	mu       sync.Mutex
@@ -73,6 +74,10 @@ func New(cfg *Config, auth Authenticator, log *slog.Logger, audit slog.Handler) 
 		sessions: make(map[string]*session),
 	}
 	c.cfg.Store(cfg)
+	if err := c.initShares(); err != nil {
+		st.db.Close()
+		return nil, err
+	}
 	c.hub.admit = c.admitExit
 	c.hub.onOffer = c.retryDrops
 	c.hub.onWithdraw = c.gateways.drop
@@ -127,12 +132,14 @@ func (c *Coordinator) Reload(cfg *Config) (ignored []string) {
 		}
 	}
 	c.cfg.Store(&merged)
+	c.reloadShares()
 	return ignored
 }
 
 // Close disconnects every session and closes the session database. Sessions
 // stay valid and resume when a coordinator next starts on the same database.
 func (c *Coordinator) Close() error {
+	c.closeShares()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, s := range c.sessions {

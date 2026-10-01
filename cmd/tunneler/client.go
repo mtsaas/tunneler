@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -25,16 +26,10 @@ type client struct {
 	*coordinator.Client
 	path string
 
-	mu    sync.Mutex // guards state, which connect refreshes from many goroutines
-	state struct {
-		Server string `json:"server"`
-		// The identity provider and app registration that the login was
-		// made with. Its refresh token is sent nowhere else.
-		Issuer       string `json:"issuer,omitempty"`
-		ClientID     string `json:"client_id,omitempty"`
-		IDToken      string `json:"id_token,omitempty"`
-		RefreshToken string `json:"refresh_token,omitempty"`
-	}
+	mu         sync.Mutex // guards state, which connect refreshes from many goroutines
+	state      authState
+	saved      authState // disk snapshot used to reject a stale device-login result
+	generation string    // login/config changes end a running client's authority
 }
 
 // loadClient reads the saved state. A missing file is not an error.
@@ -46,39 +41,17 @@ func loadClient() (*client, error) {
 	c := &client{path: filepath.Join(dir, "tunneler", "config.json")}
 	c.Client = &coordinator.Client{Token: c.token, HTTP: &http.Client{Transport: logTransport{}}}
 	defer func() { c.Server = c.state.Server }()
-	data, err := os.ReadFile(c.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return c, nil
-	}
+	c.state, err = readAuthState(c.path)
 	if err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal(data, &c.state); err != nil {
-		return nil, fmt.Errorf("%s: %w", c.path, err)
-	}
-	// A login saved by an earlier version, without its issuer, cannot say
-	// where its refresh token may go, so it is not renewed. Its ID token
-	// serves until it expires, and then the person signs in again.
-	if c.state.Issuer == "" {
-		c.state.RefreshToken = ""
-	}
+	c.saved, c.generation = c.state, c.state.Generation
 	// For automation, which would rather not write a file first. A login
 	// belongs to the server it was made with, so it is not carried over.
 	if server := strings.TrimRight(os.Getenv("TUNNELER_SERVER"), "/"); server != "" && server != c.state.Server {
 		c.state.Server, c.state.IDToken, c.state.RefreshToken = server, "", ""
 	}
 	return c, nil
-}
-
-func (c *client) save() error {
-	data, err := json.MarshalIndent(&c.state, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(c.path, data, 0o600) // holds a refresh token
 }
 
 // logTransport records each request to the coordinator, for --verbose.
@@ -127,6 +100,19 @@ var errProviderChanged = errors.New("the coordinator's identity provider has cha
 func (c *client) token(ctx context.Context) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	unlock, err := lockAuthState(ctx, c.path)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	state, err := readAuthState(c.path)
+	if err != nil {
+		return "", err
+	}
+	if state.Server != c.Server || state.Generation != c.generation {
+		return "", fmt.Errorf("%w: the saved coordinator or login changed; restart this command", errNotLoggedIn)
+	}
+	c.state, c.saved = state, state
 	if time.Until(jwtExpiry(c.state.IDToken)) > time.Minute {
 		return c.state.IDToken, nil
 	}
@@ -144,10 +130,12 @@ func (c *client) token(ctx context.Context) (string, error) {
 	if ac.Issuer != c.state.Issuer || ac.ClientID != c.state.ClientID {
 		log.Debug("dropping the login", "issuer", c.state.Issuer, "client_id", c.state.ClientID,
 			"coordinator_issuer", ac.Issuer, "coordinator_client_id", ac.ClientID)
-		c.state.IDToken, c.state.RefreshToken = "", ""
-		if err := c.save(); err != nil {
+		state.IDToken, state.RefreshToken = "", ""
+		state.Generation = rand.Text()
+		if err := writeAuthState(c.path, &state); err != nil {
 			return "", err
 		}
+		c.state, c.saved, c.generation = state, state, state.Generation
 		return "", fmt.Errorf("%w: %w; run: tunneler auth login", errNotLoggedIn, errProviderChanged)
 	}
 	conf, err := oauth(ctx, c.state.Issuer, c.state.ClientID)
@@ -156,21 +144,20 @@ func (c *client) token(ctx context.Context) (string, error) {
 	}
 	tok, err := conf.TokenSource(ctx, &oauth2.Token{RefreshToken: c.state.RefreshToken}).Token()
 	if err != nil {
-		return "", fmt.Errorf("%w: the login expired and could not be renewed (%v); run: tunneler auth login", errNotLoggedIn, err)
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return "", authRenewalError(err)
 	}
-	return c.state.IDToken, c.storeToken(tok)
-}
-
-func (c *client) storeToken(tok *oauth2.Token) error {
-	idToken, _ := tok.Extra("id_token").(string)
-	if idToken == "" {
-		return errors.New("identity provider returned no ID token")
+	state, err = refreshedAuthState(state, tok)
+	if err != nil {
+		return "", err
 	}
-	c.state.IDToken = idToken
-	if tok.RefreshToken != "" {
-		c.state.RefreshToken = tok.RefreshToken
+	if err := writeAuthState(c.path, &state); err != nil {
+		return "", err
 	}
-	return c.save()
+	c.state, c.saved = state, state
+	return state.IDToken, nil
 }
 
 // jwtExpiry returns the exp claim of a JWT, or the zero time if there is

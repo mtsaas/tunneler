@@ -36,7 +36,8 @@ func (c *Coordinator) Handler() http.Handler {
 	mux.HandleFunc(routeSessionEvents, c.user(c.handleSessionEvents))
 	mux.HandleFunc(routeGateway, c.handleGateway) // authenticates for itself, to answer in the kind's manner
 	mux.HandleFunc(routeExitConnect, c.exit(c.handleExitConnect))
-	return mux
+	c.registerShareRoutes(mux)
+	return c.shareHandler(mux)
 }
 
 func bearer(r *http.Request) string {
@@ -57,7 +58,7 @@ func (c *Coordinator) user(next func(http.ResponseWriter, *http.Request, *Identi
 			return
 		}
 		if len(id.Groups) == 0 {
-			c.log.Warn("user's token carries no groups, so only grants naming the user directly can match; is the identity provider configured to put a groups claim in ID tokens?",
+			c.log.Warn("user's token carries no groups; group-based grants cannot match this token",
 				"user", id.Username, "user_id", id.UserID, "groups_claim", c.config().OIDC.GroupsClaim)
 		}
 		next(w, r, id)

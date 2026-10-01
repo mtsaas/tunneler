@@ -1,0 +1,130 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "config": {
+      "type": "object",
+      "properties": {
+        "sharing": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["domain", "control_hosts"],
+          "properties": {
+            "domain": {
+              "type": "string",
+              "maxLength": 191,
+              "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$",
+              "not": {"format": "ipv4"}
+            },
+            "control_hosts": {
+              "type": "array",
+              "minItems": 1,
+              "items": {"$ref": "#/definitions/controlAuthority"}
+            },
+            "allow_authenticated": {"type": "boolean"},
+            "grants": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "user": {"type": "string", "minLength": 1},
+                  "group": {"type": "string", "minLength": 1}
+                },
+                "oneOf": [
+                  {"required": ["user"], "not": {"required": ["group"]}},
+                  {"required": ["group"], "not": {"required": ["user"]}}
+                ]
+              }
+            },
+            "default_ttl": {"$ref": "#/definitions/duration"},
+            "max_ttl": {"$ref": "#/definitions/duration"},
+            "setup_ttl": {"$ref": "#/definitions/duration"},
+            "heartbeat_interval": {"$ref": "#/definitions/duration"},
+            "heartbeat_timeout": {"$ref": "#/definitions/duration"},
+            "authorization_lease": {"$ref": "#/definitions/duration"},
+            "operation_retention": {"$ref": "#/definitions/duration"},
+            "max_services": {"type": "integer", "minimum": 0, "maximum": 64},
+            "max_shares_per_user": {"$ref": "#/definitions/limit"},
+            "max_connections_per_share": {"$ref": "#/definitions/limit"},
+            "max_connections_per_user": {"$ref": "#/definitions/limit"},
+            "max_connections": {"$ref": "#/definitions/limit"},
+            "max_pending_dials_per_share": {"$ref": "#/definitions/limit"},
+            "max_operation_records": {"$ref": "#/definitions/limit"},
+            "max_operation_records_per_user": {"$ref": "#/definitions/limit"}
+          }
+        }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "className": {"type": "string"},
+        "host": {"type": "string"},
+        "tlsSecretName": {"type": "string"},
+        "annotations": {"$ref": "#/definitions/annotations"},
+        "preview": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "tlsSecretName": {"type": "string", "maxLength": 253, "pattern": "^$|^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$"},
+            "annotations": {"$ref": "#/definitions/annotations"}
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["ingress"],
+        "properties": {
+          "ingress": {
+            "required": ["preview"],
+            "properties": {
+              "preview": {"required": ["enabled"], "properties": {"enabled": {"const": true}}}
+            }
+          }
+        }
+      },
+      "then": {
+        "required": ["config"],
+        "properties": {
+          "config": {"required": ["sharing"]},
+          "ingress": {
+            "required": ["enabled"],
+            "properties": {
+              "enabled": {"const": true},
+              "preview": {
+                "required": ["tlsSecretName"],
+                "properties": {"tlsSecretName": {"minLength": 1}}
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "definitions": {
+    "controlAuthority": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 260,
+      "anyOf": [
+        {"format": "ipv4"},
+        {"format": "ipv6"},
+        {"pattern": "^localhost(?::[0-9]{1,5})?$"},
+        {"pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?::[0-9]{1,5})?$"},
+        {"pattern": "^\\[[0-9a-fA-F:]+\\](?::[0-9]{1,5})?$"}
+      ]
+    },
+    "duration": {
+      "type": "string",
+      "pattern": "^0$|^\\+?(?:(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:ns|us|µs|μs|ms|s|m|h))+$"
+    },
+    "limit": {"type": "integer", "minimum": 0},
+    "annotations": {"type": "object", "additionalProperties": {"type": "string"}}
+  }
+}

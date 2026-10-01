@@ -20,6 +20,9 @@ To offer a service through tunneler, and to connect to one, read
 [Services](docs/services/README.md): [Postgres](docs/services/postgres.md) and
 [Kubernetes](docs/services/kubernetes.md).
 
+To publish a local development service through a temporary URL, read
+[Share local HTTP services](docs/services/http-sharing.md).
+
 ### Installation
 
 Install the client. The script uses Go if you have it, otherwise Docker:

@@ -22,9 +22,10 @@ type Config struct {
 	// is believed only on connections from them, so that logs and the audit
 	// trail name the person's address and not the proxy's. Empty means the
 	// coordinator is reached directly, and the header is ignored.
-	TrustedProxies []string `json:"trusted_proxies"`
-	Admins         []string `json:"admins"` // groups that may list and revoke anyone's sessions
-	Grants         []Grant  `json:"grants"`
+	TrustedProxies []string       `json:"trusted_proxies"`
+	Admins         []string       `json:"admins"` // groups that may list and revoke anyone's sessions
+	Grants         []Grant        `json:"grants"`
+	Sharing        *SharingConfig `json:"sharing,omitempty"`
 	// InsecureExitAuth admits any exit node as whatever cluster it claims to
 	// be, without credentials. It exists for local development only: with it
 	// on, anyone who can reach the coordinator can receive users' database
@@ -152,6 +153,9 @@ func (c *Config) validate() error {
 	}
 	if c.SessionTTL <= 0 {
 		return errors.New("session_ttl must be positive")
+	}
+	if err := c.validateSharing(); err != nil {
+		return err
 	}
 	c.trustedProxies = nil
 	for _, cidr := range c.TrustedProxies {
