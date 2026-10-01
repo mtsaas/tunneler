@@ -9,6 +9,9 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
+# Additional labels on the Deployment and its pods.
+labels: {}
+
 replicas: 2
 
 # How the exit node may read the Secrets that TunnelService resources refer

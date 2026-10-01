@@ -242,7 +242,7 @@ func auditSubject(user, subject, cluster, service, kind string) slog.Attr {
 		"user", user, // the person, as the identity provider names them
 		"subject", subject, // the same person, by the provider's stable ID
 		"cluster", cluster,
-		"service", service,
+		"target_service", service,
 		"kind", kind,
 	)
 }

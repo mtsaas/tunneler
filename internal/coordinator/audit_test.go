@@ -51,7 +51,7 @@ func TestAuditRecordsShareFields(t *testing.T) {
 		t.Fatalf("want a refusal and a release, got %d records:\n%s", len(records), audit.String())
 	}
 	checkAuditFields(t, records)
-	if denied := records[0]; denied["cluster"] != "prod" || denied["service"] != "orders" {
+	if denied := records[0]; denied["cluster"] != "prod" || denied["target_service"] != "orders" {
 		t.Errorf("a refusal should name what the person asked for: %v", denied)
 	}
 }
@@ -143,7 +143,7 @@ func auditRecords(t *testing.T, trail string) []map[string]any {
 func checkAuditFields(t *testing.T, records []map[string]any) {
 	t.Helper()
 	for _, rec := range records {
-		for _, k := range []string{"user", "subject", "cluster", "service", "kind"} {
+		for _, k := range []string{"user", "subject", "cluster", "target_service", "kind"} {
 			if _, ok := rec[k].(string); !ok {
 				t.Errorf("record %q lacks %q: %v", rec["msg"], k, rec)
 			}

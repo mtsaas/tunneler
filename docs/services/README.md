@@ -155,19 +155,22 @@ person. `tunneler connect` tells the person so each time.
 
 The coordinator writes an audit record for all that a person does through
 it. Each record is one JSON line in the log of the coordinator, with
-`"audit":true`. Records of all kinds of service have these fields:
+`"audit":true`. The JSON log records do not contain a `service` field. The
+Helm charts expose a `labels` value for adding labels to their workloads and
+pods, so a log collector can assign its own service name.
+Audit records for every kind of target service have these fields:
 
 | Field | Meaning |
 |---|---|
 | `user` | The person, as the identity provider names them |
 | `subject` | The same person, by the permanent ID from the identity provider |
 | `cluster` | The cluster of the service |
-| `service` | The name of the service |
+| `target_service` | The name of the service being accessed |
 | `kind` | `postgres`, `redis`, or `kubernetes` |
 | `remote` | The address that the request came from. Behind an ingress, set `trusted_proxies` in the configuration of the coordinator. Without it, this is the address of the ingress |
 
 Every record has all of these fields. A field that does not apply is
-empty, for example `service` in a record about a cluster. A record of a
+empty, for example `target_service` in a record about a cluster. A record of a
 refusal names what the person asked for.
 
 Thus one search finds all that a person did, or all that occurred on a
@@ -175,6 +178,7 @@ service, for all kinds. For example, in a log system that has these fields:
 
 ```
 audit:true user:alice@example.com cluster:prod
+audit:true cluster:prod target_service:shop/postgres
 ```
 
 Each kind adds its own fields, for example the SQL statement or the

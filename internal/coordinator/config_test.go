@@ -177,7 +177,7 @@ func TestAuditFields(t *testing.T) {
 	viaSession := render(s.attrs())
 	viaGateway := render(auditSubject("alice@example.com", "sub-1", "prod", "tunneler-kubernetes", "kubernetes"))
 
-	for _, k := range []string{"user", "subject", "cluster", "service", "kind"} {
+	for _, k := range []string{"user", "subject", "cluster", "target_service", "kind"} {
 		if _, ok := viaSession[k].(string); !ok {
 			t.Errorf("a session's record lacks top-level %q: %v", k, viaSession)
 		}

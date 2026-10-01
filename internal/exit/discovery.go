@@ -265,7 +265,7 @@ func (d *Discovery) upsert(ctx context.Context, obj any) {
 	svc.report = func(ctx context.Context, ready bool, reason, message string) {
 		d.setStatus(ctx, ts, ready, reason, message)
 	}
-	log.Info("TunnelService defines a service; checking that it is reachable", "service", svc.advert.Name,
+	log.Info("TunnelService defines a service; checking that it is reachable", "target_service", svc.advert.Name,
 		"kind", ts.Spec.Kind, "addr", svc.backend.Addr(), "labels", labels, "grantable_roles", ts.Spec.GrantableRoles)
 
 	d.mu.Lock()
