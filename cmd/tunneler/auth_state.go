@@ -90,7 +90,7 @@ func lockAuthState(ctx context.Context, path string) (func(), error) {
 			return nil, err
 		}
 		if ok {
-			return func() { releaseAuthLock(f); f.Close() }, nil
+			return func() { f.Close() }, nil
 		}
 		timer := time.NewTimer(25 * time.Millisecond)
 		select {
@@ -107,31 +107,7 @@ func lockAuthState(ctx context.Context, path string) (func(), error) {
 // complete state, so concurrent readers see either complete version.
 func writeAuthState(path string, state *authState) error {
 	state.Revision = rand.Text()
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return err
-	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".auth-state-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	if err := f.Chmod(0o600); err != nil {
-		f.Close()
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), path)
+	return writePrivateState(path, state)
 }
 
 func refreshedAuthState(state authState, tok *oauth2.Token) (authState, error) {

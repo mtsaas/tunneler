@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"regexp"
 	"strings"
 	"time"
 
@@ -155,19 +156,8 @@ func (c *Config) validateSharing() error {
 	return nil
 }
 
+var sharingDomainPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
+
 func sharingDomainValid(domain string) bool {
-	if len(domain) > 253 || !strings.Contains(domain, ".") {
-		return false
-	}
-	for _, label := range strings.Split(domain, ".") {
-		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-			return false
-		}
-		for _, c := range label {
-			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
-				return false
-			}
-		}
-	}
-	return true
+	return len(domain) <= 253 && sharingDomainPattern.MatchString(domain)
 }

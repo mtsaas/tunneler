@@ -146,13 +146,7 @@ func (m *shareManager) inspect(id *Identity, shareID string, admin bool) (*api.S
 	if err != nil {
 		return nil, err
 	}
-	if reason := s.expiredReasonLocked(time.Now()); reason != "" {
-		m.mu.Unlock()
-		s.end(reason)
-		m.mu.Lock()
-	}
-	info := cloneShare(s.info)
-	return &info, nil
+	return m.snapshotLocked(s, time.Now()), nil
 }
 
 func (m *shareManager) operation(id *Identity, requestID string) (*api.Share, error) {
@@ -165,11 +159,16 @@ func (m *shareManager) operation(id *Identity, requestID string) (*api.Share, er
 	if s == nil {
 		return nil, shareAPIError(404, "unknown_share", "operation is unknown or its retention window expired")
 	}
-	if reason := s.expiredReasonLocked(time.Now()); reason != "" {
+	return m.snapshotLocked(s, time.Now()), nil
+}
+
+// Called with m.mu held; termination releases it while closing connections.
+func (m *shareManager) snapshotLocked(s *sharedServiceSet, now time.Time) *api.Share {
+	if reason := s.expiredReasonLocked(now); reason != "" {
 		m.mu.Unlock()
 		s.end(reason)
 		m.mu.Lock()
 	}
 	info := cloneShare(s.info)
-	return &info, nil
+	return &info
 }

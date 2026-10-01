@@ -3,23 +3,23 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/mtsaas/tunneler/internal/api"
-	"github.com/mtsaas/tunneler/internal/tunnel"
+	"github.com/mtsaas/tunneler/internal/coordinator"
+	"github.com/mtsaas/tunneler/internal/testutil"
 )
 
 func TestShareParsingAndImmutableLocalOperation(t *testing.T) {
@@ -27,25 +27,15 @@ func TestShareParsingAndImmutableLocalOperation(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(os.Getenv("HOME"), ".config"))
 	opts := shareOptions{public: true, requestID: "operation-123", waitReady: time.Minute, ttl: "60m"}
 	request, targets, err := parseShare([]string{"web=3000", "api=[::1]:8080"}, opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if targets["web"] != "127.0.0.1:3000" || targets["api"] != "[::1]:8080" || request.TTL != "1h0m0s" {
-		t.Fatalf("bad parsed manifest: %+v %v", request, targets)
-	}
+	testutil.NoError(t, err)
+	testutil.Require(t, targets["web"] == "127.0.0.1:3000" && targets["api"] == "[::1]:8080" && request.TTL == "1h0m0s", "bad parsed manifest: %+v %v", request, targets)
 	ordered, _, err := parseShare([]string{"api=[::1]:8080", "web=127.0.0.1:03000"}, opts)
-	if err != nil || ordered.ManifestDigest != request.ManifestDigest {
-		t.Fatalf("equivalent manifest digest differs: %v", err)
-	}
+	testutil.Require(t, err == nil && ordered.ManifestDigest == request.ManifestDigest, "equivalent manifest digest differs: %v", err)
 	local, existed, err := prepareShareLocal("https://control.example", request, targets, true)
-	if err != nil || existed {
-		t.Fatalf("first operation: %v, %v", existed, err)
-	}
+	testutil.Require(t, err == nil && !existed, "first operation: %v, %v", existed, err)
 	ordered.StartupDeadline = ordered.StartupDeadline.Add(time.Hour)
 	replayed, existed, err := prepareShareLocal(local.Server, ordered, targets, true)
-	if err != nil || !existed || !replayed.Request.StartupDeadline.Equal(request.StartupDeadline) {
-		t.Fatalf("retry changed immutable deadline: %+v %v", replayed, err)
-	}
+	testutil.Require(t, err == nil && existed && replayed.Request.StartupDeadline.Equal(request.StartupDeadline), "retry changed immutable deadline: %+v %v", replayed, err)
 	ordered.ManifestDigest = "different"
 	_, _, err = prepareShareLocal(local.Server, ordered, targets, true)
 	if code, status := classify(err); code != "idempotency_conflict" || status != exitUsage {
@@ -65,9 +55,7 @@ func TestShareParsingAndImmutableLocalOperation(t *testing.T) {
 func TestShareJSONAndStableErrorCodes(t *testing.T) {
 	s := &api.Share{ID: "share", State: "ready", Services: []api.ShareService{{ID: "svc", Name: "web", URL: "https://web.preview.example"}}}
 	data, _ := json.Marshal(shareResult(s, nil))
-	if !bytes.Contains(data, []byte(`"local_target":null`)) || !bytes.Contains(data, []byte(`"publisher":null`)) {
-		t.Fatalf("remote discovery invented local data: %s", data)
-	}
+	testutil.Require(t, bytes.Contains(data, []byte(`"local_target":null`)) && bytes.Contains(data, []byte(`"publisher":null`)), "remote discovery invented local data: %s", data)
 	for _, tc := range []struct {
 		code               string
 		httpStatus, status int
@@ -89,13 +77,9 @@ func handoffLocal(t *testing.T) *shareLocal {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(os.Getenv("HOME"), ".config"))
 	request, targets, err := parseShare([]string{"web=3000"}, shareOptions{public: true, requestID: "handoff-123", waitReady: time.Minute})
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	local, _, err := prepareShareLocal("https://control.example", request, targets, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	return local
 }
 
@@ -118,19 +102,11 @@ func TestHandoffAcknowledgementAndLostConfirmation(t *testing.T) {
 	ack := make(chan error, 1)
 	ack <- nil
 	w := &failSecondWrite{}
-	if err := acceptShareHandoff(context.Background(), ack, json.NewEncoder(w), local, s); err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, acceptShareHandoff(context.Background(), ack, json.NewEncoder(w), local, s))
 	persisted, err := readShareLocal(local.Path)
-	if err != nil || persisted.State != "ready" {
-		t.Fatalf("lost confirmation discarded committed ownership: %+v %v", persisted, err)
-	}
-	if bytes.Contains(w.Bytes(), []byte(local.Nonce)) || bytes.Contains(w.Bytes(), []byte(`"nonce"`)) {
-		t.Fatal("readiness exposed private IPC nonce")
-	}
-	if err := updateShareLocal(local, "ended", nil, ""); err != nil {
-		t.Fatal(err)
-	}
+	testutil.Require(t, err == nil && persisted.State == "ready", "lost confirmation discarded committed ownership: %+v %v", persisted, err)
+	testutil.Require(t, !bytes.Contains(w.Bytes(), []byte(local.Nonce)) && !bytes.Contains(w.Bytes(), []byte(`"nonce"`)), "readiness exposed private IPC nonce")
+	testutil.NoError(t, updateShareLocal(local, "ended", nil, ""))
 	if err := updateShareLocal(local, "ready", s, ""); err == nil {
 		t.Fatal("terminal local state returned to ready")
 	}
@@ -151,17 +127,8 @@ func TestHandoffRejectsLateACKAfterTerminalControl(t *testing.T) {
 	}
 	cancel()
 	ack <- nil
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("late ACK accepted after control cancellation")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("handoff ignored cancellation")
-	}
-	if bytes.Contains(output.Bytes(), []byte(`"type":"accepted"`)) || local.snapshot().State == "ready" {
-		t.Fatal("terminal control emitted readiness")
-	}
+	testutil.Require(t, testutil.Receive(t, done, time.Second, "handoff ignored cancellation") != nil, "late ACK accepted after control cancellation")
+	testutil.Require(t, !bytes.Contains(output.Bytes(), []byte(`"type":"accepted"`)) && local.snapshot().State != "ready", "terminal control emitted readiness")
 }
 
 func TestPrivateIPCRequiresNonceAndStopsLocally(t *testing.T) {
@@ -171,9 +138,7 @@ func TestPrivateIPCRequiresNonceAndStopsLocally(t *testing.T) {
 	stopped := make(chan struct{})
 	go func() { <-ctx.Done(); close(stopped) }()
 	ln, err := startShareIPC(ctx, local, cancel, stopped)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	defer ln.Close()
 	wrong := local.snapshot()
 	wrong.Nonce = "wrong"
@@ -183,9 +148,7 @@ func TestPrivateIPCRequiresNonceAndStopsLocally(t *testing.T) {
 	if reply, err := shareIPC(context.Background(), local, "inspect"); err != nil || reply.Local.WorkerID != local.WorkerID {
 		t.Fatalf("authenticated discovery failed: %v", err)
 	}
-	if !stopShareLocal(context.Background(), local) {
-		t.Fatal("local stop was not confirmed")
-	}
+	testutil.Require(t, stopShareLocal(context.Background(), local), "local stop was not confirmed")
 }
 
 func TestStartFailureIncludesGeneratedOperationID(t *testing.T) {
@@ -212,9 +175,7 @@ func TestStartFailureIncludesGeneratedOperationID(t *testing.T) {
 		RequestID string `json:"request_id"`
 	}
 	json.Unmarshal([]byte(errOut), &failure)
-	if out != "" || status != 6 || failure.Code != "upstream_unavailable" || requestID == "" || failure.RequestID != requestID {
-		t.Fatalf("ambiguous start cannot be recovered: stdout=%q stderr=%q status=%d", out, errOut, status)
-	}
+	testutil.Require(t, out == "" && status == 6 && failure.Code == "upstream_unavailable" && requestID != "" && failure.RequestID == requestID, "ambiguous start cannot be recovered: stdout=%q stderr=%q status=%d", out, errOut, status)
 }
 
 func TestStartPreflightHonorsReadinessDeadline(t *testing.T) {
@@ -233,9 +194,7 @@ func TestStartPreflightHonorsReadinessDeadline(t *testing.T) {
 		RequestID string `json:"request_id"`
 	}
 	json.Unmarshal([]byte(errOut), &failure)
-	if time.Since(started) > time.Second || status != 6 || failure.Code != "startup_timeout" || failure.RequestID != "bounded-preflight" {
-		t.Fatalf("preflight ignored deadline: status=%d stderr=%s", status, errOut)
-	}
+	testutil.Require(t, time.Since(started) <= time.Second && status == 6 && failure.Code == "startup_timeout" && failure.RequestID == "bounded-preflight", "preflight ignored deadline: status=%d stderr=%s", status, errOut)
 }
 
 func installShareLogin(t *testing.T, server string) {
@@ -246,118 +205,32 @@ func installShareLogin(t *testing.T, server string) {
 	t.Setenv("TUNNELER_NO_UPDATE_CHECK", "1")
 	dir, _ := os.UserConfigDir()
 	os.MkdirAll(filepath.Join(dir, "tunneler"), 0o700)
-	claims, _ := json.Marshal(map[string]any{"exp": time.Now().Add(time.Hour).Unix()})
-	state, _ := json.Marshal(map[string]string{"server": server, "id_token": "h." + base64.RawURLEncoding.EncodeToString(claims) + ".s"})
-	if err := os.WriteFile(filepath.Join(dir, "tunneler", "config.json"), state, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	state, _ := json.Marshal(authState{Server: server, IDToken: authTestJWT(time.Now().Add(time.Hour))})
+	testutil.NoError(t, os.WriteFile(filepath.Join(dir, "tunneler", "config.json"), state, 0o600))
 }
 
-type shareServerFixture struct {
-	mu       sync.Mutex
-	share    *api.Share
-	control  io.Closer
-	data     chan io.Closer
-	attaches atomic.Int32
-}
-
-func (f *shareServerFixture) copy() *api.Share {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.share == nil {
-		return nil
-	}
-	copy := *f.share
-	return &copy
-}
-
-func (f *shareServerFixture) handler(w http.ResponseWriter, r *http.Request) {
-	s := f.copy()
-	switch {
-	case r.Method == "POST" && r.URL.Path == "/v1/shares":
-		var request api.ShareRequest
-		json.NewDecoder(r.Body).Decode(&request)
-		f.mu.Lock()
-		if f.share == nil {
-			f.share = &api.Share{SchemaVersion: 1, ID: "share-fixture", RequestID: request.RequestID, Access: "public", State: "pending", StartupDeadline: request.StartupDeadline, ExpiresAt: time.Now().Add(time.Hour), AuthorizationDeadline: time.Now().Add(90 * time.Second)}
-			for _, service := range request.Services {
-				f.share.Services = append(f.share.Services, api.ShareService{ID: "svc-" + service.Name, Name: service.Name, Protocol: "http", URL: "https://" + service.Name + ".preview.example"})
-			}
+func shareTestServer(t *testing.T) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	handler := slog.NewTextHandler(io.Discard, nil)
+	c, err := coordinator.New(&coordinator.Config{
+		Database: filepath.Join(t.TempDir(), "coordinator.db"),
+		Sharing:  &coordinator.SharingConfig{Domain: "preview.example", ControlHosts: []string{"127.0.0.1"}, AllowAuthenticated: true},
+	}, func(_ context.Context, token string) (*coordinator.Identity, error) {
+		if token == "" {
+			return nil, errors.New("missing token")
 		}
-		f.mu.Unlock()
-		json.NewEncoder(w).Encode(f.copy())
-	case strings.HasPrefix(r.URL.Path, "/v1/share-operations/"):
-		if s == nil {
-			w.WriteHeader(404)
-			json.NewEncoder(w).Encode(api.Error{Code: "unknown_share", Message: "unknown operation"})
-			return
+		return &coordinator.Identity{Issuer: "https://issuer.test", Subject: "cli-user", Username: "cli-user@test", ExpiresAt: time.Now().Add(time.Hour)}, nil
+	}, slog.New(handler), handler)
+	testutil.NoError(t, err)
+	attaches := new(atomic.Int32)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/control") {
+			attaches.Add(1)
 		}
-		json.NewEncoder(w).Encode(s)
-	case strings.HasSuffix(r.URL.Path, "/control"):
-		conn, err := tunnel.Accept(w, r)
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-		f.attaches.Add(1)
-		f.mu.Lock()
-		f.control = conn
-		f.share.Generation = "generation"
-		f.mu.Unlock()
-		if json.NewEncoder(conn).Encode(api.PublisherMessage{Type: "attached", Generation: "generation", Share: f.copy()}) != nil {
-			return
-		}
-		for _, service := range s.Services {
-			if json.NewEncoder(conn).Encode(api.PublisherMessage{Type: "dial", Generation: "generation", ServiceID: service.ID, ConnectionID: "probe-" + service.ID}) != nil {
-				return
-			}
-			select {
-			case data := <-f.data:
-				data.Close()
-			case <-r.Context().Done():
-				return
-			case <-time.After(5 * time.Second):
-				return
-			}
-		}
-		f.mu.Lock()
-		f.share.State = "ready"
-		now := time.Now()
-		f.share.ReadyAt = &now
-		f.mu.Unlock()
-		if json.NewEncoder(conn).Encode(api.PublisherMessage{Type: "ready", Share: f.copy()}) != nil {
-			return
-		}
-		io.Copy(io.Discard, conn)
-	case strings.HasSuffix(r.URL.Path, "/data"):
-		conn, err := tunnel.Accept(w, r)
-		if err != nil {
-			return
-		}
-		select {
-		case f.data <- conn:
-		case <-time.After(5 * time.Second):
-			conn.Close()
-		}
-	case strings.HasSuffix(r.URL.Path, "/renew"):
-		f.mu.Lock()
-		f.share.AuthorizationDeadline = time.Now().Add(90 * time.Second)
-		f.mu.Unlock()
-		json.NewEncoder(w).Encode(f.copy())
-	case r.Method == "DELETE":
-		f.mu.Lock()
-		f.share.State, f.share.TerminalReason = "ended", "stopped"
-		control := f.control
-		f.mu.Unlock()
-		if control != nil {
-			control.Close()
-		}
-		json.NewEncoder(w).Encode(f.copy())
-	case r.Method == "GET" && s != nil:
-		json.NewEncoder(w).Encode(s)
-	default:
-		w.WriteHeader(404)
-	}
+		c.Handler().ServeHTTP(w, r)
+	}))
+	t.Cleanup(func() { c.Close(); server.Close() })
+	return server, attaches
 }
 
 func TestShareWorkerProcess(t *testing.T) {
@@ -375,9 +248,7 @@ func TestShareWorkerProcess(t *testing.T) {
 func TestDetachedWorkerReadyRecoveryAndStop(t *testing.T) {
 	localApp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("local")) }))
 	defer localApp.Close()
-	f := &shareServerFixture{data: make(chan io.Closer, 1)}
-	srv := httptest.NewServer(http.HandlerFunc(f.handler))
-	defer srv.Close()
+	srv, attaches := shareTestServer(t)
 	installShareLogin(t, srv.URL)
 	t.Setenv("TUNNELER_SHARE_TEST_WORKER", "1")
 	original := shareWorkerCommand
@@ -386,13 +257,9 @@ func TestDetachedWorkerReadyRecoveryAndStop(t *testing.T) {
 	}
 	defer func() { shareWorkerCommand = original }()
 	request, targets, err := parseShare([]string{"web=" + strings.TrimPrefix(localApp.URL, "http://")}, shareOptions{public: true, requestID: "detach-operation", waitReady: 10 * time.Second})
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	local, _, err := prepareShareLocal(srv.URL, request, targets, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
@@ -403,20 +270,12 @@ func TestDetachedWorkerReadyRecoveryAndStop(t *testing.T) {
 		log, _ := os.ReadFile(filepath.Join(filepath.Dir(local.Path), "worker.log"))
 		t.Fatalf("detach: %v\n%s", err, log)
 	}
-	if out.State != "ready" || out.Publisher == nil || out.Publisher.State != "ready" || !out.Readiness.PublisherPathTCP || out.Readiness.PublicEdgeVerified {
-		t.Fatalf("incomplete acknowledged readiness: %+v", out)
-	}
+	testutil.Require(t, out.State == "ready" && out.Publisher != nil && out.Publisher.State == "ready" && out.Readiness.PublisherPathTCP && !out.Readiness.PublicEdgeVerified, "incomplete acknowledged readiness: %+v", out)
 	c, err := authed(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	recovered, err := recoverShareStart(context.Background(), c, local)
-	if err != nil || recovered.ID != out.ID || recovered.Publisher == nil || f.attaches.Load() != 1 {
-		t.Fatalf("recovery replaced worker: %+v %v", recovered, err)
-	}
-	if !stopShareLocal(context.Background(), local) {
-		t.Fatal("local stop was not confirmed")
-	}
+	testutil.Require(t, err == nil && recovered.ID == out.ID && recovered.Publisher != nil && attaches.Load() == 1, "recovery replaced worker: %+v %v", recovered, err)
+	testutil.Require(t, stopShareLocal(context.Background(), local), "local stop was not confirmed")
 	if _, err := c.StopShare(context.Background(), out.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -436,13 +295,9 @@ func TestOfflineStopReportsPendingRemoteCleanup(t *testing.T) {
 	installShareLogin(t, srv.URL)
 	request, targets, _ := parseShare([]string{"web=3000"}, shareOptions{public: true, requestID: "offline-operation", waitReady: time.Minute})
 	local, _, err := prepareShareLocal(srv.URL, request, targets, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	s := &api.Share{ID: "offline-share", State: "ready", ExpiresAt: time.Now().Add(time.Hour), AuthorizationDeadline: time.Now().Add(-time.Minute)}
-	if err := updateShareLocal(local, "ended", s, ""); err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, updateShareLocal(local, "ended", s, ""))
 	srv.Close()
 	r, w, _ := os.Pipe()
 	previous := os.Stdout
@@ -460,9 +315,7 @@ func TestOfflineStopReportsPendingRemoteCleanup(t *testing.T) {
 	var result shareStopOutput
 	json.Unmarshal(out, &result)
 	code, status := classify(err)
-	if code != "cleanup_pending" || status != 6 || !result.LocalStopped || result.RemoteStopped || result.CleanupDeadline == nil || !result.CleanupDeadline.Equal(s.ExpiresAt) {
-		t.Fatalf("offline stop lied: %s/%d %s", code, status, out)
-	}
+	testutil.Require(t, code == "cleanup_pending" && status == 6 && result.LocalStopped && !result.RemoteStopped && result.CleanupDeadline != nil && result.CleanupDeadline.Equal(s.ExpiresAt), "offline stop lied: %s/%d %s", code, status, out)
 }
 
 func TestDetachedParentEOFBeforeReadinessCancelsCreate(t *testing.T) {
@@ -480,46 +333,26 @@ func TestDetachedParentEOFBeforeReadinessCancelsCreate(t *testing.T) {
 	installShareLogin(t, srv.URL)
 	t.Setenv("TUNNELER_SHARE_TEST_WORKER", "1")
 	request, targets, err := parseShare([]string{"web=3000"}, shareOptions{public: true, requestID: "parent-eof-operation", waitReady: 15 * time.Second})
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	local, _, err := prepareShareLocal(srv.URL, request, targets, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	executable, _ := os.Executable()
 	command := exec.Command(executable, "-test.run=^TestShareWorkerProcess$")
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	stdin, err := command.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	defer stdin.Close()
-	if err := command.Start(); err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, command.Start())
 	defer command.Process.Kill()
 	done := make(chan error, 1)
 	go func() { done <- command.Wait() }()
-	if err := json.NewEncoder(stdin).Encode(shareWorkerConfig{local.shareLocalData, local.Path}); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("worker never began create")
-	}
+	testutil.NoError(t, json.NewEncoder(stdin).Encode(shareWorkerConfig{local.shareLocalData, local.Path}))
+	testutil.Receive(t, started, 5*time.Second, "worker never began create")
 	stdin.Close()
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("parent EOF left pre-ready worker alive")
-	}
+	testutil.Receive(t, done, 3*time.Second, "parent EOF left pre-ready worker alive")
 	persisted, err := readShareLocal(local.Path)
-	if err != nil || persisted.State != "ended" {
-		t.Fatalf("parent EOF left nonterminal state: %+v %v", persisted, err)
-	}
+	testutil.Require(t, err == nil && persisted.State == "ended", "parent EOF left nonterminal state: %+v %v", persisted, err)
 }
 
 func TestMissingACKNeverCommitsReadiness(t *testing.T) {
@@ -528,10 +361,6 @@ func TestMissingACKNeverCommitsReadiness(t *testing.T) {
 	ack <- io.EOF
 	var output bytes.Buffer
 	err := acceptShareHandoff(context.Background(), ack, json.NewEncoder(&output), local, &api.Share{ID: "share", State: "ready"})
-	if err == nil || local.snapshot().State == "ready" || bytes.Contains(output.Bytes(), []byte(`"type":"accepted"`)) {
-		t.Fatal("parent EOF committed detached ownership")
-	}
-	if !errors.Is(err, io.EOF) {
-		t.Fatalf("EOF cause was lost: %v", err)
-	}
+	testutil.Require(t, err != nil && local.snapshot().State != "ready" && !bytes.Contains(output.Bytes(), []byte(`"type":"accepted"`)), "parent EOF committed detached ownership")
+	testutil.Require(t, errors.Is(err, io.EOF), "EOF cause was lost: %v", err)
 }

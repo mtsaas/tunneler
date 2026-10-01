@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mtsaas/tunneler/internal/testutil"
 )
 
 func TestSharingConfigIsolationAndValidation(t *testing.T) {
@@ -42,53 +44,35 @@ func TestSharingConfigIsolationAndValidation(t *testing.T) {
 			s := valid()
 			tt.change(s)
 			err := (&Config{Sharing: s}).validateSharing()
-			if (err == nil) != tt.valid {
-				t.Fatalf("validateSharing() = %v; valid=%v", err, tt.valid)
-			}
+			testutil.Require(t, (err == nil) == tt.valid, "validateSharing() = %v; valid=%v", err, tt.valid)
 		})
 	}
 }
 
 func TestSharingOperationRecordDefaults(t *testing.T) {
 	cfg := (&Config{Sharing: &SharingConfig{}}).sharingConfig()
-	if cfg.MaxOperationRecordsPerUser != 128 || cfg.MaxOperationRecords != 4096 {
-		t.Fatalf("operation record limits = per user %d, global %d", cfg.MaxOperationRecordsPerUser, cfg.MaxOperationRecords)
-	}
+	testutil.Require(t, cfg.MaxOperationRecordsPerUser == 128 && cfg.MaxOperationRecords == 4096, "operation record limits = per user %d, global %d", cfg.MaxOperationRecordsPerUser, cfg.MaxOperationRecords)
 }
 
 func TestPublishingNeedsSeparateGrant(t *testing.T) {
 	id := &Identity{Subject: "subject", UserID: "user-id", Username: "clark@example.com", Groups: []string{"developers"}}
 	cfg := &Config{Grants: []Grant{{Group: "developers", Labels: map[string]string{"cluster": "prod"}}}}
-	if cfg.canPublish(id) {
-		t.Fatal("cluster grant enabled publication")
-	}
+	testutil.Require(t, !cfg.canPublish(id), "cluster grant enabled publication")
 	cfg.Sharing = &SharingConfig{Grants: []PublishGrant{{Group: "others"}}}
-	if cfg.canPublish(id) {
-		t.Fatal("unrelated publishing grant enabled publication")
-	}
+	testutil.Require(t, !cfg.canPublish(id), "unrelated publishing grant enabled publication")
 	cfg.Sharing.Grants = []PublishGrant{{User: "user-id"}}
-	if !cfg.canPublish(id) {
-		t.Fatal("matching user grant did not allow publishing")
-	}
+	testutil.Require(t, cfg.canPublish(id), "matching user grant did not allow publishing")
 	cfg.Sharing.Grants = []PublishGrant{{Group: "developers"}}
-	if !cfg.canPublish(id) {
-		t.Fatal("matching group grant did not allow publishing")
-	}
+	testutil.Require(t, cfg.canPublish(id), "matching group grant did not allow publishing")
 }
 
 func TestPublishingAllowsVerifiedAuthenticatedUsers(t *testing.T) {
 	id := &Identity{Issuer: "https://issuer.test", Subject: "subject", Username: "user@example.com", ExpiresAt: time.Now().Add(time.Hour)}
 	cfg := &Config{Sharing: &SharingConfig{}}
-	if cfg.canPublish(id) {
-		t.Fatal("authenticated publishing was enabled by default")
-	}
+	testutil.Require(t, !cfg.canPublish(id), "authenticated publishing was enabled by default")
 	cfg.Sharing.AllowAuthenticated = true
-	if !cfg.canPublish(id) {
-		t.Fatal("verified user without groups/grants cannot publish")
-	}
-	if cfg.canPublish(nil) {
-		t.Fatal("nil identity can publish")
-	}
+	testutil.Require(t, cfg.canPublish(id), "verified user without groups/grants cannot publish")
+	testutil.Require(t, !cfg.canPublish(nil), "nil identity can publish")
 	for _, test := range []struct {
 		name   string
 		change func(*Identity)
@@ -102,9 +86,7 @@ func TestPublishingAllowsVerifiedAuthenticatedUsers(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			invalid := *id
 			test.change(&invalid)
-			if cfg.canPublish(&invalid) {
-				t.Fatal("unverified/expired identity can publish")
-			}
+			testutil.Require(t, !cfg.canPublish(&invalid), "unverified/expired identity can publish")
 		})
 	}
 }

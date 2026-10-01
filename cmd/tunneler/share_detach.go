@@ -112,12 +112,6 @@ func acceptShareHandoff(ctx context.Context, acknowledged <-chan error, encoder 
 	case <-timer.C:
 		return errors.New("detached ownership acknowledgement timed out")
 	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if !time.Now().Before(local.Request.StartupDeadline) {
-		return errors.New("detached ownership deadline passed")
-	}
 	if err := commitShareHandoff(ctx, local, s); err != nil {
 		return err
 	}
@@ -144,7 +138,7 @@ func commitShareHandoff(ctx context.Context, local *shareLocal, s *api.Share) er
 		return errors.New("detached ownership deadline passed")
 	}
 	local.State, local.Share = "ready", s
-	return writeShareLocalLocked(local)
+	return writePrivateState(local.Path, local.shareLocalData)
 }
 
 func detachShare(parent context.Context, local *shareLocal) (shareOutput, error) {

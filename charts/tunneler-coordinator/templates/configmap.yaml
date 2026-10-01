@@ -5,7 +5,9 @@
 {{- if and (not .Values.config.exit_issuers) (not .Values.config.insecure_exit_auth) -}}
 {{- fail "config.exit_issuers is required: without it no exit node can authenticate (or set config.insecure_exit_auth for local development)" -}}
 {{- end -}}
-{{- include "tunneler-coordinator.validateSharingIngress" . -}}
+{{- if and .Values.config.sharing .Values.ingress.enabled (not (has .Values.ingress.host .Values.config.sharing.control_hosts)) -}}
+{{- fail "ingress.host must appear in config.sharing.control_hosts when sharing and ingress are enabled" -}}
+{{- end -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:

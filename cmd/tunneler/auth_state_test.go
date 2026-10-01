@@ -25,6 +25,7 @@ import (
 
 	"github.com/mtsaas/tunneler/internal/api"
 	"github.com/mtsaas/tunneler/internal/coordinator"
+	"github.com/mtsaas/tunneler/internal/testutil"
 	"golang.org/x/oauth2"
 )
 
@@ -36,9 +37,7 @@ func authTestJWT(expiry time.Time) string {
 func authTestClient(t *testing.T, path string) *client {
 	t.Helper()
 	state, err := readAuthState(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	c := &client{path: path, state: state, saved: state, generation: state.Generation}
 	c.Client = &coordinator.Client{Server: state.Server, Token: c.token, HTTP: &http.Client{Transport: logTransport{}}}
 	return c
@@ -47,13 +46,9 @@ func authTestClient(t *testing.T, path string) *client {
 func authTestWrite(t *testing.T, path string, state authState) {
 	t.Helper()
 	unlock, err := lockAuthState(t.Context(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	defer unlock()
-	if err := writeAuthState(path, &state); err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, writeAuthState(path, &state))
 }
 
 // The helper runs in a fresh process, so the test cannot pass using only the
@@ -66,9 +61,7 @@ func TestAuthProcessHelper(t *testing.T) {
 	path := os.Getenv("TUNNELER_AUTH_TEST_PATH")
 	if mode == "hold" {
 		unlock, err := lockAuthState(t.Context(), path)
-		if err != nil {
-			t.Fatal(err)
-		}
+		testutil.NoError(t, err)
 		defer unlock()
 		fmt.Println("locked")
 		io.Copy(io.Discard, os.Stdin)
@@ -76,13 +69,9 @@ func TestAuthProcessHelper(t *testing.T) {
 	}
 	if certPath := os.Getenv("TUNNELER_AUTH_TEST_CA"); certPath != "" {
 		cert, err := os.ReadFile(certPath)
-		if err != nil {
-			t.Fatal(err)
-		}
+		testutil.NoError(t, err)
 		roots := x509.NewCertPool()
-		if !roots.AppendCertsFromPEM(cert) {
-			t.Fatal("invalid test CA")
-		}
+		testutil.Require(t, roots.AppendCertsFromPEM(cert), "invalid test CA")
 		transport := http.DefaultTransport.(*http.Transport).Clone()
 		transport.TLSClientConfig = &tls.Config{RootCAs: roots}
 		http.DefaultTransport = transport
@@ -95,9 +84,7 @@ func TestAuthProcessHelper(t *testing.T) {
 func authHelperCommand(t *testing.T, path, mode string) *exec.Cmd {
 	t.Helper()
 	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestAuthProcessHelper$")
 	cmd.Env = append(os.Environ(), "TUNNELER_AUTH_TEST_MODE="+mode, "TUNNELER_AUTH_TEST_PATH="+path)
 	return cmd
@@ -127,9 +114,7 @@ func TestAuthRefreshAcrossProcesses(t *testing.T) {
 	}))
 	defer server.Close()
 	certPath := filepath.Join(t.TempDir(), "ca.pem")
-	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0o600))
 	t.Setenv("TUNNELER_AUTH_TEST_CA", certPath)
 	path := filepath.Join(t.TempDir(), "tunneler", "config.json")
 	authTestWrite(t, path, authState{Server: server.URL, Issuer: server.URL + "/oidc", ClientID: "test", IDToken: authTestJWT(time.Now().Add(-time.Hour)), RefreshToken: "refresh-0", Generation: "same-login"})
@@ -146,29 +131,19 @@ func TestAuthRefreshAcrossProcesses(t *testing.T) {
 		t.Fatalf("refresh requests = %d, want one serialized rotation", got)
 	}
 	state, err := readAuthState(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if state.IDToken != fresh || state.RefreshToken != "refresh-1" || state.Generation != "same-login" {
-		t.Fatal("refresh did not preserve the login generation and rotated credentials")
-	}
+	testutil.NoError(t, err)
+	testutil.Require(t, state.IDToken == fresh && state.RefreshToken == "refresh-1" && state.Generation == "same-login", "refresh did not preserve the login generation and rotated credentials")
 }
 
 func TestAuthLockCancellationAndProcessExit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tunneler", "config.json")
 	cmd := authHelperCommand(t, path, "hold")
 	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	defer stdin.Close()
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, cmd.Start())
 	defer cmd.Process.Kill()
 	if line, err := bufio.NewReader(stdout).ReadString('\n'); err != nil || line != "locked\n" {
 		t.Fatalf("child lock readiness: %q, %v", line, err)
@@ -181,16 +156,12 @@ func TestAuthLockCancellationAndProcessExit(t *testing.T) {
 		}
 		t.Fatalf("lock cancellation = %v", err)
 	}
-	if err := cmd.Process.Kill(); err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, cmd.Process.Kill())
 	cmd.Wait()
 	ctx, cancel = context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	unlock, err := lockAuthState(ctx, path)
-	if err != nil {
-		t.Fatalf("crashed process kept the lock: %v", err)
-	}
+	testutil.Require(t, err == nil, "crashed process kept the lock: %v", err)
 	unlock()
 }
 
@@ -198,9 +169,7 @@ func TestAuthStaleLoginCannotRestoreClearedCredentials(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tunneler", "config.json")
 	authTestWrite(t, path, authState{Server: "https://coordinator.example", IDToken: authTestJWT(time.Now().Add(time.Hour)), RefreshToken: "old-refresh", Generation: "old-login"})
 	stale, current := authTestClient(t, path), authTestClient(t, path)
-	if err := current.setServer(t.Context(), current.Server); err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, current.setServer(t.Context(), current.Server))
 	tok := (&oauth2.Token{}).WithExtra(map[string]any{"id_token": authTestJWT(time.Now().Add(2 * time.Hour))})
 	if err := stale.storeLogin(t.Context(), tok, "https://issuer.test", "test"); !errors.Is(err, errNotLoggedIn) {
 		t.Fatalf("stale login write = %v", err)
@@ -209,21 +178,11 @@ func TestAuthStaleLoginCannotRestoreClearedCredentials(t *testing.T) {
 		t.Fatalf("old worker token = %v", err)
 	}
 	state, err := readAuthState(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if state.IDToken != "" || state.RefreshToken != "" {
-		t.Fatal("stale login resurrected credentials")
-	}
-	if err := current.storeLogin(t.Context(), tok, "https://issuer.test", "test"); err != nil {
-		t.Fatal(err)
-	}
-	if current.state.RefreshToken != "" {
-		t.Fatal("new login inherited another login's refresh token")
-	}
-	if current.state.Issuer != "https://issuer.test" || current.state.ClientID != "test" {
-		t.Fatal("new login lost its provider binding")
-	}
+	testutil.NoError(t, err)
+	testutil.Require(t, state.IDToken == "" && state.RefreshToken == "", "stale login resurrected credentials")
+	testutil.NoError(t, current.storeLogin(t.Context(), tok, "https://issuer.test", "test"))
+	testutil.Require(t, current.state.RefreshToken == "", "new login inherited another login's refresh token")
+	testutil.Require(t, current.state.Issuer == "https://issuer.test" && current.state.ClientID == "test", "new login lost its provider binding")
 	if _, err := stale.token(t.Context()); !errors.Is(err, errNotLoggedIn) {
 		t.Fatalf("old worker adopted a new login: %v", err)
 	}
@@ -238,9 +197,7 @@ func TestAuthReloadRejectsDeletedClearedOrChangedState(t *testing.T) {
 			c := authTestClient(t, path)
 			switch change {
 			case "delete":
-				if err := os.Remove(path); err != nil {
-					t.Fatal(err)
-				}
+				testutil.NoError(t, os.Remove(path))
 			case "clear":
 				state.IDToken, state.RefreshToken = "", ""
 				authTestWrite(t, path, state)
@@ -262,16 +219,12 @@ func TestAuthStatePrivateAtomicReplacement(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tunneler", "config.json")
 	authTestWrite(t, path, authState{Server: "https://coordinator.example", Generation: "initial"})
 	unlock, err := lockAuthState(t.Context(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	defer unlock()
 	if runtime.GOOS != "windows" {
 		for name, want := range map[string]os.FileMode{path: 0o600, path + ".lock": 0o600, filepath.Dir(path): 0o700} {
 			info, err := os.Stat(name)
-			if err != nil {
-				t.Fatal(err)
-			}
+			testutil.NoError(t, err)
 			if got := info.Mode().Perm(); got != want {
 				t.Errorf("%s mode = %o, want %o", filepath.Base(name), got, want)
 			}
@@ -295,9 +248,7 @@ func TestAuthStatePrivateAtomicReplacement(t *testing.T) {
 	})
 	for range 30 {
 		state := authState{Server: "https://coordinator.example", IDToken: strings.Repeat("x", 16384), Generation: "initial"}
-		if err := writeAuthState(path, &state); err != nil {
-			t.Fatal(err)
-		}
+		testutil.NoError(t, writeAuthState(path, &state))
 	}
 	close(done)
 	readers.Wait()
@@ -309,14 +260,10 @@ func TestAuthStateRejectsSymlinks(t *testing.T) {
 	}
 	dir := t.TempDir()
 	target := filepath.Join(dir, "target")
-	if err := os.WriteFile(target, []byte("{}"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, os.WriteFile(target, []byte("{}"), 0o600))
 	for _, suffix := range []string{"", ".lock"} {
 		path := filepath.Join(dir, "state"+strings.ReplaceAll(suffix, ".", ""))
-		if err := os.Symlink(target, path+suffix); err != nil {
-			t.Fatal(err)
-		}
+		testutil.NoError(t, os.Symlink(target, path+suffix))
 		if suffix == "" {
 			if _, err := readAuthState(path); err == nil {
 				t.Fatal("read followed login symlink")
@@ -335,12 +282,8 @@ func TestAuthServerOverrideWithoutSavedFile(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(os.Getenv("HOME"), ".config"))
 	t.Setenv("TUNNELER_SERVER", "https://override.example/")
 	c, err := loadClient()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.Server != "https://override.example" || c.state.IDToken != "" {
-		t.Fatal("server override did not apply without a saved file")
-	}
+	testutil.NoError(t, err)
+	testutil.Require(t, c.Server == "https://override.example" && c.state.IDToken == "", "server override did not apply without a saved file")
 }
 
 func TestAuthRenewalErrorDoesNotPersistProviderSecrets(t *testing.T) {
@@ -349,9 +292,7 @@ func TestAuthRenewalErrorDoesNotPersistProviderSecrets(t *testing.T) {
 		Response: &http.Response{StatusCode: http.StatusBadRequest},
 		Body:     []byte(secret), ErrorCode: secret, ErrorDescription: secret,
 	})
-	if !errors.Is(err, errNotLoggedIn) || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "HTTP 400") {
-		t.Fatal("refresh failure exposed provider response details or lost its actionable status")
-	}
+	testutil.Require(t, errors.Is(err, errNotLoggedIn) && !strings.Contains(err.Error(), secret) && strings.Contains(err.Error(), "HTTP 400"), "refresh failure exposed provider response details or lost its actionable status")
 }
 
 func TestAuthProviderChangeClearsAndFencesSavedLogin(t *testing.T) {
@@ -371,12 +312,8 @@ func TestAuthProviderChangeClearsAndFencesSavedLogin(t *testing.T) {
 		t.Fatalf("changed provider: %v", err)
 	}
 	state, err := readAuthState(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if state.IDToken != "" || state.RefreshToken != "" || state.Generation == "old-login" {
-		t.Fatal("provider change retained credentials or the old worker's authority")
-	}
+	testutil.NoError(t, err)
+	testutil.Require(t, state.IDToken == "" && state.RefreshToken == "" && state.Generation != "old-login", "provider change retained credentials or the old worker's authority")
 	if _, err := stale.token(t.Context()); !errors.Is(err, errNotLoggedIn) {
 		t.Fatalf("old worker remained authorized: %v", err)
 	}
@@ -386,9 +323,7 @@ func TestAuthLegacyLoginDoesNotRenewWithoutProviderBinding(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tunneler", "config.json")
 	authTestWrite(t, path, authState{Server: "https://coordinator.example", IDToken: authTestJWT(time.Now().Add(-time.Hour)), RefreshToken: "unbound-refresh-token"})
 	c := authTestClient(t, path)
-	if c.state.RefreshToken != "" {
-		t.Fatal("legacy refresh token was retained without its issuer")
-	}
+	testutil.Require(t, c.state.RefreshToken == "", "legacy refresh token was retained without its issuer")
 	if _, err := c.token(t.Context()); !errors.Is(err, errNotLoggedIn) {
 		t.Fatalf("legacy login attempted renewal: %v", err)
 	}

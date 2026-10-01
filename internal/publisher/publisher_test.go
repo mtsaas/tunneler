@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mtsaas/tunneler/internal/api"
+	"github.com/mtsaas/tunneler/internal/testutil"
 )
 
 type fakeClient struct {
@@ -47,9 +48,7 @@ func (c *fakeClient) RenewShare(ctx context.Context, _, _ string) (*api.Share, e
 func fixture(t *testing.T) (*fakeClient, net.Conn, *api.Share, map[string]string) {
 	t.Helper()
 	local, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	t.Cleanup(func() { local.Close() })
 	go func() {
 		for {
@@ -75,9 +74,7 @@ func fixture(t *testing.T) (*fakeClient, net.Conn, *api.Share, map[string]string
 func send(t *testing.T, control net.Conn, msg api.PublisherMessage) {
 	t.Helper()
 	control.SetWriteDeadline(time.Now().Add(time.Second))
-	if err := json.NewEncoder(control).Encode(msg); err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, json.NewEncoder(control).Encode(msg))
 }
 
 func TestRunOpaqueBytesAndPromptCancellation(t *testing.T) {
@@ -92,20 +89,12 @@ func TestRunOpaqueBytesAndPromptCancellation(t *testing.T) {
 	send(t, control, api.PublisherMessage{Type: "attached", Generation: "gen", Share: s})
 	send(t, control, api.PublisherMessage{Type: "dial", Generation: "gen", ServiceID: "svc", ConnectionID: "connection"})
 	var data net.Conn
-	select {
-	case data = <-c.data:
-	case <-time.After(time.Second):
-		t.Fatal("data did not attach")
-	}
+	data = testutil.Receive(t, c.data, time.Second, "data did not attach")
 	defer data.Close()
 	copy := *s
 	copy.State = "ready"
 	send(t, control, api.PublisherMessage{Type: "ready", Share: &copy})
-	select {
-	case <-ready:
-	case <-time.After(time.Second):
-		t.Fatal("readiness did not arrive")
-	}
+	testutil.Receive(t, ready, time.Second, "readiness did not arrive")
 	payload := []byte{0, 255, 128, 'H', 'T', 'T', 'P', '\r', '\n', 0}
 	data.SetDeadline(time.Now().Add(time.Second))
 	if _, err := data.Write(payload); err != nil {
@@ -115,24 +104,13 @@ func TestRunOpaqueBytesAndPromptCancellation(t *testing.T) {
 	if _, err := io.ReadFull(data, got); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(payload, got) {
-		t.Fatalf("opaque payload changed: %x", got)
-	}
+	testutil.Require(t, bytes.Equal(payload, got), "opaque payload changed: %x", got)
 	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("cancellation did not close streams")
-	}
+	testutil.NoError(t, testutil.Receive(t, done, time.Second, "cancellation did not close streams"))
 	if _, err := data.Read(make([]byte, 1)); err == nil {
 		t.Fatal("data remained open")
 	}
-	if c.controls.Load() != 1 {
-		t.Fatal("publisher reconnected")
-	}
+	testutil.Require(t, c.controls.Load() == 1, "publisher reconnected")
 }
 
 func TestBlockedRenewalStillAnswersHeartbeat(t *testing.T) {
@@ -155,11 +133,7 @@ func TestBlockedRenewalStillAnswersHeartbeat(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- Run(ctx, c, s, targets, nil) }()
 	send(t, control, api.PublisherMessage{Type: "attached", Generation: "gen", Share: s})
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("renewal did not begin")
-	}
+	testutil.Receive(t, started, time.Second, "renewal did not begin")
 	send(t, control, api.PublisherMessage{Type: "ping"})
 	control.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
 	var reply api.PublisherReply
@@ -168,11 +142,7 @@ func TestBlockedRenewalStillAnswersHeartbeat(t *testing.T) {
 	}
 	close(release)
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("publisher did not stop")
-	}
+	testutil.Receive(t, done, time.Second, "publisher did not stop")
 }
 
 func TestUnknownServiceNeverDialsAndControlLossIsTerminal(t *testing.T) {
@@ -183,9 +153,7 @@ func TestUnknownServiceNeverDialsAndControlLossIsTerminal(t *testing.T) {
 	send(t, control, api.PublisherMessage{Type: "dial", Generation: "gen", ServiceID: "arbitrary", ConnectionID: "connection"})
 	select {
 	case result := <-c.results:
-		if result.ServiceID != "arbitrary" || result.Error == "" {
-			t.Fatalf("bad result: %+v", result)
-		}
+		testutil.Require(t, result.ServiceID == "arbitrary" && result.Error != "", "bad result: %+v", result)
 	case <-time.After(time.Second):
 		t.Fatal("dial failure was not returned")
 	}
@@ -196,17 +164,8 @@ func TestUnknownServiceNeverDialsAndControlLossIsTerminal(t *testing.T) {
 	default:
 	}
 	control.Close()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("control loss was silently successful")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("control loss did not stop publisher")
-	}
-	if c.controls.Load() != 1 {
-		t.Fatal("publisher recreated control")
-	}
+	testutil.Require(t, testutil.Receive(t, done, time.Second, "control loss did not stop publisher") != nil, "control loss was silently successful")
+	testutil.Require(t, c.controls.Load() == 1, "publisher recreated control")
 }
 
 func TestExpiryStopsWithoutRecreation(t *testing.T) {
@@ -215,25 +174,14 @@ func TestExpiryStopsWithoutRecreation(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- Run(context.Background(), c, s, targets, nil) }()
 	send(t, control, api.PublisherMessage{Type: "attached", Generation: "gen", Share: s})
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("expiry did not stop publisher")
-	}
-	if c.controls.Load() != 1 {
-		t.Fatal("expired publisher reconnected")
-	}
+	testutil.NoError(t, testutil.Receive(t, done, time.Second, "expiry did not stop publisher"))
+	testutil.Require(t, c.controls.Load() == 1, "expired publisher reconnected")
 }
 
 func TestRejectNonLoopbackBeforeAttachment(t *testing.T) {
 	c := &fakeClient{}
 	err := Run(context.Background(), c, &api.Share{Services: []api.ShareService{{Name: "web"}}}, map[string]string{"web": "192.0.2.1:80"}, nil)
-	if err == nil || c.controls.Load() != 0 {
-		t.Fatal("remote target reached control attachment")
-	}
+	testutil.Require(t, err != nil && c.controls.Load() == 0, "remote target reached control attachment")
 }
 
 func TestReadinessContextEndsBeforeTerminalCleanupWait(t *testing.T) {
@@ -247,20 +195,12 @@ func TestReadinessContextEndsBeforeTerminalCleanupWait(t *testing.T) {
 		done <- Run(context.Background(), c, s, targets, func(ctx context.Context, _ *api.Share) error { readyContext <- ctx; <-ctx.Done(); return ctx.Err() })
 	}()
 	send(t, control, api.PublisherMessage{Type: "attached", Generation: "gen", Share: s})
-	select {
-	case <-renewing:
-	case <-time.After(time.Second):
-		t.Fatal("renewal never started")
-	}
+	testutil.Receive(t, renewing, time.Second, "renewal never started")
 	copy := *s
 	copy.State = "ready"
 	send(t, control, api.PublisherMessage{Type: "ready", Share: &copy})
 	var callbackContext context.Context
-	select {
-	case callbackContext = <-readyContext:
-	case <-time.After(time.Second):
-		t.Fatal("readiness callback never began")
-	}
+	callbackContext = testutil.Receive(t, readyContext, time.Second, "readiness callback never began")
 	control.Close()
 	select {
 	case <-callbackContext.Done():
@@ -275,9 +215,5 @@ func TestReadinessContextEndsBeforeTerminalCleanupWait(t *testing.T) {
 	default:
 	}
 	close(release)
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("terminal cleanup never completed")
-	}
+	testutil.Receive(t, done, time.Second, "terminal cleanup never completed")
 }

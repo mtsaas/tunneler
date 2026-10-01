@@ -43,11 +43,15 @@ func (c *Coordinator) handleCreateShare(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	share, err := c.shares.create(id, req)
+	writeShareResult(w, http.StatusCreated, share, err)
+}
+
+func writeShareResult(w http.ResponseWriter, status int, share *api.Share, err error) {
 	if err != nil {
 		writeShareError(w, err)
-		return
+	} else {
+		writeJSON(w, status, share)
 	}
-	writeJSON(w, http.StatusCreated, share)
 }
 
 func (c *Coordinator) handleListShares(w http.ResponseWriter, _ *http.Request, id *Identity) {
@@ -86,20 +90,12 @@ func (c *Coordinator) handleListShares(w http.ResponseWriter, _ *http.Request, i
 
 func (c *Coordinator) handleGetShare(w http.ResponseWriter, r *http.Request, id *Identity) {
 	share, err := c.shares.inspect(id, r.PathValue("id"), c.isAdmin(id))
-	if err != nil {
-		writeShareError(w, err)
-		return
-	}
-	writeJSON(w, 200, share)
+	writeShareResult(w, 200, share, err)
 }
 
 func (c *Coordinator) handleShareOperation(w http.ResponseWriter, r *http.Request, id *Identity) {
 	share, err := c.shares.operation(id, r.PathValue("requestID"))
-	if err != nil {
-		writeShareError(w, err)
-		return
-	}
-	writeJSON(w, 200, share)
+	writeShareResult(w, 200, share, err)
 }
 
 func (c *Coordinator) handleStopShare(w http.ResponseWriter, r *http.Request, id *Identity) {

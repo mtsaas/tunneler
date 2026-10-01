@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -264,13 +265,7 @@ func (m *shareManager) create(id *Identity, req api.ShareRequest) (*api.Share, e
 		if previous.fingerprint != fingerprint {
 			return nil, shareAPIError(409, "idempotency_conflict", "request_id already identifies different inputs")
 		}
-		if reason := previous.expiredReasonLocked(now); reason != "" {
-			m.mu.Unlock()
-			previous.end(reason)
-			m.mu.Lock()
-		}
-		info := cloneShare(previous.info)
-		return &info, nil
+		return m.snapshotLocked(previous, now), nil
 	}
 	if !now.Before(req.StartupDeadline) || req.StartupDeadline.After(now.Add(time.Duration(cfg.SetupTTL))) {
 		return nil, shareAPIError(400, "usage", "startup_deadline must be within the configured setup window")
@@ -322,13 +317,7 @@ func (m *shareManager) create(id *Identity, req api.ShareRequest) (*api.Share, e
 }
 
 func earliest(times ...time.Time) time.Time {
-	first := times[0]
-	for _, t := range times[1:] {
-		if t.Before(first) {
-			first = t
-		}
-	}
-	return first
+	return slices.MinFunc(times, time.Time.Compare)
 }
 
 func (m *shareManager) findLocked(id *Identity, shareID string, admin bool) (*sharedServiceSet, error) {
@@ -432,14 +421,8 @@ func (s *sharedServiceSet) end(reason string) {
 		s.releaseSlotLocked()
 		pending.result <- shareDialResult{err: shareAPIError(503, "upstream_unavailable", "share ended")}
 	}
-	conns := make([]*shareConn, 0, len(s.conns))
-	for conn := range s.conns {
-		conns = append(conns, conn)
-	}
-	proxies := make([]*shareHTTPProxy, 0, len(s.proxies))
-	for _, proxy := range s.proxies {
-		proxies = append(proxies, proxy)
-	}
+	conns := slices.Collect(maps.Keys(s.conns))
+	proxies := slices.Collect(maps.Values(s.proxies))
 	control := s.control
 	subject := s.owner.Subject
 	// SQLite can wait for another writer. Revoke traffic before recording the
@@ -555,14 +538,7 @@ func (s *sharedServiceSet) dial(ctx context.Context, serviceID string) (net.Conn
 		m.mu.Unlock()
 		return nil, shareAPIError(503, "upstream_unavailable", "publisher unavailable")
 	}
-	found := false
-	for _, service := range s.info.Services {
-		if service.ID == serviceID {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !slices.ContainsFunc(s.info.Services, func(service api.ShareService) bool { return service.ID == serviceID }) {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("unknown registered service")
 	}

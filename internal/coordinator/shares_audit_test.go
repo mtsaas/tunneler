@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"sync/atomic"
 	"testing"
+
+	"github.com/mtsaas/tunneler/internal/testutil"
 )
 
 type shareAuditSink struct {
@@ -40,14 +42,10 @@ func TestShareAuditFailureRefusesPublishingAndForwarding(t *testing.T) {
 	} else {
 		requireShareError(t, err, "audit_unavailable")
 	}
-	if len(c.shares.shares) != 0 || len(c.shares.operations) != 0 || len(c.shares.hosts) != 0 {
-		t.Fatal("refused share left a live route or operation")
-	}
+	testutil.Require(t, len(c.shares.shares) == 0 && len(c.shares.operations) == 0 && len(c.shares.hosts) == 0, "refused share left a live route or operation")
 	failing.Store(false)
 	info, err := c.shares.create(shareTestIdentity("alice"), req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	var forwarded atomic.Int32
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		forwarded.Add(1)
@@ -72,11 +70,7 @@ func TestShareAuditFailureRefusesPublishingAndForwarding(t *testing.T) {
 		if fail {
 			want = http.StatusServiceUnavailable
 		}
-		if response.Code != want {
-			t.Fatalf("audit failing %t: status %d, want %d", fail, response.Code, want)
-		}
+		testutil.Require(t, response.Code == want, "audit failing %t: status %d, want %d", fail, response.Code, want)
 	}
-	if forwarded.Load() != 1 {
-		t.Fatal("an unrecorded request reached the application")
-	}
+	testutil.Require(t, forwarded.Load() == 1, "an unrecorded request reached the application")
 }

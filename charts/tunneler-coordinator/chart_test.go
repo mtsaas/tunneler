@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/mtsaas/tunneler/internal/coordinator"
+	"github.com/mtsaas/tunneler/internal/testutil"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -46,19 +47,13 @@ func renderChart(t *testing.T, values map[string]any) ([]manifest, string, error
 	t.Helper()
 	helm, err := exec.LookPath("helm")
 	if err != nil {
-		if os.Getenv("TUNNELER_REQUIRE_HELM_TESTS") == "1" {
-			t.Fatal("Helm is required for chart validation in CI")
-		}
+		testutil.Require(t, os.Getenv("TUNNELER_REQUIRE_HELM_TESTS") != "1", "Helm is required for chart validation in CI")
 		t.Skip("install Helm to run chart render tests")
 	}
 	data, err := yaml.Marshal(values)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	path := filepath.Join(t.TempDir(), "values.yaml")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, os.WriteFile(path, data, 0o600))
 	command := exec.Command(helm, "template", "chart-test", ".", "--namespace", "sharing-test", "--values", path)
 	output, err := command.CombinedOutput()
 	if err != nil {
@@ -70,13 +65,11 @@ func renderChart(t *testing.T, values map[string]any) ([]manifest, string, error
 		var document manifest
 		if err := decoder.Decode(&document); err == io.EOF {
 			break
-		} else if err != nil {
-			t.Fatalf("decode rendered manifest: %v", err)
+		} else {
+			testutil.Require(t, err == nil, "decode rendered manifest: %v", err)
 		}
 		if document.Kind != "" {
-			if document.Metadata.Namespace != "sharing-test" {
-				t.Fatalf("%s/%s does not target the release namespace: %q", document.Kind, document.Metadata.Name, document.Metadata.Namespace)
-			}
+			testutil.Require(t, document.Metadata.Namespace == "sharing-test", "%s/%s does not target the release namespace: %q", document.Kind, document.Metadata.Name, document.Metadata.Namespace)
 			manifests = append(manifests, document)
 		}
 	}
@@ -97,29 +90,19 @@ func findManifest(t *testing.T, manifests []manifest, kind, name string) manifes
 func loadRenderedConfig(t *testing.T, manifests []manifest) (*coordinator.Config, error) {
 	t.Helper()
 	config := findManifest(t, manifests, "ConfigMap", "chart-test").Data["config.json"]
-	if !json.Valid([]byte(config)) {
-		t.Fatal("rendered configuration is not JSON")
-	}
+	testutil.Require(t, json.Valid([]byte(config)), "rendered configuration is not JSON")
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, os.WriteFile(path, []byte(config), 0o600))
 	return coordinator.LoadConfig(path)
 }
 
 func TestChartSharingWithOwnTLSEdgePreservesDeployment(t *testing.T) {
 	baseline, output, err := renderChart(t, chartValues())
-	if err != nil {
-		t.Fatalf("existing chart: %v\n%s", err, output)
-	}
+	testutil.Require(t, err == nil, "existing chart: %v\n%s", err, output)
 	config, err := loadRenderedConfig(t, baseline)
-	if err != nil || config.Sharing != nil {
-		t.Fatalf("existing configuration changed: %+v %v", config, err)
-	}
+	testutil.Require(t, err == nil && config.Sharing == nil, "existing configuration changed: %+v %v", config, err)
 	for _, document := range baseline {
-		if document.Kind == "Ingress" {
-			t.Fatal("ingress appeared in an existing installation")
-		}
+		testutil.Require(t, document.Kind != "Ingress", "ingress appeared in an existing installation")
 	}
 	for _, restricted := range []bool{false, true} {
 		values := chartValues()
@@ -130,33 +113,19 @@ func TestChartSharingWithOwnTLSEdgePreservesDeployment(t *testing.T) {
 		}
 		values["config"].(map[string]any)["sharing"] = sharing
 		manifests, output, err := renderChart(t, values)
-		if err != nil {
-			t.Fatalf("sharing with ingress disabled: %v\n%s", err, output)
-		}
+		testutil.Require(t, err == nil, "sharing with ingress disabled: %v\n%s", err, output)
 		config, err := loadRenderedConfig(t, manifests)
-		if err != nil {
-			t.Fatalf("rendered sharing configuration: %v", err)
-		}
-		if config.Sharing == nil || config.Sharing.Domain != "preview.example.net" || config.Sharing.AllowAuthenticated == restricted || len(config.Sharing.ControlHosts) != 1 || config.Sharing.ControlHosts[0] != "control.example.com" {
-			t.Fatalf("sharing configuration lost values: %+v", config.Sharing)
-		}
-		if restricted && len(config.Sharing.Grants) != 2 {
-			t.Fatalf("publishing grants lost: %+v", config.Sharing.Grants)
-		}
-		if config.Sharing.MaxOperationRecordsPerUser != 32 {
-			t.Fatalf("retained operation budget lost: %+v", config.Sharing)
-		}
+		testutil.Require(t, err == nil, "rendered sharing configuration: %v", err)
+		testutil.Require(t, config.Sharing != nil && config.Sharing.Domain == "preview.example.net" && config.Sharing.AllowAuthenticated != restricted && len(config.Sharing.ControlHosts) == 1 && config.Sharing.ControlHosts[0] == "control.example.com", "sharing configuration lost values: %+v", config.Sharing)
+		testutil.Require(t, !restricted || len(config.Sharing.Grants) == 2, "publishing grants lost: %+v", config.Sharing.Grants)
+		testutil.Require(t, config.Sharing.MaxOperationRecordsPerUser == 32, "retained operation budget lost: %+v", config.Sharing)
 		for _, document := range manifests {
-			if document.Kind == "Ingress" {
-				t.Fatal("bring-your-own-edge values rendered an Ingress")
-			}
+			testutil.Require(t, document.Kind != "Ingress", "bring-your-own-edge values rendered an Ingress")
 		}
 		for _, kind := range []string{"Service", "StatefulSet"} {
 			before := findManifest(t, baseline, kind, "chart-test")
 			after := findManifest(t, manifests, kind, "chart-test")
-			if !reflect.DeepEqual(before, after) {
-				t.Fatalf("sharing changed the existing %s", kind)
-			}
+			testutil.Require(t, reflect.DeepEqual(before, after), "sharing changed the existing %s", kind)
 		}
 	}
 }
@@ -170,9 +139,7 @@ func TestChartPreviewIngressRoutesAndNamespacedTLS(t *testing.T) {
 		"preview":     map[string]any{"enabled": true, "tlsSecretName": "preview-tls", "annotations": map[string]string{"example.com/streaming": "yes"}},
 	}
 	manifests, output, err := renderChart(t, values)
-	if err != nil {
-		t.Fatalf("preview ingress: %v\n%s", err, output)
-	}
+	testutil.Require(t, err == nil, "preview ingress: %v\n%s", err, output)
 	if _, err := loadRenderedConfig(t, manifests); err != nil {
 		t.Fatalf("ingress sharing configuration: %v", err)
 	}
@@ -181,12 +148,8 @@ func TestChartPreviewIngressRoutesAndNamespacedTLS(t *testing.T) {
 		{"chart-test-preview", "*.preview.example.net", "preview-tls", "example.com/streaming"},
 	} {
 		document := findManifest(t, manifests, "Ingress", ingress.name)
-		if document.APIVersion != "networking.k8s.io/v1" || document.Metadata.Namespace != "sharing-test" {
-			t.Fatalf("ingress does not target the release namespace: %+v", document.Metadata)
-		}
-		if len(document.Metadata.Annotations) != 1 || document.Metadata.Annotations[ingress.annotation] != "yes" {
-			t.Fatalf("ingress annotations leaked between routes: %+v", document.Metadata.Annotations)
-		}
+		testutil.Require(t, document.APIVersion == "networking.k8s.io/v1" && document.Metadata.Namespace == "sharing-test", "ingress does not target the release namespace: %+v", document.Metadata)
+		testutil.Require(t, len(document.Metadata.Annotations) == 1 && document.Metadata.Annotations[ingress.annotation] == "yes", "ingress annotations leaked between routes: %+v", document.Metadata.Annotations)
 		wanted := map[string]any{
 			"ingressClassName": "edge",
 			"tls":              []any{map[string]any{"hosts": []any{ingress.host}, "secretName": ingress.secret}},
@@ -194,9 +157,7 @@ func TestChartPreviewIngressRoutesAndNamespacedTLS(t *testing.T) {
 				"path": "/", "pathType": "Prefix", "backend": map[string]any{"service": map[string]any{"name": "chart-test", "port": map[string]any{"name": "http"}}},
 			}}}}},
 		}
-		if !reflect.DeepEqual(document.Spec, wanted) {
-			t.Fatalf("incorrect %s route/TLS: %+v", ingress.name, document.Spec)
-		}
+		testutil.Require(t, reflect.DeepEqual(document.Spec, wanted), "incorrect %s route/TLS: %+v", ingress.name, document.Spec)
 	}
 }
 
@@ -235,9 +196,7 @@ func TestChartRejectsInvalidSharingValues(t *testing.T) {
 			}
 			values["config"].(map[string]any)["sharing"] = sharing
 			_, output, err := renderChart(t, values)
-			if err == nil || !strings.Contains(output, test.field) {
-				t.Fatalf("invalid %s was not diagnosed before deployment: %v\n%s", test.field, err, output)
-			}
+			testutil.Require(t, err != nil && strings.Contains(output, test.field), "invalid %s was not diagnosed before deployment: %v\n%s", test.field, err, output)
 		})
 	}
 	for _, value := range []any{false, "enabled", []string{"preview.example.net"}} {
@@ -285,9 +244,7 @@ func TestChartRenderedConfigUsesRuntimeDomainIsolation(t *testing.T) {
 	sharing["domain"] = "preview.example.com"
 	values["config"].(map[string]any)["sharing"] = sharing
 	manifests, output, err := renderChart(t, values)
-	if err != nil {
-		t.Fatalf("render domain-isolation fixture: %v\n%s", err, output)
-	}
+	testutil.Require(t, err == nil, "render domain-isolation fixture: %v\n%s", err, output)
 	if _, err := loadRenderedConfig(t, manifests); err == nil || !strings.Contains(err.Error(), "registrable domain") {
 		t.Fatalf("runtime accepted domains sharing parent cookies: %v", err)
 	}

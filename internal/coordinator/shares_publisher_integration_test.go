@@ -15,6 +15,7 @@ import (
 
 	"github.com/mtsaas/tunneler/internal/api"
 	"github.com/mtsaas/tunneler/internal/publisher"
+	"github.com/mtsaas/tunneler/internal/testutil"
 )
 
 func TestShareRealPublisherHTTPUpgradeAndRenewal(t *testing.T) {
@@ -56,9 +57,7 @@ func TestShareRealPublisherHTTPUpgradeAndRenewal(t *testing.T) {
 	request := shareTestRequest("real-publisher-path", "web", "api")
 	request.TTL = "3s"
 	share, err := client.CreateShare(context.Background(), request)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ready := make(chan *api.Share, 1)
@@ -82,38 +81,28 @@ func TestShareRealPublisherHTTPUpgradeAndRenewal(t *testing.T) {
 	var webHost string
 	for _, service := range share.Services {
 		public, err := url.Parse(service.URL)
-		if err != nil {
-			t.Fatal(err)
-		}
+		testutil.NoError(t, err)
 		if service.Name == "web" {
 			webHost = public.Host
 		}
 		req, _ := http.NewRequest(http.MethodGet, server.URL+"/v1/application", nil)
 		req.Host = public.Host
 		response, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
+		testutil.NoError(t, err)
 		body, err := io.ReadAll(response.Body)
 		response.Body.Close()
-		if err != nil || response.StatusCode != 200 || string(body) != service.Name+" application" {
-			t.Fatalf("%s response = %d %q, %v", service.Name, response.StatusCode, body, err)
-		}
+		testutil.Require(t, err == nil && response.StatusCode == 200 && string(body) == service.Name+" application", "%s response = %d %q, %v", service.Name, response.StatusCode, body, err)
 	}
 
 	conn, err := net.DialTimeout("tcp", strings.TrimPrefix(server.URL, "http://"), time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(2 * time.Second))
 	const earlyClientBytes = "\x00\x0a\x00\x01\x02\x7f\x80\xfe\xffABC"
 	fmt.Fprintf(conn, "GET /opaque HTTP/1.1\r\nHost: %s\r\nConnection: Upgrade\r\nUpgrade: development-echo\r\n\r\n%s", webHost, earlyClientBytes)
 	reader := bufio.NewReader(conn)
 	response, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
-	if err != nil || response.StatusCode != 101 || response.Header.Get("Upgrade") != "development-echo" || !strings.EqualFold(response.Header.Get("Connection"), "Upgrade") {
-		t.Fatalf("upgrade response = %+v, %v", response, err)
-	}
+	testutil.Require(t, err == nil && response.StatusCode == 101 && response.Header.Get("Upgrade") == "development-echo" && strings.EqualFold(response.Header.Get("Connection"), "Upgrade"), "upgrade response = %+v, %v", response, err)
 	want := "\x00\x04\xff\x00\x80\x7f" + earlyClientBytes
 	actual := make([]byte, len(want))
 	if _, err := io.ReadFull(reader, actual); err != nil || string(actual) != want {
@@ -123,15 +112,11 @@ func TestShareRealPublisherHTTPUpgradeAndRenewal(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for {
 		current, err := client.Share(context.Background(), share.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
+		testutil.NoError(t, err)
 		if current.AuthorizationDeadline.After(share.AuthorizationDeadline.Add(100 * time.Millisecond)) {
 			break
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("real publisher did not renew its authorization lease")
-		}
+		testutil.Require(t, !time.Now().After(deadline), "real publisher did not renew its authorization lease")
 		time.Sleep(10 * time.Millisecond)
 	}
 	if _, err := client.StopShare(context.Background(), share.ID); err != nil {
@@ -140,11 +125,7 @@ func TestShareRealPublisherHTTPUpgradeAndRenewal(t *testing.T) {
 	if _, err := reader.ReadByte(); err == nil {
 		t.Fatal("upgraded connection remained open after stop")
 	}
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("real publisher did not exit after remote stop")
-	}
+	testutil.Receive(t, done, time.Second, "real publisher did not exit after remote stop")
 }
 
 func TestShareStopUnblocksIncompleteHTTPUpload(t *testing.T) {
@@ -168,9 +149,7 @@ func TestShareStopUnblocksIncompleteHTTPUpload(t *testing.T) {
 	defer server.Close()
 	client := shareTestClient(server.URL, "alice")
 	share, err := client.CreateShare(context.Background(), shareTestRequest("incomplete-upload", "web"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ready := make(chan struct{}, 1)
@@ -178,34 +157,16 @@ func TestShareStopUnblocksIncompleteHTTPUpload(t *testing.T) {
 		ready <- struct{}{}
 		return nil
 	})
-	select {
-	case <-ready:
-	case <-time.After(2 * time.Second):
-		t.Fatal("publisher never became ready")
-	}
+	testutil.Receive(t, ready, 2*time.Second, "publisher never became ready")
 	public, _ := url.Parse(share.Services[0].URL)
 	conn, err := net.DialTimeout("tcp", strings.TrimPrefix(server.URL, "http://"), time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	defer conn.Close()
 	fmt.Fprintf(conn, "POST /upload HTTP/1.1\r\nHost: %s\r\nContent-Length: 10\r\n\r\nx", public.Host)
-	select {
-	case <-upstreamStarted:
-	case <-time.After(time.Second):
-		t.Fatal("upload did not reach the local application")
-	}
+	testutil.Receive(t, upstreamStarted, time.Second, "upload did not reach the local application")
 	if _, err := client.StopShare(context.Background(), share.ID); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-upstreamEnded:
-	case <-time.After(time.Second):
-		t.Fatal("stop did not release the local upload handler")
-	}
-	select {
-	case <-frontendEnded:
-	case <-time.After(time.Second):
-		t.Fatal("stop left the frontend waiting for the incomplete request body")
-	}
+	testutil.Receive(t, upstreamEnded, time.Second, "stop did not release the local upload handler")
+	testutil.Receive(t, frontendEnded, time.Second, "stop left the frontend waiting for the incomplete request body")
 }

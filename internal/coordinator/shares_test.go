@@ -23,6 +23,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/mtsaas/tunneler/internal/api"
+	"github.com/mtsaas/tunneler/internal/testutil"
 	"github.com/mtsaas/tunneler/internal/tunnel"
 )
 
@@ -51,9 +52,7 @@ func shareTestCoordinator(t *testing.T, cfg *Config) *Coordinator {
 		}
 		return shareTestIdentity(token), nil
 	}, quiet, quiet.Handler())
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	t.Cleanup(func() { c.Close() })
 	return c
 }
@@ -73,9 +72,7 @@ func shareTestClient(server, user string) *Client {
 func requireShareError(t *testing.T, err error, code string) {
 	t.Helper()
 	var ae *api.Error
-	if !errors.As(err, &ae) || ae.Code != code {
-		t.Fatalf("error = %v, want code %s", err, code)
-	}
+	testutil.Require(t, errors.As(err, &ae) && ae.Code == code, "error = %v, want code %s", err, code)
 }
 
 func TestShareCreationOwnershipRetryAndRestart(t *testing.T) {
@@ -84,13 +81,9 @@ func TestShareCreationOwnershipRetryAndRestart(t *testing.T) {
 	owner := shareTestIdentity("alice")
 	req := shareTestRequest("operation-123", "web", "api")
 	first, err := c.shares.create(owner, req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	second, err := c.shares.create(owner, req)
-	if err != nil || second.ID != first.ID {
-		t.Fatalf("retry = %+v, %v", second, err)
-	}
+	testutil.Require(t, err == nil && second.ID == first.ID, "retry = %+v, %v", second, err)
 	changed := req
 	changed.ManifestDigest = "other"
 	_, err = c.shares.create(owner, changed)
@@ -121,27 +114,15 @@ func TestShareCreationOwnershipRetryAndRestart(t *testing.T) {
 	bad.Services[0].Protocol = "tcp"
 	_, err = c.shares.create(owner, bad)
 	requireShareError(t, err, "usage")
-	if len(c.shares.operations) != 1 {
-		t.Fatalf("partial invalid allocation: %d records", len(c.shares.operations))
-	}
-	if err := c.Close(); err != nil {
-		t.Fatal(err)
-	}
+	testutil.Require(t, len(c.shares.operations) == 1, "partial invalid allocation: %d records", len(c.shares.operations))
+	testutil.NoError(t, c.Close())
 	restarted := shareTestCoordinator(t, cfg)
 	replay, err := restarted.shares.create(owner, req)
-	if err != nil || replay.ID != first.ID || replay.State != "ended" || replay.TerminalReason != "coordinator_restart" {
-		t.Fatalf("restart replay = %+v, %v", replay, err)
-	}
-	if replay.BootID == restarted.shares.boot {
-		t.Fatal("original operation boot identity lost")
-	}
-	if len(restarted.shares.hosts) != 0 {
-		t.Fatal("restart restored routes")
-	}
+	testutil.Require(t, err == nil && replay.ID == first.ID && replay.State == "ended" && replay.TerminalReason == "coordinator_restart", "restart replay = %+v, %v", replay, err)
+	testutil.Require(t, replay.BootID != restarted.shares.boot, "original operation boot identity lost")
+	testutil.Require(t, len(restarted.shares.hosts) == 0, "restart restored routes")
 	op, err := restarted.shares.operation(owner, req.RequestID)
-	if err != nil || op.ID != first.ID {
-		t.Fatalf("operation lookup: %+v %v", op, err)
-	}
+	testutil.Require(t, err == nil && op.ID == first.ID, "operation lookup: %+v %v", op, err)
 }
 
 func TestShareConcurrentCreateAndRetentionCap(t *testing.T) {
@@ -171,9 +152,7 @@ func TestShareConcurrentCreateAndRetentionCap(t *testing.T) {
 		if first == "" {
 			first = id
 		}
-		if id != first {
-			t.Fatal("duplicate allocation")
-		}
+		testutil.Require(t, id == first, "duplicate allocation")
 	}
 	_, err := c.shares.create(owner, shareTestRequest("another-operation", "web"))
 	requireShareError(t, err, "quota_exceeded")
@@ -200,14 +179,10 @@ func TestShareOwnerOperationRetentionBudget(t *testing.T) {
 	owner := shareTestIdentity("alice")
 	firstRequest := shareTestRequest("owner-retention-first", "web")
 	first, err := c.shares.create(owner, firstRequest)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	c.shares.shares[first.ID].end("stopped")
 	second, err := c.shares.create(owner, shareTestRequest("owner-retention-second", "web"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	c.shares.shares[second.ID].end("stopped")
 	if replay, err := c.shares.create(owner, firstRequest); err != nil || replay.ID != first.ID || replay.State != "ended" {
 		t.Fatalf("replay at owner cap = %+v, %v", replay, err)
@@ -219,17 +194,13 @@ func TestShareOwnerOperationRetentionBudget(t *testing.T) {
 	_, err = c.shares.create(owner, shareTestRequest("owner-retention-third", "web"))
 	requireShareError(t, err, "quota_exceeded")
 	other, err := c.shares.create(shareTestIdentity("bob"), shareTestRequest("other-owner-operation", "web"))
-	if err != nil || other.Owner != "bob@test" {
-		t.Fatalf("other owner's available budget = %+v, %v", other, err)
-	}
+	testutil.Require(t, err == nil && other.Owner == "bob@test", "other owner's available budget = %+v, %v", other, err)
 	c.shares.mu.Lock()
 	old := c.shares.shares[first.ID]
 	old.retainUntil = time.Now().Add(-time.Second)
 	err = c.shares.saveLedgerLocked(old, false)
 	c.shares.mu.Unlock()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	if _, err := c.shares.create(owner, shareTestRequest("owner-retention-third", "web")); err != nil {
 		t.Fatalf("expired retention did not recover the owner's budget: %v", err)
 	}
@@ -247,9 +218,7 @@ func TestShareCreateUsesConfigAfterAllocationLock(t *testing.T) {
 			cfg.Sharing.AllowAuthenticated = true
 			c := shareTestCoordinator(t, cfg)
 			old, err := c.shares.create(shareTestIdentity("alice"), shareTestRequest("old-config-operation", "web"))
-			if err != nil {
-				t.Fatal(err)
-			}
+			testutil.NoError(t, err)
 			current := *cfg
 			sharing := *cfg.Sharing
 			current.Sharing = &sharing
@@ -288,23 +257,19 @@ func TestShareCreateUsesConfigAfterAllocationLock(t *testing.T) {
 				if blocked {
 					break
 				}
-				if time.Now().After(deadline) {
-					t.Fatal("create did not block on the allocation lock")
-				}
+				testutil.Require(t, !time.Now().After(deadline), "create did not block on the allocation lock")
 				runtime.Gosched()
 			}
 			c.cfg.Store(&current)
-			if change == "domain" && c.shares.shares[old.ID].liveLocked() {
-				t.Fatal("retired domain remained live before the reload sweep")
-			}
+			testutil.Require(t, change != "domain" || !c.shares.shares[old.ID].liveLocked(), "retired domain remained live before the reload sweep")
 			c.shares.mu.Unlock()
 			locked = false
 			select {
 			case got := <-result:
 				if change == "policy" {
 					requireShareError(t, got.err, "access_denied")
-				} else if got.err != nil || !strings.HasSuffix(got.share.Services[0].URL, ".new-preview.test") {
-					t.Fatalf("allocation after domain change = %+v, %v", got.share, got.err)
+				} else {
+					testutil.Require(t, got.err == nil && strings.HasSuffix(got.share.Services[0].URL, ".new-preview.test"), "allocation after domain change = %+v, %v", got.share, got.err)
 				}
 			case <-time.After(2 * time.Second):
 				t.Fatal("create did not finish after unlocking")
@@ -344,9 +309,7 @@ func TestShareFrontendAdmissionAndCleanup(t *testing.T) {
 			start := func(user, requestID string) (*Client, *api.Share) {
 				client := shareTestClient(server.URL, user)
 				info, err := client.CreateShare(ctx, shareTestRequest(requestID, "web"))
-				if err != nil {
-					t.Fatal(err)
-				}
+				testutil.NoError(t, err)
 				publisher := startTestSharePublisher(t, ctx, client, info, map[string]string{"web": local.Host})
 				return client, waitTestShareReady(t, publisher)
 			}
@@ -362,9 +325,7 @@ func TestShareFrontendAdmissionAndCleanup(t *testing.T) {
 				req, _ := http.NewRequestWithContext(visitCtx, "GET", server.URL+"/stream", nil)
 				req.Host = public.Host
 				response, err := http.DefaultClient.Do(req)
-				if err != nil {
-					t.Fatal(err)
-				}
+				testutil.NoError(t, err)
 				return response
 			}
 			waitEmpty := func() {
@@ -377,9 +338,7 @@ func TestShareFrontendAdmissionAndCleanup(t *testing.T) {
 					if frontends == 0 && owners == 0 && backends == 0 {
 						return
 					}
-					if time.Now().After(deadline) {
-						t.Fatalf("cleanup = %d frontend requests, %d owners, %d backend sockets", frontends, owners, backends)
-					}
+					testutil.Require(t, !time.Now().After(deadline), "cleanup = %d frontend requests, %d owners, %d backend sockets", frontends, owners, backends)
 					time.Sleep(5 * time.Millisecond)
 				}
 			}
@@ -387,30 +346,22 @@ func TestShareFrontendAdmissionAndCleanup(t *testing.T) {
 			defer firstCancel()
 			response := visit(firstCtx, first)
 			defer response.Body.Close()
-			if response.StatusCode != http.StatusOK {
-				t.Fatalf("first visitor = %d", response.StatusCode)
-			}
+			testutil.Require(t, response.StatusCode == http.StatusOK, "first visitor = %d", response.StatusCode)
 			c.shares.mu.Lock()
 			frontends, backends := c.shares.frontendRequests, c.shares.connections
 			c.shares.mu.Unlock()
-			if frontends != 1 || backends != 1 {
-				t.Fatalf("independent counters = %d frontends, %d backends", frontends, backends)
-			}
+			testutil.Require(t, frontends == 1 && backends == 1, "independent counters = %d frontends, %d backends", frontends, backends)
 			excessCtx, excessCancel := context.WithTimeout(ctx, time.Second)
 			defer excessCancel()
 			excess := visit(excessCtx, other)
 			excess.Body.Close()
-			if excess.StatusCode != http.StatusServiceUnavailable {
-				t.Fatalf("excess visitor = %d; want prompt 503", excess.StatusCode)
-			}
+			testutil.Require(t, excess.StatusCode == http.StatusServiceUnavailable, "excess visitor = %d; want prompt 503", excess.StatusCode)
 			firstCancel()
 			response.Body.Close()
 			waitEmpty()
 			recovered := visit(ctx, other)
 			defer recovered.Body.Close()
-			if recovered.StatusCode != http.StatusOK {
-				t.Fatalf("visitor after cancellation = %d", recovered.StatusCode)
-			}
+			testutil.Require(t, recovered.StatusCode == http.StatusOK, "visitor after cancellation = %d", recovered.StatusCode)
 			opening := make([]byte, len("open\n"))
 			if _, err := io.ReadFull(recovered.Body, opening); err != nil {
 				t.Fatal(err)
@@ -420,14 +371,7 @@ func TestShareFrontendAdmissionAndCleanup(t *testing.T) {
 			if _, err := otherClient.StopShare(ctx, other.ID); err != nil {
 				t.Fatal(err)
 			}
-			select {
-			case err := <-closed:
-				if err == nil {
-					t.Fatal("visitor survived stop")
-				}
-			case <-time.After(time.Second):
-				t.Fatal("stop did not unblock the streaming visitor")
-			}
+			testutil.Require(t, testutil.Receive(t, closed, time.Second, "stop did not unblock the streaming visitor") != nil, "visitor survived stop")
 			recovered.Body.Close()
 			waitEmpty()
 		})
@@ -439,9 +383,7 @@ func TestShareKnownReplayAfterStartupDeadline(t *testing.T) {
 	owner := shareTestIdentity("alice")
 	req := shareTestRequest("ready-replay-operation", "web")
 	info, err := c.shares.create(owner, req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	s := c.shares.shares[info.ID]
 	c.shares.mu.Lock()
 	s.timer.Stop()
@@ -450,9 +392,7 @@ func TestShareKnownReplayAfterStartupDeadline(t *testing.T) {
 	s.info.StartupDeadline = time.Now().Add(-time.Second)
 	c.shares.mu.Unlock()
 	replay, err := c.shares.create(owner, req)
-	if err != nil || replay.ID != info.ID || replay.State != "ready" || replay.Generation != "existing-generation" {
-		t.Fatalf("known ready replay = %+v %v", replay, err)
-	}
+	testutil.Require(t, err == nil && replay.ID == info.ID && replay.State == "ready" && replay.Generation == "existing-generation", "known ready replay = %+v %v", replay, err)
 	req.RequestID = "unknown-expired-operation"
 	req.StartupDeadline = time.Now().Add(-time.Second)
 	_, err = c.shares.create(owner, req)
@@ -473,9 +413,7 @@ func TestShareDeadlinesAndReload(t *testing.T) {
 			owner := shareTestIdentity("alice")
 			req := shareTestRequest("expiry-operation", "web")
 			info, err := c.shares.create(owner, req)
-			if err != nil {
-				t.Fatal(err)
-			}
+			testutil.NoError(t, err)
 			s := c.shares.shares[info.ID]
 			c.shares.mu.Lock()
 			s.timer.Stop()
@@ -485,9 +423,7 @@ func TestShareDeadlinesAndReload(t *testing.T) {
 				t.Fatal("dial accepted past deadline before timer ran")
 			}
 			inspected, err := c.shares.inspect(owner, info.ID, false)
-			if err != nil || inspected.State != "ended" || inspected.TerminalReason != test.name {
-				t.Fatalf("inspect = %+v, %v", inspected, err)
-			}
+			testutil.Require(t, err == nil && inspected.State == "ended" && inspected.TerminalReason == test.name, "inspect = %+v, %v", inspected, err)
 		})
 	}
 	cfg := shareTestConfig(t)
@@ -499,9 +435,7 @@ func TestShareDeadlinesAndReload(t *testing.T) {
 	reloaded.Sharing = &sharing
 	c.Reload(&reloaded)
 	inspected, _ := c.shares.inspect(shareTestIdentity("alice"), info.ID, false)
-	if inspected.TerminalReason != "permission_revoked" {
-		t.Fatalf("reload = %+v", inspected)
-	}
+	testutil.Require(t, inspected.TerminalReason == "permission_revoked", "reload = %+v", inspected)
 }
 
 func TestShareDeadlineTimers(t *testing.T) {
@@ -510,21 +444,13 @@ func TestShareDeadlineTimers(t *testing.T) {
 	req := shareTestRequest("timer-operation", "web")
 	req.TTL = "35ms"
 	info, err := c.shares.create(shareTestIdentity("alice"), req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	s := c.shares.shares[info.ID]
-	select {
-	case <-s.ctx.Done():
-	case <-time.After(time.Second):
-		t.Fatal("expiry did not end share")
-	}
+	testutil.Receive(t, s.ctx.Done(), time.Second, "expiry did not end share")
 	c.shares.mu.Lock()
 	reason := s.info.TerminalReason
 	c.shares.mu.Unlock()
-	if reason != "expired" {
-		t.Fatalf("reason = %s", reason)
-	}
+	testutil.Require(t, reason == "expired", "reason = %s", reason)
 }
 
 type testSharePublisher struct {
@@ -536,9 +462,7 @@ type testSharePublisher struct {
 func startTestSharePublisher(t *testing.T, ctx context.Context, client *Client, info *api.Share, targets map[string]string) testSharePublisher {
 	t.Helper()
 	control, err := client.PublisherControl(ctx, info.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	ready := make(chan *api.Share, 1)
 	done := make(chan struct{})
 	go func() {
@@ -652,9 +576,7 @@ func TestShareHTTPAndUpgradeEndToEnd(t *testing.T) {
 	defer server.Close()
 	client := shareTestClient(server.URL, "alice")
 	info, err := client.CreateShare(ctx, shareTestRequest("http-operation", "web"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	u, _ := url.Parse(upstream.URL)
 	publisher := startTestSharePublisher(t, ctx, client, info, map[string]string{"web": u.Host})
 	ready := waitTestShareReady(t, publisher)
@@ -666,26 +588,18 @@ func TestShareHTTPAndUpgradeEndToEnd(t *testing.T) {
 	req.Header.Set("Origin", public.Scheme+"://"+public.Host)
 	req.Header.Set("X-Forwarded-For", "spoof")
 	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if string(body) != "/v1/application secret=application body" || resp.Header.Get("Set-Cookie") != "app=1" {
-		t.Fatalf("HTTP body/headers: %s %v", body, resp.Header)
-	}
+	testutil.Require(t, string(body) == "/v1/application secret=application body" && resp.Header.Get("Set-Cookie") == "app=1", "HTTP body/headers: %s %v", body, resp.Header)
 	got := <-seen
-	if got.Host != public.Host || got.Header.Get("Authorization") != "Bearer application-token" || got.Header.Get("Cookie") != "app=private" || got.Header.Get("Origin") != req.Header.Get("Origin") || got.Header.Get("X-Forwarded-For") == "spoof" {
-		t.Fatalf("forwarded request = %s %v", got.Host, got.Header)
-	}
+	testutil.Require(t, got.Host == public.Host && got.Header.Get("Authorization") == "Bearer application-token" && got.Header.Get("Cookie") == "app=private" && got.Header.Get("Origin") == req.Header.Get("Origin") && got.Header.Get("X-Forwarded-For") != "spoof", "forwarded request = %s %v", got.Host, got.Header)
 	// Ordinary HTTP/1.1 requests reuse the backend keep-alive connection.
 	for range 2 {
 		request, _ := http.NewRequestWithContext(ctx, "GET", server.URL+"/pooled", nil)
 		request.Host = public.Host
 		response, err := http.DefaultClient.Do(request)
-		if err != nil {
-			t.Fatal(err)
-		}
+		testutil.NoError(t, err)
 		io.Copy(io.Discard, response.Body)
 		response.Body.Close()
 		<-seen
@@ -693,33 +607,23 @@ func TestShareHTTPAndUpgradeEndToEnd(t *testing.T) {
 
 	// A real WebSocket client still sends RFC6455 frames inside the byte tunnel.
 	ws, _, err := websocket.Dial(ctx, server.URL+"/websocket", &websocket.DialOptions{Host: public.Host, HTTPHeader: http.Header{"Origin": {"https://" + public.Host}}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	defer ws.CloseNow()
-	if err := ws.Write(ctx, websocket.MessageBinary, []byte{0, 1, 2, 255}); err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, ws.Write(ctx, websocket.MessageBinary, []byte{0, 1, 2, 255}))
 	kind, echoed, err := ws.Read(ctx)
-	if err != nil || kind != websocket.MessageBinary || !bytes.Equal(echoed, []byte{0, 1, 2, 255}) {
-		t.Fatalf("websocket echo = %v %v %v", kind, echoed, err)
-	}
+	testutil.Require(t, err == nil && kind == websocket.MessageBinary && bytes.Equal(echoed, []byte{0, 1, 2, 255}), "websocket echo = %v %v %v", kind, echoed, err)
 
 	// Client bytes coalesced with its request and server bytes coalesced with
 	// the 101 must both survive, with opaque bytes rather than WebSocket frames.
 	serverURL, _ := url.Parse(server.URL)
 	raw, err := net.Dial("tcp", serverURL.Host)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	defer raw.Close()
 	raw.SetDeadline(time.Now().Add(3 * time.Second))
 	fmt.Fprintf(raw, "GET /opaque HTTP/1.1\r\nHost: %s\r\nConnection: Upgrade\r\nUpgrade: custom\r\n\r\nCLIENT_EARLY", public.Host)
 	reader := bufio.NewReader(raw)
 	switched, err := http.ReadResponse(reader, &http.Request{Method: "GET"})
-	if err != nil || switched.StatusCode != 101 {
-		t.Fatalf("upgrade = %+v %v", switched, err)
-	}
+	testutil.Require(t, err == nil && switched.StatusCode == 101, "upgrade = %+v %v", switched, err)
 	early := make([]byte, len("SERVER_EARLYCLIENT_EARLY"))
 	if _, err := io.ReadFull(reader, early); err != nil || string(early) != "SERVER_EARLYCLIENT_EARLY" {
 		t.Fatalf("early bytes = %q %v", early, err)
@@ -728,18 +632,14 @@ func TestShareHTTPAndUpgradeEndToEnd(t *testing.T) {
 	streamReq, _ := http.NewRequestWithContext(ctx, "GET", server.URL+"/stream", nil)
 	streamReq.Host = public.Host
 	stream, err := http.DefaultClient.Do(streamReq)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	defer stream.Body.Close()
 	first := make([]byte, len("data: first\n\n"))
 	if _, err := io.ReadFull(stream.Body, first); err != nil {
 		t.Fatal(err)
 	}
 	stopped, err := client.StopShare(ctx, info.ID)
-	if err != nil || stopped.State != "ended" {
-		t.Fatalf("stop = %+v %v", stopped, err)
-	}
+	testutil.Require(t, err == nil && stopped.State == "ended", "stop = %+v %v", stopped, err)
 	readCtx, readCancel := context.WithTimeout(ctx, time.Second)
 	defer readCancel()
 	if _, _, err := ws.Read(readCtx); err == nil {
@@ -751,21 +651,12 @@ func TestShareHTTPAndUpgradeEndToEnd(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() { _, err := stream.Body.Read(make([]byte, 1)); done <- err }()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("SSE survived stop")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("stream was not canceled")
-	}
+	testutil.Require(t, testutil.Receive(t, done, time.Second, "stream was not canceled") != nil, "SSE survived stop")
 	c.shares.mu.Lock()
 	connections := c.shares.connections
 	pending := len(c.shares.shares[info.ID].pending)
 	c.shares.mu.Unlock()
-	if connections != 0 || pending != 0 {
-		t.Fatalf("cleanup leaked %d connections, %d pending", connections, pending)
-	}
+	testutil.Require(t, connections == 0 && pending == 0, "cleanup leaked %d connections, %d pending", connections, pending)
 	if _, err := client.StopShare(ctx, info.ID); err != nil {
 		t.Fatal("repeated stop:", err)
 	}
@@ -775,9 +666,7 @@ func TestShareHostIsolationAndDisable(t *testing.T) {
 	cfg := shareTestConfig(t)
 	c := shareTestCoordinator(t, cfg)
 	info, err := c.shares.create(shareTestIdentity("alice"), shareTestRequest("host-operation", "web"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	public, _ := url.Parse(info.Services[0].URL)
 	request := func(host, method, path string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, "http://"+host+path, nil)
@@ -806,9 +695,7 @@ func TestShareHostIsolationAndDisable(t *testing.T) {
 			t.Fatalf("disabled sharing allowed API for %s: %d", host, got)
 		}
 	}
-	if err := c.Close(); err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, c.Close())
 	c = shareTestCoordinator(t, &reloaded)
 	for _, host := range []string{public.Host, "unknown.preview.test", "evil.example"} {
 		if got := request(host, "GET", "/v1/shares").Code; got != 404 {
@@ -820,6 +707,29 @@ func TestShareHostIsolationAndDisable(t *testing.T) {
 	}
 }
 
+func readTestPublisherMessage(t *testing.T, decoder *json.Decoder, want string) api.PublisherMessage {
+	t.Helper()
+	for {
+		var message api.PublisherMessage
+		testutil.NoError(t, decoder.Decode(&message))
+		if message.Type == "ping" {
+			continue
+		}
+		testutil.Require(t, message.Type == want, "publisher message = %+v, want %s", message, want)
+		return message
+	}
+}
+
+func openTestPublisherControl(t *testing.T, ctx context.Context, client *Client, info *api.Share) (net.Conn, *json.Decoder, api.PublisherMessage) {
+	t.Helper()
+	control, err := client.PublisherControl(ctx, info.ID)
+	testutil.NoError(t, err)
+	t.Cleanup(func() { control.Close() })
+	decoder := json.NewDecoder(control)
+	readTestPublisherMessage(t, decoder, "attached")
+	return control, decoder, readTestPublisherMessage(t, decoder, "dial")
+}
+
 func TestSharePublisherPairingAndPendingStop(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
@@ -828,22 +738,9 @@ func TestSharePublisherPairingAndPendingStop(t *testing.T) {
 	defer server.Close()
 	client := shareTestClient(server.URL, "alice")
 	info, err := client.CreateShare(ctx, shareTestRequest("pairing-operation", "web"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	control, err := client.PublisherControl(ctx, info.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
+	control, decoder, dial := openTestPublisherControl(t, ctx, client, info)
 	defer control.Close()
-	decoder := json.NewDecoder(control)
-	var attached, dial api.PublisherMessage
-	if err := decoder.Decode(&attached); err != nil || attached.Type != "attached" {
-		t.Fatalf("attached: %+v %v", attached, err)
-	}
-	if err := decoder.Decode(&dial); err != nil || dial.Type != "dial" {
-		t.Fatalf("probe: %+v %v", dial, err)
-	}
 	for _, test := range []struct{ user, generation, service, connection string }{
 		{"bob", dial.Generation, dial.ServiceID, dial.ConnectionID},
 		{"admin", dial.Generation, dial.ServiceID, dial.ConnectionID},
@@ -861,14 +758,9 @@ func TestSharePublisherPairingAndPendingStop(t *testing.T) {
 		t.Fatal("second publisher attached")
 	}
 	valid, err := client.PublisherData(ctx, info.ID, dial.Generation, dial.ServiceID, dial.ConnectionID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	defer valid.Close()
-	var ready api.PublisherMessage
-	if err := decoder.Decode(&ready); err != nil || ready.Type != "ready" {
-		t.Fatalf("ready = %+v %v", ready, err)
-	}
+	readTestPublisherMessage(t, decoder, "ready")
 	if duplicate, err := client.PublisherData(ctx, info.ID, dial.Generation, dial.ServiceID, dial.ConnectionID); err == nil {
 		duplicate.Close()
 		t.Fatal("duplicate data attachment accepted")
@@ -882,21 +774,11 @@ func TestSharePublisherPairingAndPendingStop(t *testing.T) {
 		}
 		result <- err
 	}()
-	var pending api.PublisherMessage
-	if err := decoder.Decode(&pending); err != nil || pending.Type != "dial" {
-		t.Fatalf("pending = %+v %v", pending, err)
-	}
+	pending := readTestPublisherMessage(t, decoder, "dial")
 	if _, err := client.StopShare(ctx, info.ID); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case err := <-result:
-		if err == nil {
-			t.Fatal("pending dial succeeded after stop")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("stop did not wake pending dial")
-	}
+	testutil.Require(t, testutil.Receive(t, result, time.Second, "stop did not wake pending dial") != nil, "pending dial succeeded after stop")
 	if late, err := client.PublisherData(ctx, info.ID, pending.Generation, pending.ServiceID, pending.ConnectionID); err == nil {
 		late.Close()
 		t.Fatal("late attachment accepted")
@@ -904,9 +786,7 @@ func TestSharePublisherPairingAndPendingStop(t *testing.T) {
 	c.shares.mu.Lock()
 	count, pendingCount := s.connections, len(s.pending)
 	c.shares.mu.Unlock()
-	if count != 0 || pendingCount != 0 {
-		t.Fatalf("pending cleanup = %d slots, %d calls", count, pendingCount)
-	}
+	testutil.Require(t, count == 0 && pendingCount == 0, "pending cleanup = %d slots, %d calls", count, pendingCount)
 }
 
 func TestSharePublisherFailureAndConnectionQuota(t *testing.T) {
@@ -919,40 +799,21 @@ func TestSharePublisherFailureAndConnectionQuota(t *testing.T) {
 	defer server.Close()
 	client := shareTestClient(server.URL, "alice")
 	info, err := client.CreateShare(ctx, shareTestRequest("quota-operation", "web"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	control, err := client.PublisherControl(ctx, info.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
+	control, _, dial := openTestPublisherControl(t, ctx, client, info)
 	defer control.Close()
-	decoder := json.NewDecoder(control)
-	var attached, dial api.PublisherMessage
-	decoder.Decode(&attached)
-	decoder.Decode(&dial)
 	s := c.shares.shares[info.ID]
 	_, err = s.dial(ctx, dial.ServiceID)
 	requireShareError(t, err, "quota_exceeded")
 	err = client.PublisherResult(ctx, info.ID, api.PublisherResult{Generation: dial.Generation, ServiceID: dial.ServiceID, ConnectionID: dial.ConnectionID, Error: "local connection refused"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-s.ctx.Done():
-	case <-time.After(time.Second):
-		t.Fatal("failed readiness did not end share")
-	}
+	testutil.NoError(t, err)
+	testutil.Receive(t, s.ctx.Done(), time.Second, "failed readiness did not end share")
 	got, _ := client.Share(ctx, info.ID)
-	if got.State != "ended" || got.TerminalReason != "upstream_unavailable" {
-		t.Fatalf("failed setup = %+v", got)
-	}
+	testutil.Require(t, got.State == "ended" && got.TerminalReason == "upstream_unavailable", "failed setup = %+v", got)
 	c.shares.mu.Lock()
 	count := s.connections
 	c.shares.mu.Unlock()
-	if count != 0 {
-		t.Fatalf("failure leaked %d slots", count)
-	}
+	testutil.Require(t, count == 0, "failure leaked %d slots", count)
 }
 
 func TestShareRenewAndAuthorizationExpiryWithHeartbeats(t *testing.T) {
@@ -969,9 +830,7 @@ func TestShareRenewAndAuthorizationExpiryWithHeartbeats(t *testing.T) {
 	defer server.Close()
 	client := shareTestClient(server.URL, "alice")
 	info, err := client.CreateShare(ctx, shareTestRequest("renew-operation", "web"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	u, _ := url.Parse(upstream.URL)
 	publisher := startTestSharePublisher(t, ctx, client, info, map[string]string{"web": u.Host})
 	ready := waitTestShareReady(t, publisher)
@@ -979,19 +838,11 @@ func TestShareRenewAndAuthorizationExpiryWithHeartbeats(t *testing.T) {
 		t.Fatal("wrong generation renewed")
 	}
 	renewed, err := client.RenewShare(ctx, info.ID, ready.Generation)
-	if err != nil || renewed.AuthorizationDeadline.Before(ready.AuthorizationDeadline) {
-		t.Fatalf("renew = %+v %v", renewed, err)
-	}
+	testutil.Require(t, err == nil && !renewed.AuthorizationDeadline.Before(ready.AuthorizationDeadline), "renew = %+v %v", renewed, err)
 	s := c.shares.shares[info.ID]
-	select {
-	case <-s.ctx.Done():
-	case <-time.After(time.Second):
-		t.Fatal("heartbeats extended authorization")
-	}
+	testutil.Receive(t, s.ctx.Done(), time.Second, "heartbeats extended authorization")
 	ended, _ := client.Share(ctx, info.ID)
-	if ended.TerminalReason != "authorization_expired" {
-		t.Fatalf("expired = %+v", ended)
-	}
+	testutil.Require(t, ended.TerminalReason == "authorization_expired", "expired = %+v", ended)
 	if _, err := client.RenewShare(ctx, info.ID, ready.Generation); err == nil {
 		t.Fatal("expired share renewed")
 	}
@@ -1006,17 +857,8 @@ func TestShareStopRacesDataRegistration(t *testing.T) {
 	client := shareTestClient(server.URL, "alice")
 	for iteration := range 12 {
 		info, err := client.CreateShare(ctx, shareTestRequest(fmt.Sprintf("race-operation-%02d", iteration), "web"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		control, err := client.PublisherControl(ctx, info.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		decoder := json.NewDecoder(control)
-		var attached, dial api.PublisherMessage
-		decoder.Decode(&attached)
-		decoder.Decode(&dial)
+		testutil.NoError(t, err)
+		control, _, dial := openTestPublisherControl(t, ctx, client, info)
 		var wg sync.WaitGroup
 		wg.Add(2)
 		go func() {
@@ -1040,9 +882,7 @@ func TestShareStopRacesDataRegistration(t *testing.T) {
 		tracked := len(s.conns)
 		pending := len(s.pending)
 		c.shares.mu.Unlock()
-		if count != 0 || tracked != 0 || pending != 0 {
-			t.Fatalf("race %d leaked: %d slots %d sockets %d pending", iteration, count, tracked, pending)
-		}
+		testutil.Require(t, count == 0 && tracked == 0 && pending == 0, "race %d leaked: %d slots %d sockets %d pending", iteration, count, tracked, pending)
 	}
 }
 
@@ -1065,36 +905,14 @@ func TestShareGenericByteStreamsEndOnTTLAndHeartbeat(t *testing.T) {
 				req.TTL = "250ms"
 			}
 			info, err := client.CreateShare(ctx, req)
-			if err != nil {
-				t.Fatal(err)
-			}
-			control, err := client.PublisherControl(ctx, info.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
+			testutil.NoError(t, err)
+			control, decoder, probe := openTestPublisherControl(t, ctx, client, info)
 			defer control.Close()
 			control.SetReadDeadline(time.Now().Add(time.Second))
-			decoder := json.NewDecoder(control)
-			readMessage := func(want string) api.PublisherMessage {
-				t.Helper()
-				for {
-					var message api.PublisherMessage
-					if err := decoder.Decode(&message); err != nil {
-						t.Fatal(err)
-					}
-					if message.Type == want {
-						return message
-					}
-				}
-			}
-			readMessage("attached")
-			probe := readMessage("dial")
 			data, err := client.PublisherData(ctx, info.ID, probe.Generation, probe.ServiceID, probe.ConnectionID)
-			if err != nil {
-				t.Fatal(err)
-			}
+			testutil.NoError(t, err)
 			defer data.Close()
-			readMessage("ready")
+			readTestPublisherMessage(t, decoder, "ready")
 			s := c.shares.shares[info.ID]
 			connected := make(chan net.Conn, 1)
 			failed := make(chan error, 1)
@@ -1106,11 +924,9 @@ func TestShareGenericByteStreamsEndOnTTLAndHeartbeat(t *testing.T) {
 				}
 				connected <- conn
 			}()
-			message := readMessage("dial")
+			message := readTestPublisherMessage(t, decoder, "dial")
 			publisher, err := client.PublisherData(ctx, info.ID, message.Generation, message.ServiceID, message.ConnectionID)
-			if err != nil {
-				t.Fatal(err)
-			}
+			testutil.NoError(t, err)
 			defer publisher.Close()
 			var upstream net.Conn
 			select {
@@ -1139,34 +955,19 @@ func TestShareGenericByteStreamsEndOnTTLAndHeartbeat(t *testing.T) {
 				}
 				pending <- err
 			}()
-			readMessage("dial")
-			select {
-			case <-s.ctx.Done():
-			case <-time.After(2 * time.Second):
-				t.Fatal("deadline did not close generic stream")
-			}
+			readTestPublisherMessage(t, decoder, "dial")
+			testutil.Receive(t, s.ctx.Done(), 2*time.Second, "deadline did not close generic stream")
 			publisher.SetReadDeadline(time.Now().Add(time.Second))
 			if _, err := publisher.Read(make([]byte, 1)); err == nil {
 				t.Fatal("data stream survived terminal deadline")
 			}
-			select {
-			case err := <-pending:
-				if err == nil {
-					t.Fatal("pending dial succeeded")
-				}
-			case <-time.After(time.Second):
-				t.Fatal("pending dial not canceled")
-			}
+			testutil.Require(t, testutil.Receive(t, pending, time.Second, "pending dial not canceled") != nil, "pending dial succeeded")
 			ended, err := client.Share(ctx, info.ID)
-			if err != nil || ended.TerminalReason != reason {
-				t.Fatalf("ended = %+v %v", ended, err)
-			}
+			testutil.Require(t, err == nil && ended.TerminalReason == reason, "ended = %+v %v", ended, err)
 			c.shares.mu.Lock()
 			slots, tracked, waiting := s.connections, len(s.conns), len(s.pending)
 			c.shares.mu.Unlock()
-			if slots != 0 || tracked != 0 || waiting != 0 {
-				t.Fatalf("terminal cleanup leaked %d %d %d", slots, tracked, waiting)
-			}
+			testutil.Require(t, slots == 0 && tracked == 0 && waiting == 0, "terminal cleanup leaked %d %d %d", slots, tracked, waiting)
 		})
 	}
 }
@@ -1174,9 +975,7 @@ func TestShareGenericByteStreamsEndOnTTLAndHeartbeat(t *testing.T) {
 func TestShareRevokeStopsTrafficBeforeBlockedLedgerWrite(t *testing.T) {
 	c := shareTestCoordinator(t, shareTestConfig(t))
 	info, err := c.shares.create(shareTestIdentity("alice"), shareTestRequest("storage-block-operation", "web"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	s := c.shares.shares[info.ID]
 	local, peer := net.Pipe()
 	defer peer.Close()
@@ -1185,38 +984,19 @@ func TestShareRevokeStopsTrafficBeforeBlockedLedgerWrite(t *testing.T) {
 	c.shares.mu.Unlock()
 	defer tracked.Close()
 	tx, err := c.store.db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	defer tx.Rollback()
 	if _, err := tx.Exec(`UPDATE share_operations SET metadata = metadata WHERE share_id = ?`, info.ID); err != nil {
 		t.Fatal(err)
 	}
 	ended := make(chan struct{})
 	go func() { s.end("stopped"); close(ended) }()
-	select {
-	case <-s.ctx.Done():
-	case <-time.After(300 * time.Millisecond):
-		t.Fatal("database latency delayed cancellation")
-	}
+	testutil.Receive(t, s.ctx.Done(), 300*time.Millisecond, "database latency delayed cancellation")
 	read := make(chan error, 1)
 	go func() { _, err := local.Read(make([]byte, 1)); read <- err }()
-	select {
-	case err := <-read:
-		if err == nil {
-			t.Fatal("revoked connection still passed traffic")
-		}
-	case <-time.After(300 * time.Millisecond):
-		t.Fatal("database latency delayed connection deadline")
-	}
-	if err := tx.Rollback(); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-ended:
-	case <-time.After(2 * time.Second):
-		t.Fatal("termination did not finish after database lock released")
-	}
+	testutil.Require(t, testutil.Receive(t, read, 300*time.Millisecond, "database latency delayed connection deadline") != nil, "revoked connection still passed traffic")
+	testutil.NoError(t, tx.Rollback())
+	testutil.Receive(t, ended, 2*time.Second, "termination did not finish after database lock released")
 }
 
 func TestShareLifetimeCutsTrafficWhileRenewHoldsDatabaseLock(t *testing.T) {
@@ -1225,9 +1005,7 @@ func TestShareLifetimeCutsTrafficWhileRenewHoldsDatabaseLock(t *testing.T) {
 	req := shareTestRequest("blocked-renew-operation", "web")
 	req.TTL = "250ms"
 	info, err := c.shares.create(owner, req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	s := c.shares.shares[info.ID]
 	local, peer := net.Pipe()
 	defer peer.Close()
@@ -1238,9 +1016,7 @@ func TestShareLifetimeCutsTrafficWhileRenewHoldsDatabaseLock(t *testing.T) {
 	c.shares.mu.Unlock()
 	defer tracked.Close()
 	tx, err := c.store.db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	defer tx.Rollback()
 	if _, err := tx.Exec(`UPDATE share_operations SET metadata = metadata WHERE share_id = ?`, info.ID); err != nil {
 		t.Fatal(err)
@@ -1261,32 +1037,13 @@ func TestShareLifetimeCutsTrafficWhileRenewHoldsDatabaseLock(t *testing.T) {
 		c.shares.mu.Unlock()
 		time.Sleep(time.Millisecond)
 	}
-	if !locked {
-		t.Fatal("renewal did not acquire registry lock")
-	}
+	testutil.Require(t, locked, "renewal did not acquire registry lock")
 	read := make(chan error, 1)
 	go func() { _, err := local.Read(make([]byte, 1)); read <- err }()
-	select {
-	case err := <-read:
-		if err == nil {
-			t.Fatal("expired connection passed traffic")
-		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("blocked renewal postponed socket expiry")
-	}
-	if err := tx.Rollback(); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-renewed:
-	case <-time.After(2 * time.Second):
-		t.Fatal("renewal remained blocked")
-	}
-	select {
-	case <-s.ctx.Done():
-	case <-time.After(time.Second):
-		t.Fatal("expiry did not finish after registry unlock")
-	}
+	testutil.Require(t, testutil.Receive(t, read, 500*time.Millisecond, "blocked renewal postponed socket expiry") != nil, "expired connection passed traffic")
+	testutil.NoError(t, tx.Rollback())
+	testutil.Receive(t, renewed, 2*time.Second, "renewal remained blocked")
+	testutil.Receive(t, s.ctx.Done(), time.Second, "expiry did not finish after registry unlock")
 }
 
 type shareWriteAttempt struct{ done chan struct{} }
@@ -1336,9 +1093,7 @@ func TestShareStopUnblocksSlowOrdinaryHTTPReader(t *testing.T) {
 	defer server.Close()
 	client := shareTestClient(server.URL, "alice")
 	info, err := client.CreateShare(ctx, shareTestRequest("slow-reader-operation", "web"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	u, _ := url.Parse(upstream.URL)
 	publisher := startTestSharePublisher(t, ctx, client, info, map[string]string{"web": u.Host})
 	ready := waitTestShareReady(t, publisher)
@@ -1346,21 +1101,15 @@ func TestShareStopUnblocksSlowOrdinaryHTTPReader(t *testing.T) {
 	publicHost.Store(public.Host)
 	serverURL, _ := url.Parse(server.URL)
 	raw, err := net.Dial("tcp", serverURL.Host)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	defer raw.Close()
 	if tcp, ok := raw.(*net.TCPConn); ok {
-		if err := tcp.SetReadBuffer(1024); err != nil {
-			t.Fatal(err)
-		}
+		testutil.NoError(t, tcp.SetReadBuffer(1024))
 	}
 	fmt.Fprintf(raw, "GET /large HTTP/1.1\r\nHost: %s\r\n\r\n", public.Host)
 	reader := bufio.NewReader(raw)
 	response, err := http.ReadResponse(reader, &http.Request{Method: "GET"})
-	if err != nil || response.StatusCode != 200 {
-		t.Fatalf("response = %+v %v", response, err)
-	}
+	testutil.Require(t, err == nil && response.StatusCode == 200, "response = %+v %v", response, err)
 	// Stop reading after headers. Wait for a real ResponseWriter.Write to
 	// remain in flight, rather than assuming a particular TCP buffer size.
 	blocked := false
@@ -1380,28 +1129,16 @@ func TestShareStopUnblocksSlowOrdinaryHTTPReader(t *testing.T) {
 			break
 		}
 	}
-	if !blocked {
-		t.Fatal("fixture did not block an ordinary frontend write")
-	}
+	testutil.Require(t, blocked, "fixture did not block an ordinary frontend write")
 	if _, err := client.StopShare(ctx, info.ID); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-frontendDone:
-	case <-time.After(time.Second):
-		t.Fatal("stop left frontend handler blocked on a non-reading client")
-	}
-	select {
-	case <-upstreamDone:
-	case <-time.After(time.Second):
-		t.Fatal("stop left upstream streaming")
-	}
+	testutil.Receive(t, frontendDone, time.Second, "stop left frontend handler blocked on a non-reading client")
+	testutil.Receive(t, upstreamDone, time.Second, "stop left upstream streaming")
 	c.shares.mu.Lock()
 	frontends := len(c.shares.shares[info.ID].frontends)
 	c.shares.mu.Unlock()
-	if frontends != 0 {
-		t.Fatalf("%d response deadlines leaked", frontends)
-	}
+	testutil.Require(t, frontends == 0, "%d response deadlines leaked", frontends)
 }
 
 func TestShareAuthenticatedPublishingKeepsVisitorsAnonymous(t *testing.T) {
@@ -1434,22 +1171,14 @@ func TestShareAuthenticatedPublishingKeepsVisitorsAnonymous(t *testing.T) {
 	client := shareTestClient(server.URL, "bob")
 	// Bob carries a verified user identity, with no groups or publication grant.
 	info, err := client.CreateShare(ctx, shareTestRequest("authenticated-operation", "web"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Owner != "bob@test" {
-		t.Fatalf("owner = %q", info.Owner)
-	}
+	testutil.NoError(t, err)
+	testutil.Require(t, info.Owner == "bob@test", "owner = %q", info.Owner)
 	body, _ := json.Marshal(shareTestRequest("anonymous-operation", "web"))
 	req, _ := http.NewRequestWithContext(ctx, "POST", server.URL+"/v1/shares", bytes.NewReader(body))
 	response, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	response.Body.Close()
-	if response.StatusCode != 401 {
-		t.Fatalf("anonymous publisher create = %d", response.StatusCode)
-	}
+	testutil.Require(t, response.StatusCode == 401, "anonymous publisher create = %d", response.StatusCode)
 	if _, err := shareTestClient(server.URL, "carol").StopShare(ctx, info.ID); err == nil {
 		t.Fatal("authenticated publishing bypassed ownership")
 	}
@@ -1457,42 +1186,30 @@ func TestShareAuthenticatedPublishingKeepsVisitorsAnonymous(t *testing.T) {
 	publisher := startTestSharePublisher(t, ctx, client, info, map[string]string{"web": u.Host})
 	ready := waitTestShareReady(t, publisher)
 	renewed, err := client.RenewShare(ctx, info.ID, ready.Generation)
-	if err != nil || renewed.State != "ready" {
-		t.Fatalf("ungranted user renew = %+v %v", renewed, err)
-	}
+	testutil.Require(t, err == nil && renewed.State == "ready", "ungranted user renew = %+v %v", renewed, err)
 	public, _ := url.Parse(ready.Services[0].URL)
 	visitor, _ := http.NewRequestWithContext(ctx, "GET", server.URL+"/v1/application", nil)
 	visitor.Host = public.Host
 	response, err = http.DefaultClient.Do(visitor)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	content, _ := io.ReadAll(response.Body)
 	response.Body.Close()
-	if response.StatusCode != 200 || string(content) != "anonymous application visitor" {
-		t.Fatalf("anonymous visit = %d %q", response.StatusCode, content)
-	}
+	testutil.Require(t, response.StatusCode == 200 && string(content) == "anonymous application visitor", "anonymous visit = %d %q", response.StatusCode, content)
 	serverURL, _ := url.Parse(server.URL)
 	raw, err := net.Dial("tcp", serverURL.Host)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	defer raw.Close()
 	raw.SetDeadline(time.Now().Add(2 * time.Second))
 	fmt.Fprintf(raw, "GET /opaque HTTP/1.1\r\nHost: %s\r\nConnection: Upgrade\r\nUpgrade: custom\r\n\r\nanonymous-bytes", public.Host)
 	reader := bufio.NewReader(raw)
 	switched, err := http.ReadResponse(reader, &http.Request{Method: "GET"})
-	if err != nil || switched.StatusCode != 101 {
-		t.Fatalf("anonymous upgrade = %+v %v", switched, err)
-	}
+	testutil.Require(t, err == nil && switched.StatusCode == 101, "anonymous upgrade = %+v %v", switched, err)
 	echo := make([]byte, len("anonymous-bytes"))
 	if _, err := io.ReadFull(reader, echo); err != nil || string(echo) != "anonymous-bytes" {
 		t.Fatalf("anonymous bytes = %q %v", echo, err)
 	}
 	stopped, err := client.StopShare(ctx, info.ID)
-	if err != nil || stopped.State != "ended" {
-		t.Fatalf("ungranted user stop = %+v %v", stopped, err)
-	}
+	testutil.Require(t, err == nil && stopped.State == "ended", "ungranted user stop = %+v %v", stopped, err)
 	if _, err := reader.ReadByte(); err == nil {
 		t.Fatal("anonymous visitor stream survived stop")
 	}
@@ -1511,13 +1228,9 @@ func TestShareReloadDisablesAuthenticatedPublishing(t *testing.T) {
 	ungranted := shareTestClient(server.URL, "bob")
 	granted := shareTestClient(server.URL, "alice")
 	ungrantedInfo, err := ungranted.CreateShare(ctx, shareTestRequest("ungranted-reload-operation", "web"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	grantedInfo, err := granted.CreateShare(ctx, shareTestRequest("granted-reload-operation", "web"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.NoError(t, err)
 	u, _ := url.Parse(upstream.URL)
 	ungPublisher := startTestSharePublisher(t, ctx, ungranted, ungrantedInfo, map[string]string{"web": u.Host})
 	waitTestShareReady(t, ungPublisher)
@@ -1529,9 +1242,7 @@ func TestShareReloadDisablesAuthenticatedPublishing(t *testing.T) {
 	reloaded.Sharing = &sharing
 	c.Reload(&reloaded)
 	ended, err := ungranted.Share(ctx, ungrantedInfo.ID)
-	if err != nil || ended.State != "ended" || ended.TerminalReason != "permission_revoked" {
-		t.Fatalf("ungranted reload = %+v %v", ended, err)
-	}
+	testutil.Require(t, err == nil && ended.State == "ended" && ended.TerminalReason == "permission_revoked", "ungranted reload = %+v %v", ended, err)
 	if _, err := ungranted.CreateShare(ctx, shareTestRequest("ungranted-after-reload", "web")); err == nil {
 		t.Fatal("ungranted create remained enabled")
 	}
@@ -1539,7 +1250,5 @@ func TestShareReloadDisablesAuthenticatedPublishing(t *testing.T) {
 		t.Fatal("explicit group grant lost on disable:", err)
 	}
 	retained, err := granted.Share(ctx, grantedInfo.ID)
-	if err != nil || retained.State != "ready" {
-		t.Fatalf("granted reload = %+v %v", retained, err)
-	}
+	testutil.Require(t, err == nil && retained.State == "ready", "granted reload = %+v %v", retained, err)
 }

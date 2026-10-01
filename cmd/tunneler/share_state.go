@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mtsaas/tunneler/internal/api"
@@ -137,29 +138,7 @@ func prepareShareLocal(server string, request api.ShareRequest, targets map[stri
 func writeShareLocal(local *shareLocal) error {
 	local.mu.Lock()
 	defer local.mu.Unlock()
-	return writeShareLocalLocked(local)
-}
-
-func writeShareLocalLocked(local *shareLocal) error {
-	data, err := json.Marshal(local.shareLocalData)
-	if err != nil {
-		return err
-	}
-	f, err := os.CreateTemp(filepath.Dir(local.Path), ".state-")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	if _, err = f.Write(data); err == nil {
-		err = f.Sync()
-	}
-	if closeErr := f.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), local.Path)
+	return writePrivateState(local.Path, local.shareLocalData)
 }
 
 func updateShareLocal(local *shareLocal, state string, s *api.Share, failure string) error {
@@ -177,7 +156,7 @@ func updateShareLocal(local *shareLocal, state string, s *api.Share, failure str
 	if failure != "" {
 		local.Failure = failure
 	}
-	return writeShareLocalLocked(local)
+	return writePrivateState(local.Path, local.shareLocalData)
 }
 
 func readShareLocal(path string) (*shareLocal, error) {
@@ -315,21 +294,14 @@ func stopShareLocal(ctx context.Context, local *shareLocal) bool {
 	return err == nil && reply.Stopped
 }
 
-type shareOwnership struct {
-	mu         sync.Mutex
-	generation string
-}
-
 type sharePublisherClient struct {
 	*client
 	local     *shareLocal
-	ownership *shareOwnership
+	ownership *atomic.Bool
 }
 
 func (c sharePublisherClient) PublisherAttached(s *api.Share) error {
-	c.ownership.mu.Lock()
-	c.ownership.generation = s.Generation
-	c.ownership.mu.Unlock()
+	c.ownership.Store(s.Generation != "")
 	return updateShareLocal(c.local, "", s, "")
 }
 
@@ -346,7 +318,7 @@ func runShareLocal(parent context.Context, c *client, local *shareLocal, ready f
 	defer cancel()
 	stopped := make(chan struct{})
 	var stopOnce sync.Once
-	ownership := &shareOwnership{}
+	ownership := new(atomic.Bool)
 	localStopped := func() { stopOnce.Do(func() { close(stopped) }) }
 	ln, err := startShareIPC(ctx, local, cancel, stopped)
 	if err != nil {
@@ -365,10 +337,7 @@ func runShareLocal(parent context.Context, c *client, local *shareLocal, ready f
 		localStopped()
 		current := local.snapshot()
 		var terminal *api.Share
-		ownership.mu.Lock()
-		owned := ownership.generation != ""
-		ownership.mu.Unlock()
-		if current.Share != nil && owned {
+		if current.Share != nil && ownership.Load() {
 			cleanupCtx, stop := context.WithTimeout(context.Background(), 10*time.Second)
 			terminal, _ = c.StopShare(cleanupCtx, current.Share.ID)
 			stop()
@@ -411,8 +380,8 @@ func runShareLocal(parent context.Context, c *client, local *shareLocal, ready f
 		}
 		return shareError{error: err, code: "publisher_unavailable", status: exitUnavailable, shareID: s.ID, requestID: local.Request.RequestID}
 	}
-	if err == nil && parent.Err() == nil && local.snapshot().State != "ready" {
+	if parent.Err() == nil && local.snapshot().State != "ready" {
 		return shareError{error: errors.New("share startup was cancelled before readiness"), code: "startup_timeout", status: exitUnavailable, shareID: s.ID, requestID: local.Request.RequestID}
 	}
-	return err
+	return nil
 }

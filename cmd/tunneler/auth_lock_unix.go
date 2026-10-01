@@ -16,5 +16,3 @@ func tryAuthLock(f *os.File) (bool, error) {
 	}
 	return err == nil, err
 }
-
-func releaseAuthLock(f *os.File) { unix.Flock(int(f.Fd()), unix.LOCK_UN) }
