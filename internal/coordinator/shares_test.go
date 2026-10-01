@@ -27,7 +27,7 @@ import (
 	"github.com/mtsaas/tunneler/internal/tunnel"
 )
 
-func shareTestConfig(t *testing.T) *Config {
+func shareTestConfig(t testing.TB) *Config {
 	t.Helper()
 	return &Config{Database: filepath.Join(t.TempDir(), "shares.db"), SessionTTL: Duration(time.Hour), OIDC: OIDCConfig{Issuer: "https://issuer.test"}, Admins: []string{"admins"}, Sharing: &SharingConfig{Domain: "preview.test", ControlHosts: []string{"127.0.0.1"}, Grants: []PublishGrant{{Group: "developers"}}, AuthorizationLease: Duration(time.Minute), HeartbeatInterval: Duration(time.Second), HeartbeatTimeout: Duration(5 * time.Second)}}
 }
@@ -43,7 +43,7 @@ func shareTestIdentity(name string) *Identity {
 	return id
 }
 
-func shareTestCoordinator(t *testing.T, cfg *Config) *Coordinator {
+func shareTestCoordinator(t testing.TB, cfg *Config) *Coordinator {
 	t.Helper()
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	c, err := New(cfg, func(_ context.Context, token string) (*Identity, error) {
@@ -345,11 +345,14 @@ func TestShareFrontendAdmissionAndCleanup(t *testing.T) {
 			} else if scope == "global" {
 				otherClient, other = start("bob", "second-frontend-operation")
 			}
-			visit := func(visitCtx context.Context, share *api.Share) *http.Response {
+			request := func(visitCtx context.Context, share *api.Share) *http.Request {
 				public, _ := url.Parse(share.Services[0].URL)
 				req, _ := http.NewRequestWithContext(visitCtx, "GET", server.URL+"/stream", nil)
 				req.Host = public.Host
-				response, err := http.DefaultClient.Do(req)
+				return req
+			}
+			visit := func(visitCtx context.Context, share *api.Share) *http.Response {
+				response, err := http.DefaultClient.Do(request(visitCtx, share))
 				testutil.NoError(t, err)
 				return response
 			}
@@ -376,11 +379,39 @@ func TestShareFrontendAdmissionAndCleanup(t *testing.T) {
 			frontends, backends := c.shares.frontendRequests, c.shares.connections
 			c.shares.mu.Unlock()
 			testutil.Require(t, frontends == 1 && backends == 1, "independent counters = %d frontends, %d backends", frontends, backends)
+			queueCtx, queueCancel := context.WithCancel(ctx)
+			defer queueCancel()
+			queued := make(chan error, shareHTTPRequestsPerConnection-1)
+			for range shareHTTPRequestsPerConnection - 1 {
+				go func() {
+					response, err := http.DefaultClient.Do(request(queueCtx, other))
+					if response != nil {
+						response.Body.Close()
+					}
+					queued <- err
+				}()
+			}
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				c.shares.mu.Lock()
+				frontends, backends = c.shares.frontendRequests, c.shares.connections
+				c.shares.mu.Unlock()
+				testutil.Require(t, backends == 1, "queued requests exceeded the socket budget: %d", backends)
+				if frontends == shareHTTPRequestsPerConnection {
+					break
+				}
+				testutil.Require(t, !time.Now().After(deadline), "requests did not enter the bounded queue: %d", frontends)
+				time.Sleep(5 * time.Millisecond)
+			}
 			excessCtx, excessCancel := context.WithTimeout(ctx, time.Second)
 			defer excessCancel()
 			excess := visit(excessCtx, other)
 			excess.Body.Close()
 			testutil.Require(t, excess.StatusCode == http.StatusServiceUnavailable, "excess visitor = %d; want prompt 503", excess.StatusCode)
+			queueCancel()
+			for range shareHTTPRequestsPerConnection - 1 {
+				testutil.Require(t, testutil.Receive(t, queued, time.Second, "queued visitor ignored cancellation") != nil, "queued visitor bypassed the socket budget")
+			}
 			firstCancel()
 			response.Body.Close()
 			waitEmpty()

@@ -202,6 +202,7 @@ func (c *Coordinator) handlePublisherData(w http.ResponseWriter, r *http.Request
 		return
 	}
 	delete(s.pending, connection)
+	m.notifyCapacityLocked()
 	tracked := s.trackLocked(conn, true)
 	pending.result <- shareDialResult{conn: tracked}
 	m.mu.Unlock()

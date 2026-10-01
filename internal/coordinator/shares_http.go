@@ -4,11 +4,14 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/http/httputil"
 	"net/netip"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mtsaas/tunneler/internal/api"
@@ -56,14 +59,28 @@ type shareHTTPProxy struct {
 	transport *http.Transport
 }
 
+type shareHTTPRequestContextKey struct{}
+
+type shareHTTPBufferPool struct{ buffers sync.Pool }
+
+func (p *shareHTTPBufferPool) Get() []byte    { return p.buffers.Get().([]byte) }
+func (p *shareHTTPBufferPool) Put(buf []byte) { p.buffers.Put(buf) }
+
+var shareHTTPBuffers = shareHTTPBufferPool{buffers: sync.Pool{New: func() any { return make([]byte, 32<<10) }}}
+
 func (c *Coordinator) newShareHTTPProxy(s *sharedServiceSet, service api.ShareService) *shareHTTPProxy {
+	cfg := c.config().sharingConfig()
+	limit := min(cfg.MaxConnectionsPerShare, cfg.MaxConnectionsPerUser, cfg.MaxConnections)
 	transport := &http.Transport{
-		DialContext:         func(ctx context.Context, _, _ string) (net.Conn, error) { return s.dial(ctx, service.ID) },
-		MaxIdleConnsPerHost: 4, MaxConnsPerHost: c.config().sharingConfig().MaxConnectionsPerShare,
+		DialContext:         func(ctx context.Context, _, _ string) (net.Conn, error) { return s.dialHTTP(ctx, service.ID) },
+		MaxIdleConnsPerHost: limit, MaxConnsPerHost: limit,
 		IdleConnTimeout: 90 * time.Second, ResponseHeaderTimeout: 30 * time.Second, DisableCompression: true,
 	}
 	proxy := &httputil.ReverseProxy{
-		Transport: transport,
+		Transport:     transport,
+		BufferPool:    &shareHTTPBuffers,
+		ErrorLog:      slog.NewLogLogger(c.log.Handler(), slog.LevelError),
+		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL.Scheme, pr.Out.URL.Host = "http", service.ID
 			pr.Out.Host = pr.In.Host
@@ -75,17 +92,84 @@ func (c *Coordinator) newShareHTTPProxy(s *sharedServiceSet, service api.ShareSe
 			// All public URLs are HTTPS; TLS may terminate at the trusted edge.
 			pr.Out.Header.Set("X-Forwarded-Proto", "https")
 		},
-		FlushInterval: -1,
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			status := http.StatusBadGateway
+			message := "preview service is unavailable"
+			if cause := context.Cause(r.Context()); cause != nil {
+				err = cause
+			}
 			var ae *api.Error
 			if errors.As(err, &ae) && ae.Code == "quota_exceeded" {
 				status = http.StatusServiceUnavailable
+				message = ae.Message
 			}
-			http.Error(w, "preview service is unavailable", status)
+			http.Error(w, message, status)
 		},
 	}
 	return &shareHTTPProxy{proxy: proxy, transport: transport}
+}
+
+func (s *sharedServiceSet) dialHTTP(ctx context.Context, serviceID string) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	// Transport detaches cancellation while dialing. Keep an unused tunnel
+	// dial from consuming capacity after its visitor has gone away.
+	if request, ok := ctx.Value(shareHTTPRequestContextKey{}).(context.Context); ok {
+		stop := context.AfterFunc(request, cancel)
+		defer stop()
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		m := s.manager
+		m.mu.Lock()
+		changed := m.capacity
+		m.mu.Unlock()
+		conn, err := s.dial(ctx, serviceID)
+		var ae *api.Error
+		if !errors.As(err, &ae) || ae.Code != "quota_exceeded" {
+			return conn, err
+		}
+		s.closeIdleHTTPConnections(serviceID)
+		select {
+		case <-changed:
+		case <-s.ctx.Done():
+			return nil, net.ErrClosed
+		case <-ctx.Done():
+			return nil, shareAPIError(503, "quota_exceeded", "preview connection queue timed out")
+		}
+	}
+}
+
+// Reclaim idle pools only when they consume the exhausted socket budget.
+// This lets another service or share use an owner's available capacity.
+func (s *sharedServiceSet) closeIdleHTTPConnections(serviceID string) {
+	m := s.manager
+	m.mu.Lock()
+	cfg := m.c.config().sharingConfig()
+	owner := shareOwnerKey(&s.owner)
+	globalFull := m.connections >= cfg.MaxConnections
+	ownerFull := m.ownerConnections[owner] >= cfg.MaxConnectionsPerUser
+	shareFull := s.connections >= cfg.MaxConnectionsPerShare
+	if !globalFull && !ownerFull && !shareFull {
+		m.mu.Unlock()
+		return
+	}
+	var transports []*http.Transport
+	for _, other := range m.shares {
+		if globalFull || (ownerFull && shareOwnerKey(&other.owner) == owner) || (shareFull && other == s) {
+			for id, proxy := range other.proxies {
+				if other != s || id != serviceID {
+					transports = append(transports, proxy.transport)
+				}
+			}
+		}
+	}
+	m.mu.Unlock()
+	for _, transport := range transports {
+		transport.CloseIdleConnections()
+	}
 }
 
 func (c *Coordinator) serveShareHTTP(w http.ResponseWriter, r *http.Request, match shareHost) {
@@ -141,11 +225,16 @@ func (c *Coordinator) serveShareHTTP(w http.ResponseWriter, r *http.Request, mat
 		http.Error(w, "the audit trail could not record this request", http.StatusServiceUnavailable)
 		return
 	}
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-	stopCancel := context.AfterFunc(s.ctx, cancel)
+	ctx, cancel := context.WithCancelCause(r.Context())
+	defer cancel(nil)
+	stopCancel := context.AfterFunc(s.ctx, func() { cancel(net.ErrClosed) })
 	defer stopCancel()
-	request := r.Clone(ctx)
+	queueTimer := time.AfterFunc(callTimeout, func() {
+		cancel(shareAPIError(503, "quota_exceeded", "preview request queue timed out"))
+	})
+	defer queueTimer.Stop()
+	ctx = context.WithValue(ctx, shareHTTPRequestContextKey{}, ctx)
+	request := r.Clone(httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{GotConn: func(httptrace.GotConnInfo) { queueTimer.Stop() }}))
 	recorder := &shareResponseWriter{ResponseWriter: w, share: s}
 	start := time.Now()
 	defer func() {

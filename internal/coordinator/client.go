@@ -197,11 +197,15 @@ func authorization(ctx context.Context, token TokenFunc) (http.Header, error) {
 }
 
 func dialStream(ctx context.Context, url string, token TokenFunc) (net.Conn, error) {
+	return dialStreamWithClient(ctx, url, token, nil)
+}
+
+func dialStreamWithClient(ctx context.Context, url string, token TokenFunc, client *http.Client) (net.Conn, error) {
 	header, err := authorization(ctx, token)
 	if err != nil {
 		return nil, err
 	}
-	conn, err := tunnel.Dial(ctx, url, header)
+	conn, err := tunnel.DialWithClient(ctx, url, header, client)
 	if status := (*tunnel.StatusError)(nil); errors.As(err, &status) {
 		return nil, apiError(status.Code, strings.NewReader(status.Body))
 	}

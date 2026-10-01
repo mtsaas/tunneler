@@ -26,6 +26,7 @@ var shareNamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,32}[a-z0-9])?
 type shareManager struct {
 	c                     *Coordinator
 	mu                    sync.Mutex
+	capacity              chan struct{}
 	boot                  string
 	closed                bool
 	shares                map[string]*sharedServiceSet
@@ -114,7 +115,7 @@ func (c *Coordinator) initShares() error {
 	if err := c.config().validateSharing(); err != nil {
 		return err
 	}
-	m := &shareManager{c: c, boot: "boot_" + strings.ToLower(rand.Text()), shares: make(map[string]*sharedServiceSet), operations: make(map[string]*sharedServiceSet), hosts: make(map[string]shareHost), ownerConnections: make(map[string]int), ownerFrontendRequests: make(map[string]int)}
+	m := &shareManager{c: c, capacity: make(chan struct{}), boot: "boot_" + strings.ToLower(rand.Text()), shares: make(map[string]*sharedServiceSet), operations: make(map[string]*sharedServiceSet), hosts: make(map[string]shareHost), ownerConnections: make(map[string]int), ownerFrontendRequests: make(map[string]int)}
 	c.shares = m
 	if c.config().Sharing != nil {
 		routing := c.config().sharingConfig()
@@ -167,6 +168,7 @@ func (c *Coordinator) reloadShares() {
 			denied = append(denied, s)
 		}
 	}
+	m.notifyCapacityLocked()
 	m.mu.Unlock()
 	for _, s := range denied {
 		s.end("permission_revoked")
@@ -457,11 +459,15 @@ func (s *sharedServiceSet) end(reason string) {
 	m.c.audit.Info("share ended", "share", s.info.ID, "subject", subject, "reason", reason)
 }
 
+// HTTP/2 page loads can have many more requests than backend connections.
+// Bound the waiting requests separately, while keeping socket limits intact.
+const shareHTTPRequestsPerConnection = 8
+
 func (s *sharedServiceSet) reserveFrontendLocked(frontend *shareFrontend) error {
 	m := s.manager
 	cfg := m.c.config().sharingConfig()
 	owner := shareOwnerKey(&s.owner)
-	if len(s.frontends) >= cfg.MaxConnectionsPerShare || m.ownerFrontendRequests[owner] >= cfg.MaxConnectionsPerUser || m.frontendRequests >= cfg.MaxConnections {
+	if len(s.frontends)/shareHTTPRequestsPerConnection >= cfg.MaxConnectionsPerShare || m.ownerFrontendRequests[owner]/shareHTTPRequestsPerConnection >= cfg.MaxConnectionsPerUser || m.frontendRequests/shareHTTPRequestsPerConnection >= cfg.MaxConnections {
 		return shareAPIError(503, "quota_exceeded", "preview request limit reached")
 	}
 	s.frontends[frontend] = struct{}{}
@@ -502,6 +508,12 @@ func (s *sharedServiceSet) releaseSlotLocked() {
 	if s.manager.ownerConnections[owner] == 0 {
 		delete(s.manager.ownerConnections, owner)
 	}
+	s.manager.notifyCapacityLocked()
+}
+
+func (m *shareManager) notifyCapacityLocked() {
+	close(m.capacity)
+	m.capacity = make(chan struct{})
 }
 
 type shareConn struct {
