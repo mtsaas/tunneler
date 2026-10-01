@@ -134,6 +134,7 @@ type SessionEvent struct {
 type Error struct {
 	Status  int    `json:"-"` // the HTTP status, set by clients
 	Message string `json:"error"`
+	Code    string `json:"code,omitempty"`
 	// Matches accompanies 409 Conflict: the services an ambiguous selector
 	// matched.
 	Matches []Cluster `json:"matches,omitempty"`

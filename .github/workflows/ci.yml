@@ -16,15 +16,20 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      TUNNELER_REQUIRE_HELM_TESTS: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5 # caches the module download and build caches, keyed on go.sum
         with:
           go-version-file: go.mod
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.22.0
       - run: test -z "$(gofmt -l .)"
       - run: sudo apt-get update && sudo apt-get install -y redis-server
-      # Redis topology tests start local servers. The Postgres and kind
-      # end-to-end tests still need TUNNELER_TEST_DSN and TUNNELER_KIND.
+      # Unit, chart render and Redis topology tests run here. Postgres and
+      # kind end-to-end tests need TUNNELER_TEST_DSN and TUNNELER_KIND.
       - run: go test -vet=all ./...
       - run: helm lint charts/tunneler-coordinator --values hack/kind/coordinator-values.yaml && helm lint charts/tunneler-exit --set server=https://example.com,cluster=ci
       # The exit chart must bind both user and group impersonation to explicit
@@ -55,6 +60,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false # setup-go's cache is keyed on go.sum, so the test job's entry would shadow this job's
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.22.0
       - uses: actions/cache@v4
         with:
           path: |

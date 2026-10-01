@@ -5,10 +5,12 @@
 {{- if and (not .Values.config.exit_issuers) (not .Values.config.insecure_exit_auth) -}}
 {{- fail "config.exit_issuers is required: without it no exit node can authenticate (or set config.insecure_exit_auth for local development)" -}}
 {{- end -}}
+{{- include "tunneler-coordinator.validateSharingIngress" . -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
   labels:
     app.kubernetes.io/name: {{ .Release.Name }}
 data:

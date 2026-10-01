@@ -17,7 +17,7 @@ config:
   admins: []
   grants: []
 
-# Sessions and cluster names live in a SQLite file on this volume.
+# Sessions, cluster names, and share operation records live on this volume.
 persistence:
   size: 1Gi
   storageClassName: ""
@@ -26,14 +26,19 @@ service:
   port: 8443
 
 # The coordinator serves plain HTTP; terminate TLS in front of it. Any
-# ingress that passes WebSocket works. Leave this off to bring your own
-# (an Istio Gateway, say) and route it to the Service.
+# ingress must pass WebSocket and any application-specific Upgrade tokens.
+# Leave this off to bring your own TLS edge and route it to the Service.
 ingress:
   enabled: false
   className: ""
   host: ""
   tlsSecretName: ""
   annotations: {}
+  preview:
+    enabled: false
+    # Uses config.sharing.domain; this certificate must cover its wildcard.
+    tlsSecretName: ""
+    annotations: {}
 
 resources:
   requests:

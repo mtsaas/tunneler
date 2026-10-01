@@ -17,7 +17,7 @@ func configCmd() *cobra.Command {
 		Example: `$ tunneler config --server https://tunneler.example.com
 $ tunneler config`,
 		Args: usage(cobra.NoArgs),
-		RunE: func(*cobra.Command, []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			c, err := loadClient()
 			if err != nil {
 				return err
@@ -35,10 +35,7 @@ $ tunneler config`,
 			if u.Scheme != "https" && !(u.Scheme == "http" && loopback) {
 				return errors.New("--server must be an https:// URL")
 			}
-			c.state.Server = strings.TrimRight(server, "/")
-			c.Server = c.state.Server
-			c.state.IDToken, c.state.RefreshToken = "", "" // they belonged to the old server
-			if err := c.save(); err != nil {
+			if err := c.setServer(cmd.Context(), strings.TrimRight(server, "/")); err != nil {
 				return err
 			}
 			result(map[string]string{"server": c.state.Server, "file": c.path},

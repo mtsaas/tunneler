@@ -178,7 +178,7 @@ removed when the command exits.`),
 1: failure, for a reason not listed here
 2: wrong flags or arguments
 3: not logged in; a person must run "tunneler auth login"
-4: access denied, or no such service or session
+4: access denied, or no such service, session or share
 5: the selector matches several services; the error lists them
 6: the service or the coordinator is unavailable
 
@@ -194,7 +194,9 @@ With "tunneler connect -- COMMAND", stdout, stderr, and the exit status
 belong to COMMAND. "--output json" does not turn SQL results into JSON.
 
 "code" is one of: usage, not_logged_in, access_denied, ambiguous_selector,
-service_unavailable, error. See "tunneler help exit-codes".
+service_unavailable, error. Sharing also uses idempotency_conflict,
+quota_exceeded, upstream_unavailable, startup_timeout, publisher_unavailable,
+share_ended, unknown_share, and cleanup_pending. See "tunneler help exit-codes".
 
 "matches" accompanies ambiguous_selector: the services that matched. Add
 name=SERVICE to the selector and try again.
@@ -206,6 +208,12 @@ and it then reports connections to stderr, one JSON object per line.
 For kubernetes, once the kubeconfig context is written, and it exits:
   {"event": "configured", "context", "kubeconfig", "server", "notice"}
 "notice" says that access is audited; show it to the person.
+
+"tunneler share start --public" writes one complete readiness object after
+coordinator-originated data-path probes. With --detach it first completes
+worker ownership handoff. Supply --request-id to recover an ambiguous start;
+"share inspect ID --request-id" looks up that operation. No credentials appear
+in readiness or inspection. Unknown remote state is not confirmed cleanup.
 
 "tunneler auth login" needs a person. It writes
   {"event": "device_code", "verification_uri", "user_code"}
