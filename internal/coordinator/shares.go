@@ -243,8 +243,11 @@ func (m *shareManager) create(id *Identity, req api.ShareRequest) (*api.Share, e
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	config := m.c.config()
+	if config.Sharing == nil {
+		return nil, shareAPIError(403, "sharing_disabled", "sharing is disabled on this coordinator; ask an administrator to configure sharing.domain and sharing.control_hosts, wildcard DNS/TLS, and publishing access")
+	}
 	if !config.canPublish(id) {
-		return nil, shareAPIError(403, "access_denied", "publishing is disabled or access is denied")
+		return nil, shareAPIError(403, "access_denied", "you do not have permission to publish shares; ask an administrator to enable sharing.allow_authenticated or add a matching sharing.grants entry")
 	}
 	cfg := config.sharingConfig()
 	req, ttl, fingerprint, err := normalizedShareRequest(req, cfg)

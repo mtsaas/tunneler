@@ -125,6 +125,31 @@ func TestShareCreationOwnershipRetryAndRestart(t *testing.T) {
 	testutil.Require(t, err == nil && op.ID == first.ID, "operation lookup: %+v %v", op, err)
 }
 
+func TestSharePublishingErrorsExplainSetup(t *testing.T) {
+	for _, tc := range []struct {
+		name, code, hint string
+		disabled         bool
+	}{
+		{"disabled", "sharing_disabled", "sharing.domain", true},
+		{"missing permission", "access_denied", "sharing.allow_authenticated", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := shareTestConfig(t)
+			if tc.disabled {
+				cfg.Sharing = nil
+			}
+			c := shareTestCoordinator(t, cfg)
+			srv := httptest.NewServer(c.Handler())
+			defer srv.Close()
+			_, err := shareTestClient(srv.URL, "admin").CreateShare(context.Background(), shareTestRequest("setup-errors", "web"))
+			requireShareError(t, err, tc.code)
+			var apiErr *api.Error
+			errors.As(err, &apiErr)
+			testutil.Require(t, apiErr.Status == http.StatusForbidden && strings.Contains(apiErr.Message, tc.hint), "publishing error lacks setup guidance: %v", err)
+		})
+	}
+}
+
 func TestShareConcurrentCreateAndRetentionCap(t *testing.T) {
 	cfg := shareTestConfig(t)
 	cfg.Sharing.MaxOperationRecords = 1
@@ -529,6 +554,12 @@ func waitTestShareReady(t *testing.T, publisher testSharePublisher) *api.Share {
 }
 
 func TestShareHTTPAndUpgradeEndToEnd(t *testing.T) {
+	for _, domain := range []string{"preview.test", "share.tunneler.example.com"} {
+		t.Run(domain, func(t *testing.T) { testShareHTTPAndUpgradeEndToEnd(t, domain) })
+	}
+}
+
+func testShareHTTPAndUpgradeEndToEnd(t *testing.T, domain string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	seen := make(chan *http.Request, 4)
@@ -567,11 +598,15 @@ func TestShareHTTPAndUpgradeEndToEnd(t *testing.T) {
 			seen <- r.Clone(context.Background())
 			body, _ := io.ReadAll(r.Body)
 			w.Header().Set("Set-Cookie", "app=1")
+			w.Header().Add("Set-Cookie", "theme=dark; Domain="+domain+"; Path=/; Secure")
 			fmt.Fprintf(w, "%s %s %s", r.URL.Path, r.URL.RawQuery, body)
 		}
 	}))
 	defer upstream.Close()
-	c := shareTestCoordinator(t, shareTestConfig(t))
+	cfg := shareTestConfig(t)
+	cfg.Sharing.Domain = domain
+	cfg.Sharing.ControlHosts = append(cfg.Sharing.ControlHosts, "tunneler.example.com")
+	c := shareTestCoordinator(t, cfg)
 	server := httptest.NewServer(c.Handler())
 	defer server.Close()
 	client := shareTestClient(server.URL, "alice")
@@ -592,8 +627,21 @@ func TestShareHTTPAndUpgradeEndToEnd(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	testutil.Require(t, string(body) == "/v1/application secret=application body" && resp.Header.Get("Set-Cookie") == "app=1", "HTTP body/headers: %s %v", body, resp.Header)
+	setCookies := resp.Header.Values("Set-Cookie")
+	testutil.Require(t, len(setCookies) == 2 && setCookies[1] == "theme=dark; Domain="+domain+"; Path=/; Secure", "application domain cookie changed: %v", setCookies)
 	got := <-seen
 	testutil.Require(t, got.Host == public.Host && got.Header.Get("Authorization") == "Bearer application-token" && got.Header.Get("Cookie") == "app=private" && got.Header.Get("Origin") == req.Header.Get("Origin") && got.Header.Get("X-Forwarded-For") != "spoof", "forwarded request = %s %v", got.Host, got.Header)
+	managementPath, _ := http.NewRequestWithContext(ctx, "GET", server.URL+"/v1/shares", nil)
+	managementPath.Host = public.Host
+	managementPath.Header.Set("Authorization", "Bearer admin")
+	managementPath.Header.Set("X-Forwarded-Host", "127.0.0.1")
+	managementPath.Header.Set("Forwarded", "host=127.0.0.1")
+	response, err := http.DefaultClient.Do(managementPath)
+	testutil.NoError(t, err)
+	applicationBody, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	<-seen
+	testutil.Require(t, response.StatusCode == http.StatusOK && string(applicationBody) == "/v1/shares  ", "preview hostname reached control routes: %s", applicationBody)
 	// Ordinary HTTP/1.1 requests reuse the backend keep-alive connection.
 	for range 2 {
 		request, _ := http.NewRequestWithContext(ctx, "GET", server.URL+"/pooled", nil)
@@ -663,7 +711,15 @@ func TestShareHTTPAndUpgradeEndToEnd(t *testing.T) {
 }
 
 func TestShareHostIsolationAndDisable(t *testing.T) {
+	for _, domain := range []string{"preview.test", "share.tunneler.example.com"} {
+		t.Run(domain, func(t *testing.T) { testShareHostIsolationAndDisable(t, domain) })
+	}
+}
+
+func testShareHostIsolationAndDisable(t *testing.T, domain string) {
 	cfg := shareTestConfig(t)
+	cfg.Sharing.Domain = domain
+	cfg.Sharing.ControlHosts = append(cfg.Sharing.ControlHosts, "tunneler.example.com")
 	c := shareTestCoordinator(t, cfg)
 	info, err := c.shares.create(shareTestIdentity("alice"), shareTestRequest("host-operation", "web"))
 	testutil.NoError(t, err)
@@ -672,11 +728,13 @@ func TestShareHostIsolationAndDisable(t *testing.T) {
 		r := httptest.NewRequest(method, "http://"+host+path, nil)
 		r.Host = host
 		r.Header.Set("Authorization", "Bearer admin")
+		r.Header.Set("X-Forwarded-Host", "tunneler.example.com")
+		r.Header.Set("Forwarded", "host=tunneler.example.com")
 		w := httptest.NewRecorder()
 		c.Handler().ServeHTTP(w, r)
 		return w
 	}
-	for _, host := range []string{"unknown.preview.test", "evil.example", "deep.unknown.preview.test"} {
+	for _, host := range []string{domain, "unknown." + domain, "evil.example", "deep.unknown." + domain} {
 		if got := request(host, "GET", "/v1/shares").Code; got != 404 {
 			t.Fatalf("%s reached API: %d", host, got)
 		}
@@ -684,26 +742,30 @@ func TestShareHostIsolationAndDisable(t *testing.T) {
 	if got := request(public.Host, "CONNECT", "/").Code; got != 405 {
 		t.Fatalf("CONNECT = %d", got)
 	}
-	if got := request("127.0.0.1", "GET", "/v1/shares").Code; got != 200 {
-		t.Fatalf("control host = %d", got)
+	for _, host := range []string{"127.0.0.1", "tunneler.example.com"} {
+		if got := request(host, "GET", "/v1/shares").Code; got != 200 {
+			t.Fatalf("control host %s = %d", host, got)
+		}
 	}
 	reloaded := *cfg
 	reloaded.Sharing = nil
 	c.Reload(&reloaded)
-	for _, host := range []string{public.Host, "unknown.preview.test", "evil.example"} {
+	for _, host := range []string{public.Host, "unknown." + domain, "evil.example"} {
 		if got := request(host, "GET", "/v1/shares").Code; got != 404 {
 			t.Fatalf("disabled sharing allowed API for %s: %d", host, got)
 		}
 	}
 	testutil.NoError(t, c.Close())
 	c = shareTestCoordinator(t, &reloaded)
-	for _, host := range []string{public.Host, "unknown.preview.test", "evil.example"} {
+	for _, host := range []string{public.Host, "unknown." + domain, "evil.example"} {
 		if got := request(host, "GET", "/v1/shares").Code; got != 404 {
 			t.Fatalf("disabled restart allowed API for %s: %d", host, got)
 		}
 	}
-	if got := request("127.0.0.1", "GET", "/v1/shares").Code; got != 200 {
-		t.Fatalf("disabled restart rejected control host: %d", got)
+	for _, host := range []string{"127.0.0.1", "tunneler.example.com"} {
+		if got := request(host, "GET", "/v1/shares").Code; got != 200 {
+			t.Fatalf("disabled restart rejected control host %s: %d", host, got)
+		}
 	}
 }
 

@@ -110,8 +110,7 @@ func (c *Config) validateSharing() error {
 	if len(s.ControlHosts) == 0 {
 		return errors.New("sharing.control_hosts must name the coordinator's canonical host")
 	}
-	previewSite, err := publicsuffix.EffectiveTLDPlusOne(s.Domain)
-	if err != nil {
+	if _, err := publicsuffix.EffectiveTLDPlusOne(s.Domain); err != nil {
 		return fmt.Errorf("sharing.domain: %w", err)
 	}
 	for _, authority := range s.ControlHosts {
@@ -128,12 +127,11 @@ func (c *Config) validateSharing() error {
 		if !sharingDomainValid(host) {
 			return fmt.Errorf("sharing.control_hosts: %q is not a canonical host", authority)
 		}
-		controlSite, err := publicsuffix.EffectiveTLDPlusOne(host)
-		if err != nil {
+		if _, err := publicsuffix.EffectiveTLDPlusOne(host); err != nil {
 			return fmt.Errorf("sharing.control_hosts: %w", err)
 		}
-		if controlSite == previewSite {
-			return errors.New("sharing.domain must use a different registrable domain from the control host")
+		if host == s.Domain || strings.HasSuffix(host, "."+s.Domain) {
+			return fmt.Errorf("sharing.control_hosts: %q overlaps the sharing.domain preview namespace %q", authority, s.Domain)
 		}
 	}
 	if s.DefaultTTL <= 0 || s.MaxTTL <= 0 || s.DefaultTTL > s.MaxTTL {

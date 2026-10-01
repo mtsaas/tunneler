@@ -7,8 +7,10 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,8 +31,11 @@ func TestShareParsingAndImmutableLocalOperation(t *testing.T) {
 	request, targets, err := parseShare([]string{"web=3000", "api=[::1]:8080"}, opts)
 	testutil.NoError(t, err)
 	testutil.Require(t, targets["web"] == "127.0.0.1:3000" && targets["api"] == "[::1]:8080" && request.TTL == "1h0m0s", "bad parsed manifest: %+v %v", request, targets)
-	ordered, _, err := parseShare([]string{"api=[::1]:8080", "web=127.0.0.1:03000"}, opts)
-	testutil.Require(t, err == nil && ordered.ManifestDigest == request.ManifestDigest, "equivalent manifest digest differs: %v", err)
+	var ordered api.ShareRequest
+	for _, target := range []string{"3000", ":3000", "localhost:3000", "LOCALHOST:3000", "127.0.0.1:03000"} {
+		ordered, _, err = parseShare([]string{"api=[::1]:8080", "web=" + target}, opts)
+		testutil.Require(t, err == nil && ordered.ManifestDigest == request.ManifestDigest, "equivalent target %q changes manifest: %v", target, err)
+	}
 	local, existed, err := prepareShareLocal("https://control.example", request, targets, true)
 	testutil.Require(t, err == nil && !existed, "first operation: %v, %v", existed, err)
 	ordered.StartupDeadline = ordered.StartupDeadline.Add(time.Hour)
@@ -41,14 +46,14 @@ func TestShareParsingAndImmutableLocalOperation(t *testing.T) {
 	if code, status := classify(err); code != "idempotency_conflict" || status != exitUsage {
 		t.Fatalf("conflicting operation: %s %d", code, status)
 	}
-	for _, args := range [][]string{{"web=localhost:3000"}, {"web=192.0.2.1:80"}, {"web=0"}, {"web=65536"}, {"web=3000", "web=3001"}, {"web=3000", "other=127.0.0.1:03000"}, {"Upper=3000"}, {"=3000"}} {
+	for _, args := range [][]string{{"web=example.com:3000"}, {"web=localhost.example.com:3000"}, {"web=192.0.2.1:80"}, {"web=0.0.0.0:8080"}, {"web=[::]:8080"}, {"web=0"}, {"web=65536"}, {"web=localhost:abc"}, {"web=localhost"}, {"web="}, {"web=3000", "web=3001"}, {"web=3000", "other=localhost:03000"}, {"Upper=3000"}, {"=3000"}} {
 		if _, _, err := parseShare(args, opts); err == nil {
 			t.Errorf("accepted invalid manifest %v", args)
 		}
 	}
 	opts.public = false
 	if _, _, err := parseShare([]string{"3000"}, opts); err == nil {
-		t.Fatal("accepted implicit public access")
+		t.Fatal("accepted unsupported private access")
 	}
 }
 
@@ -60,7 +65,7 @@ func TestShareJSONAndStableErrorCodes(t *testing.T) {
 		code               string
 		httpStatus, status int
 	}{
-		{"usage", 400, 2}, {"idempotency_conflict", 409, 2}, {"startup_expired", 400, 6}, {"invalid_attachment", 409, 6}, {"publisher_attached", 409, 6}, {"quota_exceeded", 503, 6}, {"unknown_share", 404, 4}, {"custom_future_error", 403, 4},
+		{"usage", 400, 2}, {"idempotency_conflict", 409, 2}, {"startup_expired", 400, 6}, {"invalid_attachment", 409, 6}, {"publisher_attached", 409, 6}, {"quota_exceeded", 503, 6}, {"unknown_share", 404, 4}, {"sharing_disabled", 403, 4}, {"custom_future_error", 403, 4},
 	} {
 		code, status := classify(&api.Error{Code: tc.code, Status: tc.httpStatus})
 		if code != tc.code || status != tc.status {
@@ -81,6 +86,40 @@ func handoffLocal(t *testing.T) *shareLocal {
 	local, _, err := prepareShareLocal("https://control.example", request, targets, true)
 	testutil.NoError(t, err)
 	return local
+}
+
+func TestShareStartUsage(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		hint string
+	}{
+		{nil, "tunneler share start 8080"},
+		{[]string{"8080", "--public=false"}, "private shares are not supported"},
+		{[]string{"web=example.com:8080"}, "loopback address"},
+		{[]string{"web=localhost"}, "port from 1 to 65535"},
+	} {
+		t.Run(tc.hint, func(t *testing.T) {
+			args := append([]string{"share", "start"}, tc.args...)
+			out, errOut, status := cli(t, "", args...)
+			testutil.Require(t, out == "" && status == exitUsage && strings.Contains(errOut, tc.hint), "usage lacks guidance: stdout=%q stderr=%q status=%d", out, errOut, status)
+		})
+	}
+}
+
+func TestShareStartLegacyAccessError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/shares" {
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(api.Error{Code: "access_denied", Message: "publishing is disabled or access is denied"})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	out, errOut, status := cli(t, srv.URL, "share", "start", "web=localhost:8080", "--output", "json")
+	var failure struct{ Code, Error string }
+	testutil.NoError(t, json.Unmarshal([]byte(errOut), &failure))
+	testutil.Require(t, out == "" && status == exitDenied && failure.Code == "access_denied" && strings.Contains(failure.Error, "sharing.allow_authenticated"), "legacy error lacks guidance: stdout=%q stderr=%q status=%d", out, errOut, status)
 }
 
 type failSecondWrite struct {
@@ -169,7 +208,7 @@ func TestStartFailureIncludesGeneratedOperationID(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	out, errOut, status := cli(t, srv.URL, "share", "start", "--public", "3000", "--output", "json")
+	out, errOut, status := cli(t, srv.URL, "share", "start", ":3000", "--output", "json")
 	var failure struct {
 		Code      string `json:"code"`
 		RequestID string `json:"request_id"`
@@ -249,28 +288,36 @@ func TestDetachedWorkerReadyRecoveryAndStop(t *testing.T) {
 	localApp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("local")) }))
 	defer localApp.Close()
 	srv, attaches := shareTestServer(t)
-	installShareLogin(t, srv.URL)
 	t.Setenv("TUNNELER_SHARE_TEST_WORKER", "1")
 	original := shareWorkerCommand
 	shareWorkerCommand = func(executable string) *exec.Cmd {
 		return exec.Command(executable, "-test.run=^TestShareWorkerProcess$")
 	}
 	defer func() { shareWorkerCommand = original }()
-	request, targets, err := parseShare([]string{"web=" + strings.TrimPrefix(localApp.URL, "http://")}, shareOptions{public: true, requestID: "detach-operation", waitReady: 10 * time.Second})
+	_, port, err := net.SplitHostPort(strings.TrimPrefix(localApp.URL, "http://"))
 	testutil.NoError(t, err)
-	local, _, err := prepareShareLocal(srv.URL, request, targets, true)
-	testutil.NoError(t, err)
+	stdout, stderr, status := cli(t, srv.URL, "share", "start", "web=localhost:"+port, "--detach", "--request-id", "detach-operation", "--output", "json")
+	testutil.Require(t, status == 0, "share start failed: %s", stderr)
+	var out shareOutput
+	testutil.NoError(t, json.Unmarshal([]byte(stdout), &out))
+	local := findShareLocal(srv.URL, out.ID, "")
+	testutil.Require(t, local != nil, "ready share has no local worker")
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		stopShareLocal(ctx, local)
 	})
-	out, err := detachShare(context.Background(), local)
-	if err != nil {
-		log, _ := os.ReadFile(filepath.Join(filepath.Dir(local.Path), "worker.log"))
-		t.Fatalf("detach: %v\n%s", err, log)
-	}
-	testutil.Require(t, out.State == "ready" && out.Publisher != nil && out.Publisher.State == "ready" && out.Readiness.PublisherPathTCP && !out.Readiness.PublicEdgeVerified, "incomplete acknowledged readiness: %+v", out)
+	testutil.Require(t, out.State == "ready" && out.Access == "public" && out.Publisher != nil && out.Publisher.State == "ready" && out.Readiness.PublisherPathTCP && !out.Readiness.PublicEdgeVerified, "incomplete acknowledged readiness: %+v", out)
+	request, err := http.NewRequest(http.MethodGet, srv.URL, nil)
+	testutil.NoError(t, err)
+	preview, err := url.Parse(out.Services[0].URL)
+	testutil.NoError(t, err)
+	request.Host = preview.Host
+	response, err := srv.Client().Do(request)
+	testutil.NoError(t, err)
+	body, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	testutil.Require(t, err == nil && response.StatusCode == http.StatusOK && string(body) == "local", "public URL did not reach localhost: %s %v", body, err)
 	c, err := authed(context.Background())
 	testutil.NoError(t, err)
 	recovered, err := recoverShareStart(context.Background(), c, local)
