@@ -1,11 +1,15 @@
 package coordinator
 
 import (
+	"net/http"
+	"net/http/cookiejar"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/mtsaas/tunneler/internal/testutil"
+	"golang.org/x/net/publicsuffix"
 )
 
 func TestSharingConfigIsolationAndValidation(t *testing.T) {
@@ -21,8 +25,15 @@ func TestSharingConfigIsolationAndValidation(t *testing.T) {
 		{"all authenticated without grants", func(s *SharingConfig) { s.AllowAuthenticated = true; s.Grants = nil }, true},
 		{"control port", func(s *SharingConfig) { s.ControlHosts = []string{"tunneler.example.com:8443"} }, true},
 		{"local control", func(s *SharingConfig) { s.ControlHosts = []string{"127.0.0.1:8443", "localhost:8443", "[::1]:8443"} }, true},
-		{"parent cookies", func(s *SharingConfig) { s.Domain = "preview.example.com" }, false},
+		{"shared parent cookies", func(s *SharingConfig) { s.Domain = "preview.example.com" }, true},
+		{"nested shares under control host", func(s *SharingConfig) {
+			s.Domain, s.ControlHosts = "share.tunneler.example.com", []string{"tunneler.example.com"}
+		}, true},
+		{"sibling shares in same zone", func(s *SharingConfig) {
+			s.Domain, s.ControlHosts = "share.example.com", []string{"tunneler.example.com"}
+		}, true},
 		{"same host", func(s *SharingConfig) { s.ControlHosts = []string{"preview-example.net"} }, false},
+		{"control within preview namespace", func(s *SharingConfig) { s.ControlHosts = []string{"control.preview-example.net"} }, false},
 		{"wildcard", func(s *SharingConfig) { s.Domain = "*.preview-example.net" }, false},
 		{"URL", func(s *SharingConfig) { s.Domain = "https://preview-example.net" }, false},
 		{"IP preview", func(s *SharingConfig) { s.Domain = "127.0.0.1" }, false},
@@ -45,6 +56,41 @@ func TestSharingConfigIsolationAndValidation(t *testing.T) {
 			tt.change(s)
 			err := (&Config{Sharing: s}).validateSharing()
 			testutil.Require(t, (err == nil) == tt.valid, "validateSharing() = %v; valid=%v", err, tt.valid)
+		})
+	}
+}
+
+func TestSharingCookieBoundary(t *testing.T) {
+	control, _ := url.Parse("https://tunneler.example.com")
+	for _, tc := range []struct {
+		domain string
+		shared bool
+	}{
+		{"share.tunneler.example.com", true},
+		{"share.example.com", true},
+		{"share.example.net", false},
+	} {
+		t.Run(tc.domain, func(t *testing.T) {
+			preview, _ := url.Parse("https://web." + tc.domain)
+			jar, err := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
+			testutil.NoError(t, err)
+			jar.SetCookies(control, []*http.Cookie{{Name: "control", Value: "credential", Domain: "example.com", Path: "/", Secure: true, HttpOnly: true}})
+			leaked := len(jar.Cookies(preview)) != 0
+			testutil.Require(t, leaked == tc.shared, "parent-domain credential leakage = %v", leaked)
+			jar.SetCookies(preview, []*http.Cookie{{Name: "injected", Value: "untrusted", Domain: "example.com", Path: "/", Secure: true}})
+			injected := false
+			for _, cookie := range jar.Cookies(control) {
+				injected = injected || cookie.Name == "injected"
+			}
+			testutil.Require(t, injected == tc.shared, "share cookie reached control = %v", injected)
+			jar.SetCookies(preview, []*http.Cookie{{Name: "application", Value: "session", Path: "/", Secure: true}})
+			application := false
+			for _, cookie := range jar.Cookies(preview) {
+				application = application || cookie.Name == "application"
+			}
+			testutil.Require(t, application, "host-only application cookie stopped working")
+			cfg := &Config{Sharing: &SharingConfig{Domain: tc.domain, ControlHosts: []string{control.Host}}}
+			testutil.NoError(t, cfg.validateSharing())
 		})
 	}
 }

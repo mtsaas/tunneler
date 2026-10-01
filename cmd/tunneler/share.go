@@ -77,7 +77,7 @@ func shareResult(s *api.Share, local *shareLocal) shareOutput {
 
 func printShare(out shareOutput) {
 	var lines []string
-	lines = append(lines, fmt.Sprintf("Share %s (%s), expires %s", out.ID, out.State, out.ExpiresAt.Local().Format(time.DateTime)))
+	lines = append(lines, fmt.Sprintf("Share %s (%s, %s), expires %s", out.ID, out.State, out.Access, out.ExpiresAt.Local().Format(time.DateTime)))
 	for _, service := range out.Services {
 		lines = append(lines, fmt.Sprintf("  %s: %s", service.Name, service.URL))
 	}
@@ -95,12 +95,17 @@ func shareStartCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "start [NAME=]PORT...", Short: "Publish localhost HTTP services until stopped or expired",
 		Long: "Publish localhost HTTP services at temporary public HTTPS URLs. Anyone with a URL can connect. Readiness checks the publisher data path and local TCP ports; verify application health through the URL separately.",
-		Args: usage(cobra.MinimumNArgs(1)),
+		Args: usage(func(_ *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return errors.New("provide a local port, for example: tunneler share start 8080")
+			}
+			return nil
+		}),
 		Annotations: map[string]string{
-			helpArguments: "Use 3000, web=3000, or web=[::1]:3000. Only literal loopback addresses are accepted. HTTP Upgrade and WebSockets are carried as opaque byte streams.",
+			helpArguments: "Use 8080, web=8080, web=:8080, web=localhost:8080, or web=[::1]:8080. Ports and localhost use 127.0.0.1. Remote addresses are refused. HTTP Upgrade and WebSockets are supported.",
 			helpJSON:      "One complete readiness object with share_id, request_id, services, expires_at, publisher and readiness. --detach returns only after acknowledged worker handoff. Retry the same --request-id to recover an ambiguous result.",
 		},
-		Example: "$ tunneler share start --public web=3000 api=8080\n$ tunneler share start --public web=3000 --detach --request-id preview-42 --output json",
+		Example: "$ tunneler share start 8080\n$ tunneler share start web=:3000 api=localhost:8080\n$ tunneler share start web=3000 --detach --request-id preview-42 --output json",
 		RunE: func(cmd *cobra.Command, args []string) (returnErr error) {
 			request, targets, err := parseShare(args, opts)
 			if err != nil {
@@ -111,6 +116,9 @@ func shareStartCmd() *cobra.Command {
 			defer func() {
 				if returnErr == nil {
 					return
+				}
+				if apiErr := (*api.Error)(nil); errors.As(returnErr, &apiErr) && apiErr.Message == "publishing is disabled or access is denied" {
+					returnErr = fmt.Errorf("%w; ask an administrator to configure sharing.domain and sharing.control_hosts, then enable sharing.allow_authenticated or add a matching sharing.grants entry", returnErr)
 				}
 				if startupLocal != nil {
 					if snapshot := startupLocal.snapshot(); snapshot.Share != nil {
@@ -195,7 +203,7 @@ func shareStartCmd() *cobra.Command {
 			})
 		},
 	}
-	cmd.Flags().BoolVar(&opts.public, "public", false, "Allow anyone with the URL to connect")
+	cmd.Flags().BoolVar(&opts.public, "public", true, "Allow anyone with the URL to connect (private shares are not supported)")
 	cmd.Flags().BoolVar(&opts.detach, "detach", false, "Keep a private worker running after this command exits")
 	cmd.Flags().StringVar(&opts.ttl, "ttl", "", "Requested lifetime, such as 30m or 1h")
 	cmd.Flags().StringVar(&opts.requestID, "request-id", "", "Unique operation ID; reuse only to recover the same start")
@@ -208,7 +216,7 @@ var shareName = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$`)
 func parseShare(args []string, opts shareOptions) (api.ShareRequest, map[string]string, error) {
 	request := api.ShareRequest{Access: "public", RequestID: opts.requestID, TTL: opts.ttl}
 	if !opts.public {
-		return request, nil, errors.New("--public is required: anyone with the URL can connect")
+		return request, nil, errors.New("private shares are not supported; omit --public=false to publish a public URL")
 	}
 	if opts.waitReady <= 0 {
 		return request, nil, errors.New("--wait-ready must be positive")
@@ -233,14 +241,21 @@ func parseShare(args []string, opts shareOptions) (api.ShareRequest, map[string]
 		if !named {
 			target, name = name, ""
 		}
-		port, err := strconv.Atoi(target)
-		if err == nil {
-			target = net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+		original := target
+		if !strings.Contains(target, ":") {
+			target = ":" + target
 		}
+		host, portString, err := net.SplitHostPort(target)
+		if err != nil {
+			return request, nil, fmt.Errorf("invalid local target %q; use 8080, :8080, localhost:8080, or [::1]:8080", original)
+		}
+		if host == "" || strings.EqualFold(host, "localhost") {
+			host = "127.0.0.1"
+		}
+		target = net.JoinHostPort(host, portString)
 		if err := publisher.ValidateTarget(target); err != nil {
-			return request, nil, err
+			return request, nil, fmt.Errorf("invalid local target %q: use a loopback address and a port from 1 to 65535", original)
 		}
-		host, portString, _ := net.SplitHostPort(target)
 		numericPort, _ := strconv.Atoi(portString)
 		portString = strconv.Itoa(numericPort)
 		target = net.JoinHostPort(net.ParseIP(host).String(), portString)

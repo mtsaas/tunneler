@@ -238,14 +238,27 @@ func TestChartRejectsIncompletePreviewIngress(t *testing.T) {
 	}
 }
 
-func TestChartRenderedConfigUsesRuntimeDomainIsolation(t *testing.T) {
-	values := chartValues()
-	sharing := sharingValues()
-	sharing["domain"] = "preview.example.com"
-	values["config"].(map[string]any)["sharing"] = sharing
-	manifests, output, err := renderChart(t, values)
-	testutil.Require(t, err == nil, "render domain-isolation fixture: %v\n%s", err, output)
-	if _, err := loadRenderedConfig(t, manifests); err == nil || !strings.Contains(err.Error(), "registrable domain") {
-		t.Fatalf("runtime accepted domains sharing parent cookies: %v", err)
+func TestChartRenderedConfigUsesRuntimeHostIsolation(t *testing.T) {
+	for _, tc := range []struct {
+		domain string
+		valid  bool
+	}{
+		{"preview.example.com", true}, {"share.tunneler.example.com", true},
+		{"tunneler.example.com", false}, {"example.com", false},
+	} {
+		t.Run(tc.domain, func(t *testing.T) {
+			values := chartValues()
+			sharing := sharingValues()
+			sharing["domain"] = tc.domain
+			sharing["control_hosts"] = []string{"tunneler.example.com"}
+			values["config"].(map[string]any)["sharing"] = sharing
+			manifests, output, err := renderChart(t, values)
+			testutil.Require(t, err == nil, "render domain-isolation fixture: %v\n%s", err, output)
+			_, err = loadRenderedConfig(t, manifests)
+			testutil.Require(t, (err == nil) == tc.valid, "runtime host isolation: %v, valid=%v", err, tc.valid)
+			if !tc.valid {
+				testutil.Require(t, strings.Contains(err.Error(), "preview namespace"), "overlap lacks guidance: %v", err)
+			}
+		})
 	}
 }

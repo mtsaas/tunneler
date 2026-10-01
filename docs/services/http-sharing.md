@@ -6,8 +6,8 @@ streaming responses, WebSockets, and HTTP Upgrade connections pass through the
 coordinator to the local port.
 
 The URLs are public. Anyone who obtains one can reach the application until the
-share ends. The application keeps its own authentication. Start requires
-`--public` and permission to publish from the coordinator administrator.
+share ends. The application keeps its own authentication. Public access is the
+default; `--public` is optional. The coordinator must permit your account to publish.
 
 ## Start a share
 
@@ -21,15 +21,18 @@ tunneler auth login
 Start your local services, then publish their ports:
 
 ```sh
-tunneler share start web=3000 api=8080 --public --ttl 1h
+tunneler share start 8080
+# Or name several services:
+tunneler share start web=:3000 api=localhost:8080 --ttl 1h
 ```
 
 The command prints a URL for each service after the coordinator can dial each
 local port through the tunnel. It keeps running until you press Ctrl-C or the
 share ends. A bare port, such as `3000`, gets the name `p3000`.
 
-Targets use `127.0.0.1` by default. Explicit targets must be loopback IP addresses;
-remote addresses and DNS names are refused. The service must accept plain HTTP
+`8080`, `:8080`, and `localhost:8080` all use `127.0.0.1:8080`, without DNS
+resolution. Explicit loopback addresses, including `[::1]:8080`, are also accepted;
+remote addresses and other DNS names are refused. The service must accept plain HTTP
 on that local port. HTTPS protects the public URL and the connection from your
 computer to the coordinator.
 
@@ -47,7 +50,7 @@ Detached mode returns after the publisher is ready and continues independently
 of the invoking process:
 
 ```sh
-tunneler share start web=3000 api=8080 --public --detach \
+tunneler share start web=3000 api=8080 --detach \
   --ttl 30m --request-id 897c5b24-0ba7-4709-b86e-66106f54a037 --output json
 tunneler share list --output json
 tunneler share inspect <share-id> --output json
@@ -95,7 +98,7 @@ user publish, enable `allow_authenticated`:
 ```json
 {
   "sharing": {
-    "domain": "preview-example.net",
+    "domain": "share.tunneler.example.com",
     "control_hosts": ["tunneler.example.com"],
     "default_ttl": "1h",
     "max_ttl": "8h",
@@ -112,22 +115,51 @@ Disabling `allow_authenticated` ends active shares whose owners lack a publishin
 grant. Management and publication always require an authenticated owner;
 visitors to public URLs require no coordinator authentication.
 
+If startup reports `sharing_disabled`, configure the sharing domain, control
+hosts, wildcard DNS/TLS, and publishing access on the coordinator. Installing a
+new CLI or coordinator version does not configure these deployment settings.
+If it reports `access_denied`, enable `sharing.allow_authenticated` or add a
+matching `sharing.grants` entry. Cluster access and administrator status do not
+grant publishing permission automatically.
+
 `control_hosts` names the coordinator's canonical
 hosts; the generated preview hosts serve application traffic, including paths
 such as `/v1`, without exposing management routes.
 
-Use a different registrable domain for previews and the control application.
-For example, `preview-example.net` and `tunneler.example.com` are separate;
-`preview.example.com` and `tunneler.example.com` can share parent-domain cookies
-and are refused. Configure wildcard DNS and a wildcard certificate for
-`*.preview-example.net`, then route that hostname to the coordinator.
+### Choose the sharing domain
+
+Sharing is an operator opt-in. `sharing.domain` chooses the hostname suffix and
+the browser cookie boundary. Same-zone layouts are supported: keep the control
+host at `tunneler.example.com` and publish at `*.share.tunneler.example.com`.
+Configure wildcard DNS and a wildcard TLS certificate for those preview hosts,
+then route them to the same coordinator. No additional opt-in flag is required.
+
+Same-zone hosts can share parent-domain cookies. An application can set
+`Domain=tunneler.example.com` or `Domain=example.com`, and browsers can send those
+cookies to the control host. Cookies already scoped to those parent domains can
+also reach the shared application. Host-only application cookies work normally.
+`HttpOnly` and `SameSite` do not provide a boundary between these same-site hosts.
+See the [HTTP cookie specification](https://www.rfc-editor.org/rfc/rfc6265.html#section-8.6).
+
+The operator decides whether applications can share that cookie boundary. For
+browser isolation, use another registrable domain, such as `share.example.net`,
+with wildcard DNS/TLS pointing to the same coordinator. A deeper subdomain or
+delegated DNS zone under `example.com` does not change browser cookie scope.
+
+Tunneler authenticates publishers and management requests with bearer tokens,
+not browser cookies. The proxy preserves application cookies without rewriting
+them or injecting CSP restrictions. Preview hosts dispatch every path, including
+`/v1`, to the application; unknown and retired preview hosts return 404.
+Forwarded host headers cannot select control routes. A canonical control host
+cannot equal `sharing.domain` or lie within its preview namespace, because those
+hosts must have unambiguous routing.
 
 For the Helm chart:
 
 ```yaml
 config:
   sharing:
-    domain: preview-example.net
+    domain: share.tunneler.example.com
     control_hosts: [tunneler.example.com]
     allow_authenticated: true
 ingress:

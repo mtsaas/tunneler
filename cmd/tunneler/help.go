@@ -196,7 +196,8 @@ belong to COMMAND. "--output json" does not turn SQL results into JSON.
 "code" is one of: usage, not_logged_in, access_denied, ambiguous_selector,
 service_unavailable, error. Sharing also uses idempotency_conflict,
 quota_exceeded, upstream_unavailable, startup_timeout, publisher_unavailable,
-share_ended, unknown_share, and cleanup_pending. See "tunneler help exit-codes".
+share_ended, unknown_share, sharing_disabled, and cleanup_pending.
+See "tunneler help exit-codes".
 
 "matches" accompanies ambiguous_selector: the services that matched. Add
 name=SERVICE to the selector and try again.
@@ -209,8 +210,9 @@ For kubernetes, once the kubeconfig context is written, and it exits:
   {"event": "configured", "context", "kubeconfig", "server", "notice"}
 "notice" says that access is audited; show it to the person.
 
-"tunneler share start --public" writes one complete readiness object after
-coordinator-originated data-path probes. With --detach it first completes
+"tunneler share start 8080" publishes a public URL by default and writes one
+complete readiness object after coordinator-originated data-path probes.
+With --detach it first completes
 worker ownership handoff. Supply --request-id to recover an ambiguous start;
 "share inspect ID --request-id" looks up that operation. No credentials appear
 in readiness or inspection. Unknown remote state is not confirmed cleanup.
