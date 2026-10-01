@@ -3,6 +3,7 @@ package coordinator
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -51,9 +52,10 @@ func TestShareRealPublisherHTTPUpgradeAndRenewal(t *testing.T) {
 	cfg.Sharing.HeartbeatInterval = Duration(50 * time.Millisecond)
 	cfg.Sharing.HeartbeatTimeout = Duration(300 * time.Millisecond)
 	c := shareTestCoordinator(t, cfg)
-	server := httptest.NewServer(c.Handler())
+	server := httptest.NewTLSServer(c.Handler())
 	defer server.Close()
 	client := shareTestClient(server.URL, "alice")
+	client.HTTP = server.Client()
 	request := shareTestRequest("real-publisher-path", "web", "api")
 	request.TTL = "3s"
 	share, err := client.CreateShare(context.Background(), request)
@@ -87,14 +89,14 @@ func TestShareRealPublisherHTTPUpgradeAndRenewal(t *testing.T) {
 		}
 		req, _ := http.NewRequest(http.MethodGet, server.URL+"/v1/application", nil)
 		req.Host = public.Host
-		response, err := http.DefaultClient.Do(req)
+		response, err := server.Client().Do(req)
 		testutil.NoError(t, err)
 		body, err := io.ReadAll(response.Body)
 		response.Body.Close()
 		testutil.Require(t, err == nil && response.StatusCode == 200 && string(body) == service.Name+" application", "%s response = %d %q, %v", service.Name, response.StatusCode, body, err)
 	}
 
-	conn, err := net.DialTimeout("tcp", strings.TrimPrefix(server.URL, "http://"), time.Second)
+	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: time.Second}, "tcp", strings.TrimPrefix(server.URL, "https://"), server.Client().Transport.(*http.Transport).TLSClientConfig)
 	testutil.NoError(t, err)
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(2 * time.Second))

@@ -21,7 +21,13 @@ import (
 // returns a stream to the server. The header is sent with the handshake and
 // may be nil.
 func Dial(ctx context.Context, rawURL string, header http.Header) (net.Conn, error) {
-	ws, resp, err := websocket.Dial(ctx, rawURL, &websocket.DialOptions{HTTPHeader: header})
+	return DialWithClient(ctx, rawURL, header, nil)
+}
+
+// DialWithClient uses client for the WebSocket handshake. A nil client uses
+// http.DefaultClient, as Dial does.
+func DialWithClient(ctx context.Context, rawURL string, header http.Header, client *http.Client) (net.Conn, error) {
+	ws, resp, err := websocket.Dial(ctx, rawURL, &websocket.DialOptions{HTTPHeader: header, HTTPClient: client})
 	if err != nil {
 		if resp != nil && resp.StatusCode != http.StatusSwitchingProtocols {
 			msg, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<10))

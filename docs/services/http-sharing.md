@@ -215,10 +215,25 @@ audit sink. If it cannot record the action, the coordinator returns 503 before
 publishing the share or forwarding application traffic. Stop and expiry still
 close connections when the audit sink is unavailable.
 
-Connection limits bound both backend sockets and active or queued visitor
-requests, with separate accounting for each. Saturated preview routes return
-503 instead of accumulating unbounded waiting handlers. Defaults allow 32
-connections or requests per share, 128 per owner, and 1,024 across the coordinator.
+Ordinary HTTP requests reuse a keep-alive pool for each service. Concurrent
+HTTP/1.1 requests need separate backend connections. A visitor's HTTP/2
+connection can therefore use several backend connections. Each backend
+connection uses one publisher data tunnel, which can carry multiple requests.
+
+Connection limits count backend sockets, including idle pooled connections and
+pending dials. Defaults allow 32 connections per share, 128 per owner, and 1,024
+across the coordinator. Idle connections are reclaimed when another service or
+share needs their capacity. The separate `max_pending_dials_per_share` limit
+defaults to 32 and bounds concurrent tunnel handshakes.
+
+HTTP requests wait for pooled connections and dial capacity instead of failing
+as soon as the connection limit is reached. Active and waiting requests are
+bounded at eight times each connection limit: 256 per share, 1,024 per owner,
+and 8,192 across the coordinator with the defaults. A full request buffer or a
+30-second wait returns 503. Cancelling a request releases its waiting work.
+The queue deadline ends when a backend connection is acquired, so it does not
+cut off an active streaming response, WebSocket, or Upgrade connection. Stop,
+expiry, and publisher loss still end active and waiting requests.
 
 The ledger retains ended shares so start retries cannot accidentally publish a
 replacement. Its default limits are 128 records per owner
@@ -234,6 +249,53 @@ Host restrictions remain after sharing is disabled so retired preview URLs
 cannot reach management routes. Disable `allow_authenticated` and remove
 publishing grants to stop publication
 while keeping the domain and control-host configuration explicit.
+
+## Measure proxy performance
+
+Run the HTTP benchmarks from the repository root:
+
+```sh
+go test -run '^$' -bench '^BenchmarkShareHTTP$' -benchmem \
+  -benchtime=500ms -count=6 -cpu=8 ./internal/coordinator > share-http.txt
+go run golang.org/x/perf/cmd/benchstat@v0.0.0-20260929162123-406019bb8b68 share-http.txt
+```
+
+To compare changes, save the output from each revision and pass both files to
+`benchstat`. Run benchmarks without the race detector and without other test
+processes competing for CPU.
+
+Both paths use HTTP/2 and TLS at the visitor edge. The tunnel path also uses
+the real publisher, TLS WebSocket data connections, and a local HTTP/1.1
+application. A request fetches a 16 KiB synthetic module. A page operation
+fetches 256 modules concurrently, for 4 MiB total. Responses must have the
+expected protocol, status, and byte count; failures fail the benchmark.
+
+Warm cases fill the 128-connection backend pool before timing. Cold cases
+close visitor and backend idle connections before each page operation, outside
+the timed interval. The pending-dial limit remains 32. `dials/op` reports
+publisher data dial attempts, including attempts cancelled when another pooled
+connection becomes available. Warm samples should report zero new dials.
+
+On 2026-10-01, Go 1.26.2 on an Apple M5 Pro (darwin/arm64, eight Go processors)
+produced these medians across six 500 ms samples:
+
+| Workload | Direct HTTPS | Through tunnel | Added time |
+| --- | ---: | ---: | ---: |
+| Warm 16 KiB request | 0.098 ms | 0.196 ms | 0.098 ms |
+| Warm 256-module page | 7.57 ms | 14.23 ms | 6.66 ms |
+| Cold 256-module page | 54.80 ms | 115.0 ms | 60.2 ms |
+
+Warm tunnel samples opened zero new data connections and allocated about
+20 KiB per request or 5.2 MiB per page operation across the benchmark process.
+Cold results include TLS handshakes and have greater variance. These numbers
+are a local reference, not a deployment performance guarantee.
+
+These benchmarks measure HTTP fetching on loopback. They use a test identity
+verifier and an audit sink without disk or network writes. They exclude remote
+network latency, DNS, application compilation, browser execution, and caching.
+A tunnel adds forwarding and connection setup work; equal page-load time
+cannot be guaranteed. Measure the actual application through the deployed edge
+to establish its user-visible cost.
 
 ## Future TCP support
 

@@ -48,13 +48,13 @@ func (c *Client) RenewShare(ctx context.Context, id, generation string) (*api.Sh
 // PublisherControl opens this share's single control generation. The caller
 // must keep it alive; losing it ends the publication.
 func (c *Client) PublisherControl(ctx context.Context, id string) (net.Conn, error) {
-	return dialStream(ctx, c.Server+pathShare(id)+"/control", c.Token)
+	return dialStreamWithClient(ctx, c.Server+pathShare(id)+"/control", c.Token, c.HTTP)
 }
 
 // PublisherData answers one pending dial with an opaque byte stream.
 func (c *Client) PublisherData(ctx context.Context, id, generation, serviceID, connectionID string) (net.Conn, error) {
 	q := url.Values{"generation": {generation}, "service": {serviceID}, "connection": {connectionID}}
-	return dialStream(ctx, c.Server+pathShare(id)+"/data?"+q.Encode(), c.Token)
+	return dialStreamWithClient(ctx, c.Server+pathShare(id)+"/data?"+q.Encode(), c.Token, c.HTTP)
 }
 
 func (c *Client) PublisherResult(ctx context.Context, id string, result api.PublisherResult) error {
