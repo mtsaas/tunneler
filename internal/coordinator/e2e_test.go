@@ -200,7 +200,7 @@ func TestEndToEnd(t *testing.T) {
 		}
 	}
 	for k, want := range map[string]any{"msg": "query", "user": "alice@example.com", "subject": "1", "cluster": "prod",
-		"service": "orders", "kind": "postgres", "account": s.Username, "session": s.ID} {
+		"target_service": "orders", "kind": "postgres", "account": s.Username, "session": s.ID} {
 		if query[k] != want {
 			t.Errorf("audit record of the query: %s = %v, want %v\n%v", k, query[k], want, query)
 		}

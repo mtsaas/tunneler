@@ -133,7 +133,7 @@ func (a *Agent) desired() map[string]*service {
 		}
 		for name, svc := range a.sources[src] {
 			if _, dup := out[name]; dup {
-				a.Log.Error("service defined by more than one source; ignoring this one", "service", name, "source", src)
+				a.Log.Error("service defined by more than one source; ignoring this one", "target_service", name, "source", src)
 				continue
 			}
 			out[name] = svc
@@ -201,7 +201,7 @@ func (a *Agent) reconcile(ctx context.Context) {
 	a.mu.Unlock()
 
 	for _, svc := range changed {
-		log := a.Log.With("service", svc.advert.Name, "addr", svc.backend.Addr())
+		log := a.Log.With("target_service", svc.advert.Name, "addr", svc.backend.Addr())
 		if status := results[svc]; status != "" {
 			log.Warn("service is not reachable with its credentials; advertised as not ready", "err", status)
 			if svc.report != nil {
@@ -268,7 +268,7 @@ func (a *Agent) LoadConfig(path string) error {
 		}
 		services[sc.Name] = svc
 		// Never the DSN: it holds the administrative password.
-		a.Log.Info("service loaded", "service", sc.Name, "kind", sc.Kind, "addr", svc.backend.Addr(),
+		a.Log.Info("service loaded", "target_service", sc.Name, "kind", sc.Kind, "addr", svc.backend.Addr(),
 			"database", svc.advert.Database, "labels", sc.Labels, "grantable_roles", sc.Roles)
 	}
 	a.SetServices("file", services)
@@ -370,10 +370,10 @@ func (s *service) reap(ctx context.Context, log *slog.Logger) {
 	}
 	dropped, err := accts.Reap(ctx)
 	if len(dropped) > 0 {
-		log.Info("dropped expired accounts that were never revoked", "service", s.advert.Name, "accounts", dropped)
+		log.Info("dropped expired accounts that were never revoked", "target_service", s.advert.Name, "accounts", dropped)
 	}
 	if err != nil {
-		log.Warn("could not drop all expired accounts", "service", s.advert.Name, "err", err)
+		log.Warn("could not drop all expired accounts", "target_service", s.advert.Name, "err", err)
 	}
 }
 
@@ -506,7 +506,7 @@ func (a *Agent) hello(ctx context.Context) (api.Hello, error) {
 			return api.Hello{}, err
 		}
 		if len(data) > maxServiceAdvertisement {
-			a.Log.Warn("service advertisement exceeds its size limit; omitting service", "service", svc.Name)
+			a.Log.Warn("service advertisement exceeds its size limit; omitting service", "target_service", svc.Name)
 			continue
 		}
 		additional := len(data)
@@ -514,7 +514,7 @@ func (a *Agent) hello(ctx context.Context) (api.Hello, error) {
 			additional++ // comma between services
 		}
 		if size+additional > tunnel.MaxMessage {
-			a.Log.Warn("service advertisement exceeds the hello message limit; omitting service", "service", svc.Name)
+			a.Log.Warn("service advertisement exceeds the hello message limit; omitting service", "target_service", svc.Name)
 			continue
 		}
 		hello.Services = append(hello.Services, svc)
@@ -539,7 +539,7 @@ func (a *Agent) handle(ctx context.Context, stream net.Conn) {
 	}
 	stream.SetReadDeadline(time.Time{})
 
-	log := a.Log.With("op", req.Op, "service", req.Service)
+	log := a.Log.With("op", req.Op, "target_service", req.Service)
 	start := time.Now()
 	// The coordinator closes its stream when it gives up. While the backend
 	// works, reads have no other purpose, so EOF cancels that work promptly.

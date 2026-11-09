@@ -172,7 +172,7 @@ func (h *hub) advertise(cluster string, e *exitConn, hello api.Hello) {
 		}
 		if !printable(names...) {
 			h.log.Warn("exit node offered a service with control characters in its name, kind, database or labels; not offering it",
-				"cluster", cluster, "remote", e.remote, "service", svc.Name)
+				"cluster", cluster, "remote", e.remote, "target_service", svc.Name)
 			continue
 		}
 		// An exit node describes its services however it likes, but which
@@ -280,7 +280,7 @@ func (h *hub) call(ctx context.Context, cluster string, req api.ExitRequest) (ne
 		return nil, fmt.Errorf("no connected exit node in cluster %q offers service %q", cluster, req.Service)
 	}
 
-	log := h.log.With("cluster", cluster, "service", req.Service, "op", req.Op, "exit", exit.remote)
+	log := h.log.With("cluster", cluster, "target_service", req.Service, "op", req.Op, "exit", exit.remote)
 	log.Debug("asking exit node")
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)

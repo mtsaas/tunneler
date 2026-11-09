@@ -318,7 +318,7 @@ The coordinator writes these records. Each has the
 
 ```json
 {"msg":"query","audit":true,"user":"alice@example.com","subject":"...","cluster":"prod",
- "service":"shop/postgres","kind":"postgres","session":"K3Q2XB7HTLW5",
+ "target_service":"shop/postgres","kind":"postgres","session":"K3Q2XB7HTLW5",
  "account":"tnl_alice_example_com_x7k2p9qa","connection":"W...","frontend_seq":1,
  "frontend_type":"Q","sql":"select * from orders","sql_bytes_base64":"c2VsZWN0ICogZnJvbSBvcmRlcnM="}
 ```
