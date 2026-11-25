@@ -98,12 +98,19 @@ once.
 
    Keep the `appId` that the command prints. This guide calls it `$APP`.
 
-2. Let the client sign in with the device code flow. A command line tool
-   cannot keep a client secret, so the app must accept public clients:
+2. Let the client sign in. A command line tool cannot keep a client secret,
+   so the app must accept public clients. The client signs in in the browser
+   and receives the result on `http://localhost` on any port. Over SSH it
+   uses the device code flow instead:
 
    ```bash
-   az ad app update --id $APP --is-fallback-public-client true
+   az ad app update --id $APP --is-fallback-public-client true \
+     --public-client-redirect-uris http://localhost
    ```
+
+   NOTE: If Conditional Access requires a managed or compliant device, people
+   must sign in in the browser. With the device code flow, Entra cannot see
+   which device signs in, so it refuses the sign-in with error 530033.
 
 3. Make Entra put group memberships in ID tokens:
 

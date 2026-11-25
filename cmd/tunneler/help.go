@@ -217,7 +217,9 @@ worker ownership handoff. Supply --request-id to recover an ambiguous start;
 "share inspect ID --request-id" looks up that operation. No credentials appear
 in readiness or inspection. Unknown remote state is not confirmed cleanup.
 
-"tunneler auth login" needs a person. It writes
+"tunneler auth login" needs a person. It opens their browser and writes
+  {"event": "browser", "url"}
+or, over SSH or with --device-code,
   {"event": "device_code", "verification_uri", "user_code"}
 for them to act on, waits, then writes {"event": "logged_in"}.
 
