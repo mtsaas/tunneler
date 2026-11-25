@@ -68,8 +68,8 @@ func (logTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // oauth returns the OAuth 2.0 configuration for the identity provider at
-// issuer, as the app registration clientID. The device code and the refresh
-// token cross the URLs it names, so they must all be https.
+// issuer, as the app registration clientID. Codes and the refresh token
+// cross the URLs it names, so they must all be https.
 func oauth(ctx context.Context, issuer, clientID string) (*oauth2.Config, error) {
 	log.Debug("discovering identity provider", "issuer", issuer, "client_id", clientID)
 	if !strings.HasPrefix(issuer, "https://") {
@@ -80,7 +80,7 @@ func oauth(ctx context.Context, issuer, clientID string) (*oauth2.Config, error)
 		return nil, err
 	}
 	endpoint := provider.Endpoint()
-	for _, u := range []string{endpoint.DeviceAuthURL, endpoint.TokenURL} {
+	for _, u := range []string{endpoint.AuthURL, endpoint.DeviceAuthURL, endpoint.TokenURL} {
 		if u != "" && !strings.HasPrefix(u, "https://") {
 			return nil, fmt.Errorf("the identity provider's endpoints must be https:// URLs, not %q", u)
 		}
@@ -207,7 +207,7 @@ func authed(ctx context.Context) (*client, error) {
 	default:
 		fmt.Fprint(os.Stderr, "You are not logged in yet.\n\n")
 	}
-	err = c.login(ctx, func(da *oauth2.DeviceAuthResponse) { fmt.Fprintln(os.Stderr, signInText(da)) })
+	err = c.login(ctx, false, func(_ any, text string) { fmt.Fprintln(os.Stderr, text) })
 	if err != nil {
 		return c, fmt.Errorf("%w: signing in failed: %w", errNotLoggedIn, err)
 	}
